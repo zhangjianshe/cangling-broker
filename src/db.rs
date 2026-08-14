@@ -6,7 +6,7 @@ use sqlx::{sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions, Row, SqliteP
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::model::{ClaimedMessage, Consumer, ConsumerSnapshot, TopicSnapshot};
+use crate::model::{ClaimedMessage, ConsumerSnapshot, TopicSnapshot};
 
 #[derive(Clone)]
 pub struct Database(pub SqlitePool);
@@ -58,11 +58,10 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS consumers (
                 id TEXT PRIMARY KEY NOT NULL,
                 topic TEXT NOT NULL,
-                downstream_url TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
+                attributes TEXT NOT NULL DEFAULT '{}',
                 last_seen_at TEXT NOT NULL,
-                last_attempt_at TEXT,
-                created_at TEXT NOT NULL,
-                UNIQUE(topic, downstream_url)
+                created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_consumers_topic_seen
                 ON consumers(topic, last_seen_at);",
@@ -70,6 +69,7 @@ impl Database {
             .execute(&pool)
             .await
             .context("creating SQLite consumer schema")?;
+        migrate_consumers(&pool).await?;
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS topic_stats (
                 topic TEXT PRIMARY KEY NOT NULL,
@@ -164,25 +164,25 @@ impl Database {
             }
         }
 
-        for row in sqlx::query("SELECT id, topic, downstream_url, last_seen_at FROM consumers ORDER BY created_at")
+        for row in sqlx::query("SELECT id, topic, name, last_seen_at FROM consumers ORDER BY created_at")
             .fetch_all(&self.0)
             .await?
         {
-            let name: String = row.get("topic");
+            let topic_name: String = row.get("topic");
             let last_seen_at: String = row.get("last_seen_at");
             let live = consumer_seen_after
                 .map(|cutoff| last_seen_at.as_str() >= cutoff)
                 .unwrap_or(true);
             topics
-                .entry(name.clone())
+                .entry(topic_name.clone())
                 .or_insert_with(|| TopicSnapshot {
-                    name,
+                    name: topic_name,
                     ..TopicSnapshot::default()
                 })
                 .consumers
                 .push(ConsumerSnapshot {
                     id: row.get("id"),
-                    downstream_url: row.get("downstream_url"),
+                    name: row.get("name"),
                     last_seen_at,
                     live,
                 });
@@ -197,15 +197,18 @@ impl Database {
         &self,
         consumer_id: Option<&str>,
         topic: &str,
-        downstream_url: &str,
+        name: &str,
+        attributes: &HashMap<String, String>,
     ) -> anyhow::Result<String> {
         let now = Utc::now().to_rfc3339();
+        let attributes = serde_json::to_string(attributes)?;
         if let Some(id) = consumer_id.filter(|value| !value.is_empty()) {
             let updated = sqlx::query(
-                "UPDATE consumers SET topic = ?, downstream_url = ?, last_seen_at = ? WHERE id = ?",
+                "UPDATE consumers SET topic = ?, name = ?, attributes = ?, last_seen_at = ? WHERE id = ?",
             )
                 .bind(topic)
-                .bind(downstream_url)
+                .bind(name)
+                .bind(&attributes)
                 .bind(&now)
                 .bind(id)
                 .execute(&self.0)
@@ -213,51 +216,43 @@ impl Database {
             if updated.rows_affected() > 0 {
                 return Ok(id.to_string());
             }
-        }
-        if let Some(row) = sqlx::query("SELECT id FROM consumers WHERE topic = ? AND downstream_url = ?")
-            .bind(topic)
-            .bind(downstream_url)
-            .fetch_optional(&self.0)
-            .await?
-        {
-            let id: String = row.get("id");
-            sqlx::query("UPDATE consumers SET last_seen_at = ? WHERE id = ?")
+            sqlx::query(
+                "INSERT INTO consumers (id, topic, name, attributes, last_seen_at, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+                .bind(id)
+                .bind(topic)
+                .bind(name)
+                .bind(&attributes)
                 .bind(&now)
-                .bind(&id)
+                .bind(&now)
                 .execute(&self.0)
                 .await?;
-            return Ok(id);
+            return Ok(id.to_string());
         }
-        let id = consumer_id
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let inserted = sqlx::query(
-            "INSERT OR IGNORE INTO consumers (id, topic, downstream_url, last_seen_at, created_at)
-             VALUES (?, ?, ?, ?, ?)",
+        let id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO consumers (id, topic, name, attributes, last_seen_at, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
             .bind(&id)
             .bind(topic)
-            .bind(downstream_url)
+            .bind(name)
+            .bind(attributes)
             .bind(&now)
             .bind(&now)
             .execute(&self.0)
             .await?;
-        if inserted.rows_affected() > 0 {
-            return Ok(id);
-        }
-        let row = sqlx::query("SELECT id FROM consumers WHERE topic = ? AND downstream_url = ?")
-            .bind(topic)
-            .bind(downstream_url)
-            .fetch_one(&self.0)
-            .await?;
-        let existing: String = row.get("id");
-        sqlx::query("UPDATE consumers SET last_seen_at = ? WHERE id = ?")
-            .bind(&now)
-            .bind(&existing)
+        Ok(id)
+    }
+
+    pub async fn touch_consumer(&self, consumer_id: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query("UPDATE consumers SET last_seen_at = ? WHERE id = ?")
+            .bind(Utc::now().to_rfc3339())
+            .bind(consumer_id)
             .execute(&self.0)
             .await?;
-        Ok(existing)
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn unregister_consumer(&self, consumer_id: &str) -> anyhow::Result<bool> {
@@ -266,52 +261,6 @@ impl Database {
             .execute(&self.0)
             .await?;
         Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn pick_consumer(
-        &self,
-        topic: &str,
-        seen_after: Option<&str>,
-    ) -> anyhow::Result<Option<Consumer>> {
-        let mut tx = self.0.begin().await?;
-        let row = if let Some(cutoff) = seen_after {
-            sqlx::query(
-                "SELECT id, topic, downstream_url FROM consumers
-                 WHERE topic = ? AND last_seen_at >= ?
-                 ORDER BY last_attempt_at IS NOT NULL, last_attempt_at, created_at
-                 LIMIT 1",
-            )
-                .bind(topic)
-                .bind(cutoff)
-                .fetch_optional(&mut *tx)
-                .await?
-        } else {
-            sqlx::query(
-                "SELECT id, topic, downstream_url FROM consumers
-                 WHERE topic = ?
-                 ORDER BY last_attempt_at IS NOT NULL, last_attempt_at, created_at
-                 LIMIT 1",
-            )
-                .bind(topic)
-                .fetch_optional(&mut *tx)
-                .await?
-        };
-        let Some(row) = row else {
-            tx.commit().await?;
-            return Ok(None);
-        };
-        let consumer = Consumer {
-            id: row.get("id"),
-            topic: row.get("topic"),
-            downstream_url: row.get("downstream_url"),
-        };
-        sqlx::query("UPDATE consumers SET last_attempt_at = ? WHERE id = ?")
-            .bind(Utc::now().to_rfc3339())
-            .bind(&consumer.id)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        Ok(Some(consumer))
     }
 
     pub async fn purge_stale_consumers(&self, cutoff: &str) -> anyhow::Result<u64> {
@@ -380,50 +329,82 @@ impl Database {
         Ok(result.rows_affected())
     }
 
-    pub async fn claim_next(
+    pub async fn claim_next_for_topic(
+        &self,
+        topic: &str,
+        visibility: Duration,
+    ) -> anyhow::Result<Option<ClaimedMessage>> {
+        self.claim_ready(
+            visibility,
+            "SELECT id, topic, payload, attributes, created_at FROM messages
+             WHERE status = 'pending' AND next_attempt_at <= ? AND topic = ?
+             ORDER BY created_at LIMIT 1",
+            Some(topic),
+        )
+        .await
+    }
+
+    pub async fn claim_next_excluding(
         &self,
         visibility: Duration,
-        consumer_seen_after: Option<&str>,
-        allow_without_consumer: bool,
+        skip_topics: &[String],
+    ) -> anyhow::Result<Option<ClaimedMessage>> {
+        if skip_topics.is_empty() {
+            return self
+                .claim_ready(
+                    visibility,
+                    "SELECT id, topic, payload, attributes, created_at FROM messages
+                     WHERE status = 'pending' AND next_attempt_at <= ?
+                     ORDER BY created_at LIMIT 1",
+                    None,
+                )
+                .await;
+        }
+        let placeholders = std::iter::repeat_n("?", skip_topics.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, topic, payload, attributes, created_at FROM messages
+             WHERE status = 'pending' AND next_attempt_at <= ?
+               AND topic NOT IN ({placeholders})
+             ORDER BY created_at LIMIT 1"
+        );
+        let _ = self.reclaim_stale().await;
+        let mut tx = self.0.begin().await?;
+        let now = Utc::now();
+        let now_text = now.to_rfc3339();
+        let mut query = sqlx::query(&sql).bind(&now_text);
+        for topic in skip_topics {
+            query = query.bind(topic);
+        }
+        let row = query.fetch_optional(&mut *tx).await?;
+        Self::finish_claim(tx, now, visibility, row).await
+    }
+
+    async fn claim_ready(
+        &self,
+        visibility: Duration,
+        sql: &str,
+        topic: Option<&str>,
     ) -> anyhow::Result<Option<ClaimedMessage>> {
         let _ = self.reclaim_stale().await;
         let mut tx = self.0.begin().await?;
         let now = Utc::now();
         let now_text = now.to_rfc3339();
-        let row = if allow_without_consumer {
-            sqlx::query(
-                "SELECT id, topic, payload, attributes, created_at FROM messages
-                 WHERE status = 'pending' AND next_attempt_at <= ?
-                 ORDER BY created_at LIMIT 1",
-            )
-                .bind(&now_text)
-                .fetch_optional(&mut *tx)
-                .await?
-        } else if let Some(cutoff) = consumer_seen_after {
-            sqlx::query(
-                "SELECT id, topic, payload, attributes, created_at FROM messages
-                 WHERE status = 'pending' AND next_attempt_at <= ?
-                   AND EXISTS (
-                       SELECT 1 FROM consumers
-                       WHERE consumers.topic = messages.topic AND consumers.last_seen_at >= ?
-                   )
-                 ORDER BY created_at LIMIT 1",
-            )
-                .bind(&now_text)
-                .bind(cutoff)
-                .fetch_optional(&mut *tx)
-                .await?
-        } else {
-            sqlx::query(
-                "SELECT id, topic, payload, attributes, created_at FROM messages
-                 WHERE status = 'pending' AND next_attempt_at <= ?
-                   AND EXISTS (SELECT 1 FROM consumers WHERE consumers.topic = messages.topic)
-                 ORDER BY created_at LIMIT 1",
-            )
-                .bind(&now_text)
-                .fetch_optional(&mut *tx)
-                .await?
-        };
+        let mut query = sqlx::query(sql).bind(&now_text);
+        if let Some(topic) = topic {
+            query = query.bind(topic);
+        }
+        let row = query.fetch_optional(&mut *tx).await?;
+        Self::finish_claim(tx, now, visibility, row).await
+    }
+
+    async fn finish_claim(
+        mut tx: sqlx::Transaction<'_, sqlx::Sqlite>,
+        now: chrono::DateTime<Utc>,
+        visibility: Duration,
+        row: Option<sqlx::sqlite::SqliteRow>,
+    ) -> anyhow::Result<Option<ClaimedMessage>> {
         let Some(row) = row else {
             tx.commit().await?;
             return Ok(None);
@@ -528,4 +509,45 @@ impl Database {
             .await?;
         Ok(result.rows_affected())
     }
+}
+
+async fn migrate_consumers(pool: &SqlitePool) -> anyhow::Result<()> {
+    let columns: Vec<String> = sqlx::query("PRAGMA table_info(consumers)")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    if columns.iter().any(|name| name == "name") && !columns.iter().any(|name| name == "downstream_url") {
+        return Ok(());
+    }
+    if !columns.iter().any(|name| name == "downstream_url") {
+        return Ok(());
+    }
+    sqlx::query(
+        "CREATE TABLE consumers_new (
+            id TEXT PRIMARY KEY NOT NULL,
+            topic TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            attributes TEXT NOT NULL DEFAULT '{}',
+            last_seen_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO consumers_new (id, topic, name, attributes, last_seen_at, created_at)
+         SELECT id, topic, '', '{}', last_seen_at, created_at FROM consumers",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("DROP TABLE consumers").execute(pool).await?;
+    sqlx::query("ALTER TABLE consumers_new RENAME TO consumers")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_consumers_topic_seen ON consumers(topic, last_seen_at)")
+        .execute(pool)
+        .await?;
+    Ok(())
 }

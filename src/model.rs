@@ -10,18 +10,10 @@ pub struct ClaimedMessage {
     pub lease: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct Consumer {
-    pub id: String,
-    #[allow(dead_code)]
-    pub topic: String,
-    pub downstream_url: String,
-}
-
 #[derive(Debug, Serialize, Clone)]
 pub struct ConsumerSnapshot {
     pub id: String,
-    pub downstream_url: String,
+    pub name: String,
     pub last_seen_at: String,
     pub live: bool,
 }
@@ -35,6 +27,8 @@ pub struct TopicSnapshot {
     pub processing: i64,
     pub delivered: i64,
     pub failed: i64,
+    #[serde(default)]
+    pub streams: usize,
     pub consumers: Vec<ConsumerSnapshot>,
 }
 

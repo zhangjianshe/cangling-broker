@@ -7,16 +7,21 @@ option java_package = "cn.mapway.message.proto";
 option java_outer_classname = "QueueProto";
 
 service MessageQueue {
-  // AcceptMessage returns only after the message is durably committed to SQLite.
-  rpc AcceptMessage(AcceptMessageRequest) returns (AcceptMessageResponse);
+  // Client streams publishes; server streams one response per request after SQLite commit.
+  rpc AcceptMessages(stream AcceptMessageRequest) returns (stream AcceptMessageResponse);
 
-  // Register a downstream HTTP URL for a topic. Call again with the returned
-  // consumer_id to refresh liveness. Multiple consumers on one topic compete:
-  // each message is POSTed to exactly one registered URL.
+  // Optional metadata about a consumer. Delivery is on Subscribe, not this call.
   rpc Register(RegisterRequest) returns (RegisterResponse);
 
-  // Unregister stops delivery to this consumer.
+  // Unregister drops stored consumer metadata.
   rpc Unregister(UnregisterRequest) returns (UnregisterResponse);
+
+  // Open a consume stream. Multiple subscribers on one topic compete:
+  // each message is sent to exactly one of them.
+  rpc Subscribe(SubscribeRequest) returns (stream QueueMessage);
+
+  // Confirm or reject a message received from Subscribe.
+  rpc AckMessage(AckMessageRequest) returns (AckMessageResponse);
 }
 
 message AcceptMessageRequest {
@@ -34,10 +39,11 @@ message AcceptMessageResponse {
 
 message RegisterRequest {
   string topic = 1;
-  // Broker POSTs the delivery JSON to this URL.
-  string downstream_url = 2;
   // Optional. Pass the id from a previous Register to refresh the same consumer.
-  string consumer_id = 3;
+  string consumer_id = 2;
+  // Display name and extra attributes. Not used for delivery.
+  string name = 3;
+  map<string, string> attributes = 4;
 }
 
 message RegisterResponse {
@@ -49,3 +55,29 @@ message UnregisterRequest {
 }
 
 message UnregisterResponse {}
+
+message SubscribeRequest {
+  string topic = 1;
+  // Optional. Links this stream to a Register() consumer_id.
+  string consumer_id = 2;
+}
+
+message QueueMessage {
+  string message_id = 1;
+  string topic = 2;
+  bytes payload = 3;
+  map<string, string> attributes = 4;
+  string created_at = 5;
+  string lease = 6;
+}
+
+message AckMessageRequest {
+  string message_id = 1;
+  string lease = 2;
+  bool success = 3;
+  string error = 4;
+}
+
+message AckMessageResponse {
+  bool accepted = 1;
+}

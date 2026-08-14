@@ -17,7 +17,7 @@ pub struct Config {
     #[arg(long, env = "DATABASE_URL", default_value = "sqlite:./queue.db")]
     pub database_url: String,
 
-    /// Optional static HTTP endpoint used when a topic has no registered consumer.
+    /// Optional HTTP fallback used only when a topic has no live gRPC Subscribe stream.
     #[arg(long, env = "DOWNSTREAM_URL")]
     pub downstream_url: Option<String>,
 

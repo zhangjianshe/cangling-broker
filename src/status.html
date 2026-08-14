@@ -112,7 +112,7 @@
           ? '<span class="pill live">在线</span>'
           : '<span class="pill stale">离线</span>';
         return '<div class="consumer">' + pill +
-          ' <span class="url">' + escapeHtml(c.downstream_url) + "</span>" +
+          ' <span class="url">' + escapeHtml(c.name || "(未命名)") + "</span>" +
           "<br>编号 " + escapeHtml(c.id) +
           " · 最近心跳 " + escapeHtml(c.last_seen_at) + "</div>";
       }).join("");
@@ -132,7 +132,7 @@
         new Date().toLocaleTimeString();
       $("cards").innerHTML =
         card("主题数", data.topics) +
-        card("在线消费者", data.consumers) +
+        card("在线流", data.consumers) +
         card("已接收", data.accepted) +
         card("待处理", data.pending, data.pending ? "pending" : "") +
         card("投递中", data.processing) +
@@ -148,7 +148,7 @@
       $("topics").innerHTML =
         "<table><thead><tr>" +
         "<th>主题</th><th>已接收</th><th>待处理</th><th>投递中</th>" +
-        "<th>已投递</th><th>失败</th><th>重复</th><th>消费者</th>" +
+        "<th>已投递</th><th>失败</th><th>重复</th><th>在线流</th><th>消费者</th>" +
         "</tr></thead><tbody>" +
         topics.map((t) =>
           "<tr><td>" + escapeHtml(t.name) + "</td>" +
@@ -158,6 +158,7 @@
           "<td>" + t.delivered + "</td>" +
           '<td class="' + (t.failed ? "fail" : "") + '">' + t.failed + "</td>" +
           "<td>" + t.duplicates + "</td>" +
+          "<td>" + (t.streams || 0) + "</td>" +
           "<td>" + consumersHtml(t.consumers) + "</td></tr>"
         ).join("") +
         "</tbody></table>";

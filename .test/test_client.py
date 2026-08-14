@@ -3,7 +3,7 @@ import sys
 import time
 
 import grpc
-from proto.queue_pb2 import AcceptMessageRequest, AcceptMessageResponse
+from proto.queue_pb2 import AcceptMessageRequest
 from proto.queue_pb2_grpc import MessageQueueStub
 
 
@@ -22,10 +22,16 @@ class TestClient:
             payload=payload.encode("utf-8") if isinstance(payload, str) else payload,
             attributes=attributes,
         )
+
+        def requests():
+            yield request
+
         try:
-            response: AcceptMessageResponse = self.stub.AcceptMessage(request, timeout=5)
-            print(f"Success | ID: {response.message_id} | Duplicate: {response.duplicate}")
-            return response.message_id
+            for response in self.stub.AcceptMessages(requests(), timeout=5):
+                print(f"Success | ID: {response.message_id} | Duplicate: {response.duplicate}")
+                return response.message_id
+            print("gRPC error: empty publish stream")
+            return None
         except grpc.RpcError as e:
             print(f"gRPC error: {e.code()} - {e.details()}")
             return None

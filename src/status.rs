@@ -4,11 +4,12 @@ use axum::{extract::State, http::StatusCode, response::Html, routing::get, Json,
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
-use crate::{config::Config, db::Database, model::TopicSnapshot};
+use crate::{config::Config, db::Database, model::TopicSnapshot, subscribers::TopicSubscribers};
 
 #[derive(Clone)]
 struct StatusState {
     db: Database,
+    subscribers: TopicSubscribers,
     consumer_ttl_secs: u64,
     started: Instant,
 }
@@ -44,10 +45,12 @@ pub async fn serve(
     listener: tokio::net::TcpListener,
     db: Database,
     config: std::sync::Arc<Config>,
+    subscribers: TopicSubscribers,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     let state = StatusState {
         db,
+        subscribers,
         consumer_ttl_secs: config.consumer_ttl_secs,
         started: Instant::now(),
     };
@@ -74,15 +77,20 @@ async fn health() -> Json<Health> {
 
 async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, StatusCode> {
     let cutoff = consumer_cutoff(state.consumer_ttl_secs);
-    let topics_detail = state
+    let mut topics_detail = state
         .db
         .status_snapshot(cutoff.as_deref())
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let consumers = topics_detail
-        .iter()
-        .map(|topic| topic.consumers.iter().filter(|consumer| consumer.live).count())
-        .sum();
+    for topic in &mut topics_detail {
+        topic.streams = state.subscribers.count(&topic.name);
+        for consumer in &mut topic.consumers {
+            if state.subscribers.is_live(&topic.name, &consumer.id) {
+                consumer.live = true;
+            }
+        }
+    }
+    let consumers = topics_detail.iter().map(|topic| topic.streams).sum();
     Ok(Json(BrokerStatus {
         uptime_secs: state.started.elapsed().as_secs(),
         topics: topics_detail.len(),

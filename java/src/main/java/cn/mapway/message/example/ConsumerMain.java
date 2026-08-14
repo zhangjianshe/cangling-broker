@@ -7,22 +7,13 @@ public final class ConsumerMain {
     public static void main(String[] args) throws Exception {
         String broker = arg(args, "--broker", "127.0.0.1:7500");
         String topic = arg(args, "--topic", "cangling-test");
-        String listen = arg(args, "--listen", "127.0.0.1:8080");
-        String callback = arg(args, "--callback-url", "");
-        int colon = listen.lastIndexOf(':');
-        if (colon <= 0) {
-            throw new IllegalArgumentException("--listen must be host:port");
-        }
-        String host = listen.substring(0, colon);
-        int port = Integer.parseInt(listen.substring(colon + 1));
-        SubscribeOptions.Builder options = SubscribeOptions.topic(topic).listen(host, port);
-        if (!callback.isBlank()) {
-            options.callbackUrl(callback);
-        }
+        String name = arg(args, "--name", "java-consumer");
         try (MessageClient client = MessageClient.connect(broker);
-             var consumer = client.subscribe(options.build(), message ->
-                     System.out.println("received | " + message.id() + " | " + message.topic() + " | " + message.payload()))) {
-            System.out.println("subscribed consumer_id=" + consumer.consumerId() + " callback=" + consumer.callbackUrl());
+             var consumer = client.subscribe(
+                     SubscribeOptions.topic(topic).name(name).build(),
+                     message -> System.out.println(
+                             "received | " + message.id() + " | " + message.topic() + " | " + message.payload()))) {
+            System.out.println("subscribed consumer_id=" + consumer.consumerId());
             System.out.println("Press Ctrl+C to stop.");
             Thread main = Thread.currentThread();
             Runtime.getRuntime().addShutdownHook(new Thread(main::interrupt));

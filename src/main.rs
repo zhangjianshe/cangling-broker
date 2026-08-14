@@ -2,63 +2,114 @@ mod config;
 mod db;
 mod model;
 mod status;
+mod subscribers;
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 
 use clap::Parser;
 use config::Config;
 use db::Database;
+use subscribers::{InflightAcks, SubscriptionGuard, TopicSubscribers};
+use tokio::sync::mpsc;
+use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tokio_util::sync::CancellationToken;
-use tonic::{transport::Server, Request, Response, Status};
+use tonic::{transport::Server, Request, Response, Status, Streaming};
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 pub mod proto {
     tonic::include_proto!("dispatcher.v1");
 }
 use proto::{
     message_queue_server::{MessageQueue, MessageQueueServer},
-    AcceptMessageRequest, AcceptMessageResponse, RegisterRequest, RegisterResponse, UnregisterRequest,
-    UnregisterResponse,
+    AcceptMessageRequest, AcceptMessageResponse, AckMessageRequest, AckMessageResponse, QueueMessage,
+    RegisterRequest, RegisterResponse, SubscribeRequest, UnregisterRequest, UnregisterResponse,
 };
 
 #[derive(Clone)]
 struct QueueService {
     db: Database,
+    config: Arc<Config>,
+    subscribers: TopicSubscribers,
+    inflight: InflightAcks,
 }
 
-fn valid_downstream_url(url: &str) -> bool {
-    reqwest::Url::parse(url)
-        .ok()
-        .is_some_and(|parsed| matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some())
+type ResponseStream<T> = Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Send>>;
+
+fn attrs_to_map(value: &serde_json::Value) -> HashMap<String, String> {
+    value
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .filter_map(|(key, item)| item.as_str().map(|text| (key.clone(), text.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[tonic::async_trait]
 impl MessageQueue for QueueService {
-    async fn accept_message(
+    type AcceptMessagesStream = ResponseStream<AcceptMessageResponse>;
+    type SubscribeStream = ResponseStream<QueueMessage>;
+
+    async fn accept_messages(
         &self,
-        request: Request<AcceptMessageRequest>,
-    ) -> Result<Response<AcceptMessageResponse>, Status> {
-        let message = request.into_inner();
-        if message.topic.trim().is_empty() {
-            return Err(Status::invalid_argument("topic is required"));
-        }
-        if message.payload.is_empty() {
-            return Err(Status::invalid_argument("payload is required"));
-        }
-        let (message_id, duplicate) = self
-            .db
-            .enqueue(
-                Some(&message.idempotency_key),
-                &message.topic,
-                &message.payload,
-                message.attributes,
-            )
-            .await
-            .map_err(|error| {
-                error!(%error, "queue write failed");
-                Status::internal("could not persist message")
-            })?;
-        Ok(Response::new(AcceptMessageResponse { message_id, duplicate }))
+        request: Request<Streaming<AcceptMessageRequest>>,
+    ) -> Result<Response<Self::AcceptMessagesStream>, Status> {
+        let mut inbound = request.into_inner();
+        let (tx, rx) = mpsc::channel(16);
+        let db = self.db.clone();
+        tokio::spawn(async move {
+            while let Some(message) = inbound.next().await {
+                let message = match message {
+                    Ok(message) => message,
+                    Err(error) => {
+                        let _ = tx.send(Err(error)).await;
+                        break;
+                    }
+                };
+                if message.topic.trim().is_empty() {
+                    let _ = tx
+                        .send(Err(Status::invalid_argument("topic is required")))
+                        .await;
+                    continue;
+                }
+                if message.payload.is_empty() {
+                    let _ = tx
+                        .send(Err(Status::invalid_argument("payload is required")))
+                        .await;
+                    continue;
+                }
+                match db
+                    .enqueue(
+                        Some(&message.idempotency_key),
+                        &message.topic,
+                        &message.payload,
+                        message.attributes,
+                    )
+                    .await
+                {
+                    Ok((message_id, duplicate)) => {
+                        if tx
+                            .send(Ok(AcceptMessageResponse { message_id, duplicate }))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        error!(%error, "queue write failed");
+                        let _ = tx
+                            .send(Err(Status::internal("could not persist message")))
+                            .await;
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 
     async fn register(
@@ -69,22 +120,20 @@ impl MessageQueue for QueueService {
         if request.topic.trim().is_empty() {
             return Err(Status::invalid_argument("topic is required"));
         }
-        if !valid_downstream_url(&request.downstream_url) {
-            return Err(Status::invalid_argument("downstream_url must be an http(s) URL"));
-        }
         let consumer_id = self
             .db
             .register_consumer(
                 Some(&request.consumer_id),
                 request.topic.trim(),
-                request.downstream_url.trim(),
+                request.name.trim(),
+                &request.attributes,
             )
             .await
             .map_err(|error| {
                 error!(%error, "consumer register failed");
                 Status::internal("could not register consumer")
             })?;
-        info!(%consumer_id, topic = %request.topic, url = %request.downstream_url, "consumer registered");
+        info!(%consumer_id, topic = %request.topic, name = %request.name, "consumer metadata registered");
         Ok(Response::new(RegisterResponse { consumer_id }))
     }
 
@@ -109,6 +158,124 @@ impl MessageQueue for QueueService {
         }
         Ok(Response::new(UnregisterResponse {}))
     }
+
+    async fn subscribe(
+        &self,
+        request: Request<SubscribeRequest>,
+    ) -> Result<Response<Self::SubscribeStream>, Status> {
+        let request = request.into_inner();
+        if request.topic.trim().is_empty() {
+            return Err(Status::invalid_argument("topic is required"));
+        }
+        let topic = request.topic.trim().to_string();
+        let consumer_id = request.consumer_id.trim().to_string();
+        if !consumer_id.is_empty() {
+            let _ = self.db.touch_consumer(&consumer_id).await;
+        }
+        let session = if consumer_id.is_empty() {
+            Uuid::new_v4().to_string()
+        } else {
+            consumer_id.clone()
+        };
+        let (tx, rx) = mpsc::channel(1);
+        let db = self.db.clone();
+        let inflight = self.inflight.clone();
+        let subscribers = self.subscribers.clone();
+        let config = self.config.clone();
+        tokio::spawn(async move {
+            let _guard = SubscriptionGuard::new(subscribers, topic.clone(), session);
+            info!(topic = %topic, consumer_id = %consumer_id, "subscriber connected");
+            let visibility = Duration::from_secs(config.ack_timeout_secs.max(1));
+            loop {
+                let claimed = match db.claim_next_for_topic(&topic, visibility).await {
+                    Ok(claimed) => claimed,
+                    Err(error) => {
+                        error!(%error, topic = %topic, "unable to claim queue message for subscriber");
+                        tokio::time::sleep(Duration::from_millis(config.worker_poll_ms)).await;
+                        continue;
+                    }
+                };
+                let Some(message) = claimed else {
+                    tokio::time::sleep(Duration::from_millis(config.worker_poll_ms)).await;
+                    if !consumer_id.is_empty() {
+                        let _ = db.touch_consumer(&consumer_id).await;
+                    }
+                    continue;
+                };
+                let ack = inflight.register(message.id.clone(), message.lease.clone());
+                let outgoing = QueueMessage {
+                    message_id: message.id.clone(),
+                    topic: message.topic.clone(),
+                    payload: message.payload,
+                    attributes: attrs_to_map(&message.attributes),
+                    created_at: message.created_at,
+                    lease: message.lease.clone(),
+                };
+                if tx.send(Ok(outgoing)).await.is_err() {
+                    inflight.cancel(&message.id);
+                    let _ = db
+                        .failed(
+                            &message.id,
+                            &message.lease,
+                            "subscriber disconnected",
+                            config.max_delivery_attempts,
+                        )
+                        .await;
+                    break;
+                }
+                match tokio::time::timeout(visibility, ack).await {
+                    Ok(Ok(decision)) if decision.success => {
+                        if let Err(error) = db.delivered(&message.id, &message.lease).await {
+                            error!(%error, "could not mark delivery");
+                        } else {
+                            info!(id = %message.id, topic = %topic, "message delivered to subscriber");
+                        }
+                    }
+                    Ok(Ok(decision)) => {
+                        let _ = db
+                            .failed(
+                                &message.id,
+                                &message.lease,
+                                if decision.error.is_empty() {
+                                    "nack"
+                                } else {
+                                    &decision.error
+                                },
+                                config.max_delivery_attempts,
+                            )
+                            .await;
+                    }
+                    Ok(Err(_)) | Err(_) => {
+                        inflight.cancel(&message.id);
+                        let _ = db
+                            .failed(
+                                &message.id,
+                                &message.lease,
+                                "ack timeout or subscriber gone",
+                                config.max_delivery_attempts,
+                            )
+                            .await;
+                    }
+                }
+            }
+            info!(topic = %topic, "subscriber disconnected");
+        });
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+
+    async fn ack_message(
+        &self,
+        request: Request<AckMessageRequest>,
+    ) -> Result<Response<AckMessageResponse>, Status> {
+        let ack = request.into_inner();
+        if ack.message_id.is_empty() || ack.lease.is_empty() {
+            return Err(Status::invalid_argument("message_id and lease are required"));
+        }
+        let accepted = self
+            .inflight
+            .complete(&ack.message_id, &ack.lease, ack.success, ack.error);
+        Ok(Response::new(AckMessageResponse { accepted }))
+    }
 }
 
 #[tokio::main]
@@ -117,20 +284,33 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config::parse());
     let db = Database::connect(&config.database_url).await?;
     let shutdown = CancellationToken::new();
+    let subscribers = TopicSubscribers::default();
+    let inflight = InflightAcks::default();
     let status_listener = tokio::net::TcpListener::bind(config.status_listen_addr).await?;
     info!(address = %config.status_listen_addr, "HTTP status listening");
     let status = tokio::spawn(status::serve(
         status_listener,
         db.clone(),
         config.clone(),
+        subscribers.clone(),
         shutdown.clone(),
     ));
-    let worker = tokio::spawn(dispatch_loop(db.clone(), config.clone(), shutdown.clone()));
+    let worker = tokio::spawn(dispatch_loop(
+        db.clone(),
+        config.clone(),
+        subscribers.clone(),
+        shutdown.clone(),
+    ));
     let cleaner = tokio::spawn(retention_loop(db.clone(), config.clone(), shutdown.clone()));
     let address = config.grpc_listen_addr;
     info!(%address, "gRPC intake service listening");
     Server::builder()
-        .add_service(MessageQueueServer::new(QueueService { db }))
+        .add_service(MessageQueueServer::new(QueueService {
+            db,
+            config,
+            subscribers,
+            inflight,
+        }))
         .serve_with_shutdown(address, async move {
             let _ = tokio::signal::ctrl_c().await;
             shutdown.cancel();
@@ -150,7 +330,16 @@ fn consumer_cutoff(ttl_secs: u64) -> Option<String> {
     }
 }
 
-async fn dispatch_loop(db: Database, config: Arc<Config>, shutdown: CancellationToken) {
+async fn dispatch_loop(
+    db: Database,
+    config: Arc<Config>,
+    subscribers: TopicSubscribers,
+    shutdown: CancellationToken,
+) {
+    let Some(fallback) = config.downstream_url.clone() else {
+        shutdown.cancelled().await;
+        return;
+    };
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(config.ack_timeout_secs.max(1)))
         .build()
@@ -161,12 +350,8 @@ async fn dispatch_loop(db: Database, config: Arc<Config>, shutdown: Cancellation
             _ = shutdown.cancelled() => break,
             _ = tokio::time::sleep(Duration::from_millis(config.worker_poll_ms)) => {}
         }
-        let cutoff = consumer_cutoff(config.consumer_ttl_secs);
-        let allow_without_consumer = config.downstream_url.is_some();
-        let Some(message) = (match db
-            .claim_next(visibility, cutoff.as_deref(), allow_without_consumer)
-            .await
-        {
+        let skip = subscribers.topics();
+        let Some(message) = (match db.claim_next_excluding(visibility, &skip).await {
             Ok(message) => message,
             Err(error) => {
                 error!(%error, "unable to claim queue message");
@@ -175,51 +360,21 @@ async fn dispatch_loop(db: Database, config: Arc<Config>, shutdown: Cancellation
         }) else {
             continue;
         };
-        let destination = match db.pick_consumer(&message.topic, cutoff.as_deref()).await {
-            Ok(Some(consumer)) => consumer.downstream_url,
-            Ok(None) => match &config.downstream_url {
-                Some(url) => url.clone(),
-                None => {
-                    warn!(id = %message.id, topic = %message.topic, "no consumer registered; retrying later");
-                    let _ = db
-                        .failed(
-                            &message.id,
-                            &message.lease,
-                            "no consumer registered",
-                            config.max_delivery_attempts,
-                        )
-                        .await;
-                    continue;
-                }
-            },
-            Err(error) => {
-                error!(%error, id = %message.id, "unable to pick consumer");
-                let _ = db
-                    .failed(
-                        &message.id,
-                        &message.lease,
-                        "unable to pick consumer",
-                        config.max_delivery_attempts,
-                    )
-                    .await;
-                continue;
-            }
-        };
         match client
-            .post(&destination)
+            .post(&fallback)
             .json(&message.to_downstream())
             .send()
             .await
             .and_then(|response| response.error_for_status())
         {
             Ok(_) => {
-                info!(id = %message.id, topic = %message.topic, url = %destination, "message delivered");
+                info!(id = %message.id, topic = %message.topic, url = %fallback, "message delivered");
                 if let Err(error) = db.delivered(&message.id, &message.lease).await {
                     error!(%error, "could not mark delivery");
                 }
             }
             Err(error) => {
-                warn!(id = %message.id, url = %destination, %error, "message delivery failed");
+                warn!(id = %message.id, url = %fallback, %error, "message delivery failed");
                 let _ = db
                     .failed(
                         &message.id,

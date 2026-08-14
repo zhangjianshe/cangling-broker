@@ -1,28 +1,27 @@
 # cangling-message
 
-A small, Kafka-like building block: gRPC clients submit a message; the service commits it to SQLite first; then the broker POSTs it to **one** registered downstream URL.
+A small, Kafka-like building block. Producers and consumers both use **gRPC streams**. The service commits each publish to SQLite first, then sends it on **one** consumer stream.
 
-Topics are work queues, not broadcast. If several clients `Register` on the same topic, each message is delivered to exactly one of them. `DOWNSTREAM_URL` is used only for topics that currently have no registered consumer.
+Topics are work queues, not broadcast. `Register` only stores extra consumer metadata (name, attributes). Delivery is the `Subscribe` stream. `DOWNSTREAM_URL` is an optional HTTP fallback for topics that currently have no live stream.
 
 ## Run it
 
 ```bash
-# Terminal 1: a sample downstream application that registers its HTTP URL
-cargo run --example receiver
+# Terminal 1: broker
+DATABASE_URL=sqlite:./queue.db cargo run
 
-# Terminal 2: the durable gRPC queue
-DATABASE_URL=sqlite:./queue.db \
-cargo run
+# Terminal 2: consume on a gRPC stream
+cargo run --example receiver
 ```
 
 ### Docker: start the broker, then subscribe and consume
 
-`--network host` lets the broker POST back to a consumer on the same machine.
+The client dials out over gRPC, so port publish is enough:
 
 ```bash
 # Terminal 1 — broker
 docker run --rm --name cangling-message \
-  --network host \
+  -p 7500:7500 -p 7501:7501 \
   -v cangling-data:/data \
   docker.io/mapway/cangling-message:latest
 ```
@@ -31,23 +30,22 @@ Harbor:
 
 ```bash
 docker run --rm --name cangling-message \
-  --network host \
+  -p 7500:7500 -p 7501:7501 \
   -v cangling-data:/data \
   harbor.cangling.cn:22002/cangling/cangling-message:latest
 ```
 
 ```bash
-# Terminal 2 — subscribe / consume (registers an HTTP callback, then prints each message)
+# Terminal 2 — subscribe / consume (Register metadata, then Subscribe stream)
 cd .test
 ../.venv/bin/python test_subscriber.py \
   --broker 127.0.0.1:7500 \
   --topic cangling-test \
-  --listen 127.0.0.1:8080 \
   --name s0
 ```
 
 ```bash
-# Terminal 3 — publish one message
+# Terminal 3 — publish one message on AcceptMessages stream
 cd .test
 ../.venv/bin/python test_client.py \
   --broker 127.0.0.1:7500 \
@@ -56,39 +54,19 @@ cd .test
   --count 1
 ```
 
-The subscriber should print `s0 received | {"id": "...", "topic": "cangling-test", "payload": "hello", ...}`. Status UI: [http://127.0.0.1:7501/](http://127.0.0.1:7501/).
+The subscriber should print `s0 received | <message_id> | hello`. Status UI: [http://127.0.0.1:7501/](http://127.0.0.1:7501/).
 
-Rust consumer instead of Python:
+Rust consumer:
 
 ```bash
 cargo run --example receiver -- --broker-addr http://127.0.0.1:7500 --topic cangling-test
-```
-
-If you publish ports instead of `--network host`, the broker cannot use `127.0.0.1` as the callback (that is inside the container). Bind the consumer on all interfaces and give a host URL:
-
-```bash
-# Terminal 1
-docker run --rm --name cangling-message \
-  -p 7500:7500 -p 7501:7501 \
-  --add-host=host.docker.internal:host-gateway \
-  -v cangling-data:/data \
-  docker.io/mapway/cangling-message:latest
-
-# Terminal 2
-cd .test
-../.venv/bin/python test_subscriber.py \
-  --broker 127.0.0.1:7500 \
-  --topic cangling-test \
-  --listen 0.0.0.0:8080 \
-  --callback-url http://host.docker.internal:8080/messages \
-  --name s0
 ```
 
 The image listens on `7500` (gRPC) and `7501` (status) and stores SQLite under `/data`.
 
 ### Java client (`cn.mapway.message`)
 
-Maven module in [`java/`](java/). It produces with `AcceptMessage` and consumes by registering an HTTP callback.
+Maven module in [`java/`](java/). Produce on `AcceptMessages`, consume on `Subscribe`. `Register` is optional metadata.
 
 ```bash
 cd java
@@ -99,7 +77,7 @@ mvn -q package
 # consume
 mvn -q exec:java \
   -Dexec.mainClass=cn.mapway.message.example.ConsumerMain \
-  -Dexec.args="--broker 127.0.0.1:7500 --topic cangling-test --listen 127.0.0.1:8080"
+  -Dexec.args="--broker 127.0.0.1:7500 --topic cangling-test --name java-s0"
 
 # produce
 mvn -q exec:java \
@@ -112,12 +90,13 @@ In your own code:
 ```java
 import cn.mapway.message.Consumer;
 import cn.mapway.message.MessageClient;
+import cn.mapway.message.SubscribeOptions;
 
 try (MessageClient client = MessageClient.connect("127.0.0.1:7500")) {
     client.send("cangling-test", "hello");
-    try (Consumer consumer = client.subscribe("cangling-test", "127.0.0.1", 8080, message -> {
-        System.out.println(message.id() + " " + message.payload());
-    })) {
+    try (Consumer consumer = client.subscribe(
+            SubscribeOptions.topic("cangling-test").name("worker-1").build(),
+            message -> System.out.println(message.id() + " " + message.payload()))) {
         Thread.currentThread().join();
     }
 }
@@ -157,38 +136,38 @@ curl -s http://127.0.0.1:7501/health
 curl -s http://127.0.0.1:7501/status
 ```
 
-`/` is a single HTML page that refreshes from `/status`. `/status` is the JSON. There are no long-lived gRPC subscriber streams; `consumers` is the number of live registered HTTP receivers.
+`/` is a single HTML page that refreshes from `/status`. `/status` is the JSON. `consumers` / `streams` is the number of live `Subscribe` streams.
 
 ### Competing consumers
 
 ```bash
-# Two workers on the same topic — each message is POSTed to only one of them
+# Two workers on the same topic — each message is sent on only one Subscribe stream
 cd .test
-../.venv/bin/python test_subscriber.py --topic cangling-test --listen 127.0.0.1:8080 --name s0
-../.venv/bin/python test_subscriber.py --topic cangling-test --listen 127.0.0.1:8081 --name s1
+../.venv/bin/python test_subscriber.py --topic cangling-test --name s0
+../.venv/bin/python test_subscriber.py --topic cangling-test --name s1
 
 # Publish
 ../.venv/bin/python test_client.py --text hello --count 1
 ```
 
-A consumer must keep calling `Register` (heartbeat). `Unregister`, a missed heartbeat (`CONSUMER_TTL_SECS`), or a non-2xx POST puts the message back on the queue for another client. Use `id` to make handling idempotent; delivery is at-least-once.
+Each message is claimed by one live stream. If that subscriber disconnects or does not `AckMessage` before `ACK_TIMEOUT_SECS`, the message goes back on the queue for another client. `Register` is optional metadata; use `message_id` to make handling idempotent. Delivery is at-least-once.
 
 ## Delivery contract
 
-The downstream receiver gets one JSON POST per message:
+The consumer receives one `QueueMessage` on the `Subscribe` stream:
 
 ```json
 {
-  "id": "uuid",
+  "message_id": "uuid",
   "topic": "hazard-detection",
   "payload": "...",
-  "payload_encoding": "utf-8",
   "attributes": { "projectId": "p-123" },
-  "created_at": "2026-08-14T00:00:00Z"
+  "created_at": "2026-08-14T00:00:00Z",
+  "lease": "claim-token"
 }
 ```
 
-Any 2xx response acknowledges delivery. This provides **at-least-once delivery**: receivers should use `id` to make handling idempotent. Pass an `idempotency_key` to `AcceptMessage` to make client retries safe.
+Call `AckMessage` with that `message_id` and `lease`. `success = true` marks the message delivered; `success = false` or a timeout requeues it. This is **at-least-once delivery**: receivers should use `message_id` to make handling idempotent. Pass an `idempotency_key` on `AcceptMessages` to make producer retries safe.
 
 ## Configuration
 
@@ -197,12 +176,12 @@ Any 2xx response acknowledges delivery. This provides **at-least-once delivery**
 | `GRPC_LISTEN_ADDR` | `0.0.0.0:7500` | gRPC listener |
 | `STATUS_LISTEN_ADDR` | `0.0.0.0:7501` | HTTP status (`GET /`, `GET /status`, `GET /health`) |
 | `DATABASE_URL` | `sqlite:./queue.db` | SQLite connection URL |
-| `DOWNSTREAM_URL` | unset | fallback HTTP POST receiver when a topic has no registered consumer |
+| `DOWNSTREAM_URL` | unset | optional HTTP POST fallback when a topic has no live `Subscribe` stream |
 | `WORKER_POLL_MS` | `500` | queue polling interval |
 | `MAX_DELIVERY_ATTEMPTS` | `10` | attempts before a message is marked failed |
 | `MESSAGE_RETENTION_DAYS` | `10` | delete messages older than this; `0` keeps them forever |
-| `ACK_TIMEOUT_SECS` | `30` | how long an HTTP delivery may take before the message is retried |
-| `CONSUMER_TTL_SECS` | `60` | drop a consumer that does not `Register` again; `0` keeps it until `Unregister` |
+| `ACK_TIMEOUT_SECS` | `30` | how long a subscriber may take to `AckMessage` before the message is retried |
+| `CONSUMER_TTL_SECS` | `60` | drop registered consumer metadata that is not seen again; `0` keeps it until `Unregister` |
 
 ## 数据库 ER
 
@@ -239,11 +218,11 @@ erDiagram
     consumers {
         TEXT id PK "consumer_id"
         TEXT topic FK "订阅主题"
-        TEXT downstream_url "回调 URL"
+        TEXT name "显示名"
+        TEXT attributes "JSON 属性"
         TEXT last_seen_at "最近心跳"
-        TEXT last_attempt_at "最近被选中投递"
         TEXT created_at "首次注册"
     }
 ```
 
-`consumers` 还有 `UNIQUE(topic, downstream_url)`：同一主题上同一个回调地址只会有一行。`messages.idempotency_key` 全局唯一，用于 `AcceptMessage` 去重。
+`consumers` 存的是 `Register` 元数据，投递走的是内存里的 `Subscribe` 流。`messages.idempotency_key` 全局唯一，用于 `AcceptMessages` 去重。

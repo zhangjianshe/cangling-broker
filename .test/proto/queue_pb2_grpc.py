@@ -34,8 +34,8 @@ class MessageQueueStub:
         Args:
             channel: A grpc.Channel.
         """
-        self.AcceptMessage = channel.unary_unary(
-                '/dispatcher.v1.MessageQueue/AcceptMessage',
+        self.AcceptMessages = channel.stream_stream(
+                '/dispatcher.v1.MessageQueue/AcceptMessages',
                 request_serializer=queue__pb2.AcceptMessageRequest.SerializeToString,
                 response_deserializer=queue__pb2.AcceptMessageResponse.FromString,
                 _registered_method=True)
@@ -49,29 +49,52 @@ class MessageQueueStub:
                 request_serializer=queue__pb2.UnregisterRequest.SerializeToString,
                 response_deserializer=queue__pb2.UnregisterResponse.FromString,
                 _registered_method=True)
+        self.Subscribe = channel.unary_stream(
+                '/dispatcher.v1.MessageQueue/Subscribe',
+                request_serializer=queue__pb2.SubscribeRequest.SerializeToString,
+                response_deserializer=queue__pb2.QueueMessage.FromString,
+                _registered_method=True)
+        self.AckMessage = channel.unary_unary(
+                '/dispatcher.v1.MessageQueue/AckMessage',
+                request_serializer=queue__pb2.AckMessageRequest.SerializeToString,
+                response_deserializer=queue__pb2.AckMessageResponse.FromString,
+                _registered_method=True)
 
 
 class MessageQueueServicer:
     """Missing associated documentation comment in .proto file."""
 
-    def AcceptMessage(self, request, context):
-        """AcceptMessage returns only after the message is durably committed to SQLite.
+    def AcceptMessages(self, request_iterator, context):
+        """Client streams publishes; server streams one response per request after SQLite commit.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Register(self, request, context):
-        """Register a downstream HTTP URL for a topic. Call again with the returned
-        consumer_id to refresh liveness. Multiple consumers on one topic compete:
-        each message is POSTed to exactly one registered URL.
+        """Optional metadata about a consumer. Delivery is on Subscribe, not this call.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Unregister(self, request, context):
-        """Unregister stops delivery to this consumer.
+        """Unregister drops stored consumer metadata.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Subscribe(self, request, context):
+        """Open a consume stream. Multiple subscribers on one topic compete:
+        each message is sent to exactly one of them.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AckMessage(self, request, context):
+        """Confirm or reject a message received from Subscribe.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -80,8 +103,8 @@ class MessageQueueServicer:
 
 def add_MessageQueueServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'AcceptMessage': grpc.unary_unary_rpc_method_handler(
-                    servicer.AcceptMessage,
+            'AcceptMessages': grpc.stream_stream_rpc_method_handler(
+                    servicer.AcceptMessages,
                     request_deserializer=queue__pb2.AcceptMessageRequest.FromString,
                     response_serializer=queue__pb2.AcceptMessageResponse.SerializeToString,
             ),
@@ -95,6 +118,16 @@ def add_MessageQueueServicer_to_server(servicer, server):
                     request_deserializer=queue__pb2.UnregisterRequest.FromString,
                     response_serializer=queue__pb2.UnregisterResponse.SerializeToString,
             ),
+            'Subscribe': grpc.unary_stream_rpc_method_handler(
+                    servicer.Subscribe,
+                    request_deserializer=queue__pb2.SubscribeRequest.FromString,
+                    response_serializer=queue__pb2.QueueMessage.SerializeToString,
+            ),
+            'AckMessage': grpc.unary_unary_rpc_method_handler(
+                    servicer.AckMessage,
+                    request_deserializer=queue__pb2.AckMessageRequest.FromString,
+                    response_serializer=queue__pb2.AckMessageResponse.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'dispatcher.v1.MessageQueue', rpc_method_handlers)
@@ -107,7 +140,7 @@ class MessageQueue:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
-    def AcceptMessage(request,
+    def AcceptMessages(request_iterator,
             target,
             options=(),
             channel_credentials=None,
@@ -117,10 +150,10 @@ class MessageQueue:
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
+        return grpc.experimental.stream_stream(
+            request_iterator,
             target,
-            '/dispatcher.v1.MessageQueue/AcceptMessage',
+            '/dispatcher.v1.MessageQueue/AcceptMessages',
             queue__pb2.AcceptMessageRequest.SerializeToString,
             queue__pb2.AcceptMessageResponse.FromString,
             options,
@@ -177,6 +210,60 @@ class MessageQueue:
             '/dispatcher.v1.MessageQueue/Unregister',
             queue__pb2.UnregisterRequest.SerializeToString,
             queue__pb2.UnregisterResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Subscribe(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/dispatcher.v1.MessageQueue/Subscribe',
+            queue__pb2.SubscribeRequest.SerializeToString,
+            queue__pb2.QueueMessage.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AckMessage(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.MessageQueue/AckMessage',
+            queue__pb2.AckMessageRequest.SerializeToString,
+            queue__pb2.AckMessageResponse.FromString,
             options,
             channel_credentials,
             insecure,

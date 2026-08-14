@@ -1,122 +1,89 @@
 package cn.mapway.message;
 
+import cn.mapway.message.proto.AckMessageRequest;
 import cn.mapway.message.proto.MessageQueueGrpc;
-import cn.mapway.message.proto.RegisterRequest;
-import cn.mapway.message.proto.UnregisterRequest;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sun.net.httpserver.HttpServer;
+import cn.mapway.message.proto.QueueMessage;
+import cn.mapway.message.proto.SubscribeRequest;
+import io.grpc.StatusRuntimeException;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.Iterator;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public final class Consumer implements AutoCloseable {
     private static final Logger LOG = Logger.getLogger(Consumer.class.getName());
-    private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final MessageQueueGrpc.MessageQueueBlockingStub stub;
-    private final SubscribeOptions options;
-    private final HttpServer server;
-    private final ScheduledExecutorService scheduler;
-    private final AtomicReference<String> consumerId = new AtomicReference<>("");
+    private final Thread worker;
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final String consumerId;
 
-    Consumer(MessageQueueGrpc.MessageQueueBlockingStub stub, SubscribeOptions options, MessageHandler handler)
-            throws IOException {
-        this.stub = stub;
-        this.options = options;
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread thread = new Thread(r, "cangling-consumer-heartbeat");
-            thread.setDaemon(true);
-            return thread;
-        });
-        this.server = HttpServer.create(new InetSocketAddress(options.listenHost(), options.listenPort()), 0);
-        this.server.createContext("/messages", exchange -> {
+    Consumer(
+            MessageQueueGrpc.MessageQueueBlockingStub stub,
+            SubscribeOptions options,
+            String consumerId,
+            MessageHandler handler) {
+        this.consumerId = consumerId;
+        this.worker = new Thread(() -> {
             try {
-                if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-                    exchange.sendResponseHeaders(405, -1);
-                    return;
+                Iterator<QueueMessage> stream = stub.subscribe(SubscribeRequest.newBuilder()
+                        .setTopic(options.topic())
+                        .setConsumerId(consumerId)
+                        .build());
+                while (!closed.get() && stream.hasNext()) {
+                    QueueMessage incoming = stream.next();
+                    try {
+                        handler.onMessage(toQueueMessage(incoming));
+                        stub.ackMessage(AckMessageRequest.newBuilder()
+                                .setMessageId(incoming.getMessageId())
+                                .setLease(incoming.getLease())
+                                .setSuccess(true)
+                                .build());
+                    } catch (Exception error) {
+                        LOG.log(Level.WARNING, "handler failed", error);
+                        stub.ackMessage(AckMessageRequest.newBuilder()
+                                .setMessageId(incoming.getMessageId())
+                                .setLease(incoming.getLease())
+                                .setSuccess(false)
+                                .setError(error.getMessage() == null ? "handler failed" : error.getMessage())
+                                .build());
+                    }
                 }
-                byte[] body = exchange.getRequestBody().readAllBytes();
-                QueueMessage message = MAPPER.readValue(body, QueueMessage.class);
-                handler.onMessage(message);
-                byte[] ok = "accepted".getBytes(StandardCharsets.UTF_8);
-                exchange.sendResponseHeaders(202, ok.length);
-                exchange.getResponseBody().write(ok);
-            } catch (Exception error) {
-                LOG.log(Level.WARNING, "handler failed for incoming message", error);
-                byte[] text = error.getMessage() == null
-                        ? new byte[0]
-                        : error.getMessage().getBytes(StandardCharsets.UTF_8);
-                exchange.sendResponseHeaders(500, text.length);
-                if (text.length > 0) {
-                    exchange.getResponseBody().write(text);
+            } catch (StatusRuntimeException error) {
+                if (!closed.get()) {
+                    LOG.log(Level.WARNING, "subscribe stream closed", error);
                 }
-            } finally {
-                exchange.close();
             }
-        });
-        this.server.setExecutor(Executors.newCachedThreadPool(r -> {
-            Thread thread = new Thread(r, "cangling-consumer-http");
-            thread.setDaemon(true);
-            return thread;
-        }));
-        this.server.start();
-        heartbeat();
-        long seconds = Math.max(1, options.heartbeat().toSeconds());
-        this.scheduler.scheduleAtFixedRate(this::safeHeartbeat, seconds, seconds, TimeUnit.SECONDS);
-        LOG.info(() -> "consuming topic=" + options.topic() + " callback=" + options.callbackUrl());
+        }, "cangling-subscribe");
+        this.worker.setDaemon(true);
+        this.worker.start();
     }
 
     public String consumerId() {
-        return consumerId.get();
-    }
-
-    public String callbackUrl() {
-        return options.callbackUrl();
-    }
-
-    private void safeHeartbeat() {
-        if (closed.get()) {
-            return;
-        }
-        try {
-            heartbeat();
-        } catch (Exception error) {
-            LOG.log(Level.WARNING, "register heartbeat failed", error);
-        }
-    }
-
-    private void heartbeat() {
-        var response = stub.register(RegisterRequest.newBuilder()
-                .setTopic(options.topic())
-                .setDownstreamUrl(options.callbackUrl())
-                .setConsumerId(consumerId.get())
-                .build());
-        consumerId.set(response.getConsumerId());
+        return consumerId;
     }
 
     @Override
     public void close() {
-        if (!closed.compareAndSet(false, true)) {
-            return;
+        closed.set(true);
+        worker.interrupt();
+    }
+
+    private static cn.mapway.message.QueueMessage toQueueMessage(QueueMessage incoming) {
+        cn.mapway.message.QueueMessage message = new cn.mapway.message.QueueMessage();
+        message.setId(incoming.getMessageId());
+        message.setTopic(incoming.getTopic());
+        message.setPayload(incoming.getPayload().toStringUtf8());
+        message.setPayloadEncoding("utf-8");
+        message.setAttributes(incoming.getAttributesMap());
+        message.setCreatedAt(incoming.getCreatedAt());
+        if (!incoming.getPayload().isValidUtf8()) {
+            message.setPayload(java.util.Base64.getEncoder().encodeToString(incoming.getPayload().toByteArray()));
+            message.setPayloadEncoding("base64");
+        } else {
+            message.setPayload(new String(incoming.getPayload().toByteArray(), StandardCharsets.UTF_8));
         }
-        scheduler.shutdownNow();
-        server.stop(0);
-        String id = consumerId.get();
-        if (id != null && !id.isBlank()) {
-            try {
-                stub.unregister(UnregisterRequest.newBuilder().setConsumerId(id).build());
-            } catch (Exception error) {
-                LOG.log(Level.FINE, "unregister failed", error);
-            }
-        }
+        return message;
     }
 }

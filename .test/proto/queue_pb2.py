@@ -24,29 +24,46 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bqueue.proto\x12\rdispatcher.v1\"\xcb\x01\n\x14\x41\x63\x63\x65ptMessageRequest\x12\x17\n\x0fidempotency_key\x18\x01 \x01(\t\x12\r\n\x05topic\x18\x02 \x01(\t\x12\x0f\n\x07payload\x18\x03 \x01(\x0c\x12G\n\nattributes\x18\x04 \x03(\x0b\x32\x33.dispatcher.v1.AcceptMessageRequest.AttributesEntry\x1a\x31\n\x0f\x41ttributesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\">\n\x15\x41\x63\x63\x65ptMessageResponse\x12\x12\n\nmessage_id\x18\x01 \x01(\t\x12\x11\n\tduplicate\x18\x02 \x01(\x08\"M\n\x0fRegisterRequest\x12\r\n\x05topic\x18\x01 \x01(\t\x12\x16\n\x0e\x64ownstream_url\x18\x02 \x01(\t\x12\x13\n\x0b\x63onsumer_id\x18\x03 \x01(\t\"\'\n\x10RegisterResponse\x12\x13\n\x0b\x63onsumer_id\x18\x01 \x01(\t\"(\n\x11UnregisterRequest\x12\x13\n\x0b\x63onsumer_id\x18\x01 \x01(\t\"\x14\n\x12UnregisterResponse2\x8a\x02\n\x0cMessageQueue\x12Z\n\rAcceptMessage\x12#.dispatcher.v1.AcceptMessageRequest\x1a$.dispatcher.v1.AcceptMessageResponse\x12K\n\x08Register\x12\x1e.dispatcher.v1.RegisterRequest\x1a\x1f.dispatcher.v1.RegisterResponse\x12Q\n\nUnregister\x12 .dispatcher.v1.UnregisterRequest\x1a!.dispatcher.v1.UnregisterResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bqueue.proto\x12\rdispatcher.v1\"\xcb\x01\n\x14\x41\x63\x63\x65ptMessageRequest\x12\x17\n\x0fidempotency_key\x18\x01 \x01(\t\x12\r\n\x05topic\x18\x02 \x01(\t\x12\x0f\n\x07payload\x18\x03 \x01(\x0c\x12G\n\nattributes\x18\x04 \x03(\x0b\x32\x33.dispatcher.v1.AcceptMessageRequest.AttributesEntry\x1a\x31\n\x0f\x41ttributesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\">\n\x15\x41\x63\x63\x65ptMessageResponse\x12\x12\n\nmessage_id\x18\x01 \x01(\t\x12\x11\n\tduplicate\x18\x02 \x01(\x08\"\xba\x01\n\x0fRegisterRequest\x12\r\n\x05topic\x18\x01 \x01(\t\x12\x13\n\x0b\x63onsumer_id\x18\x02 \x01(\t\x12\x0c\n\x04name\x18\x03 \x01(\t\x12\x42\n\nattributes\x18\x04 \x03(\x0b\x32..dispatcher.v1.RegisterRequest.AttributesEntry\x1a\x31\n\x0f\x41ttributesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\'\n\x10RegisterResponse\x12\x13\n\x0b\x63onsumer_id\x18\x01 \x01(\t\"(\n\x11UnregisterRequest\x12\x13\n\x0b\x63onsumer_id\x18\x01 \x01(\t\"\x14\n\x12UnregisterResponse\"6\n\x10SubscribeRequest\x12\r\n\x05topic\x18\x01 \x01(\t\x12\x13\n\x0b\x63onsumer_id\x18\x02 \x01(\t\"\xd9\x01\n\x0cQueueMessage\x12\x12\n\nmessage_id\x18\x01 \x01(\t\x12\r\n\x05topic\x18\x02 \x01(\t\x12\x0f\n\x07payload\x18\x03 \x01(\x0c\x12?\n\nattributes\x18\x04 \x03(\x0b\x32+.dispatcher.v1.QueueMessage.AttributesEntry\x12\x12\n\ncreated_at\x18\x05 \x01(\t\x12\r\n\x05lease\x18\x06 \x01(\t\x1a\x31\n\x0f\x41ttributesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"V\n\x11\x41\x63kMessageRequest\x12\x12\n\nmessage_id\x18\x01 \x01(\t\x12\r\n\x05lease\x18\x02 \x01(\t\x12\x0f\n\x07success\x18\x03 \x01(\x08\x12\r\n\x05\x65rror\x18\x04 \x01(\t\"&\n\x12\x41\x63kMessageResponse\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\x32\xaf\x03\n\x0cMessageQueue\x12_\n\x0e\x41\x63\x63\x65ptMessages\x12#.dispatcher.v1.AcceptMessageRequest\x1a$.dispatcher.v1.AcceptMessageResponse(\x01\x30\x01\x12K\n\x08Register\x12\x1e.dispatcher.v1.RegisterRequest\x1a\x1f.dispatcher.v1.RegisterResponse\x12Q\n\nUnregister\x12 .dispatcher.v1.UnregisterRequest\x1a!.dispatcher.v1.UnregisterResponse\x12K\n\tSubscribe\x12\x1f.dispatcher.v1.SubscribeRequest\x1a\x1b.dispatcher.v1.QueueMessage0\x01\x12Q\n\nAckMessage\x12 .dispatcher.v1.AckMessageRequest\x1a!.dispatcher.v1.AckMessageResponseB\'\n\x17\x63n.mapway.message.protoB\nQueueProtoP\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'queue_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-  DESCRIPTOR._loaded_options = None
+  _globals['DESCRIPTOR']._loaded_options = None
+  _globals['DESCRIPTOR']._serialized_options = b'\n\027cn.mapway.message.protoB\nQueueProtoP\001'
   _globals['_ACCEPTMESSAGEREQUEST_ATTRIBUTESENTRY']._loaded_options = None
   _globals['_ACCEPTMESSAGEREQUEST_ATTRIBUTESENTRY']._serialized_options = b'8\001'
+  _globals['_REGISTERREQUEST_ATTRIBUTESENTRY']._loaded_options = None
+  _globals['_REGISTERREQUEST_ATTRIBUTESENTRY']._serialized_options = b'8\001'
+  _globals['_QUEUEMESSAGE_ATTRIBUTESENTRY']._loaded_options = None
+  _globals['_QUEUEMESSAGE_ATTRIBUTESENTRY']._serialized_options = b'8\001'
   _globals['_ACCEPTMESSAGEREQUEST']._serialized_start=31
   _globals['_ACCEPTMESSAGEREQUEST']._serialized_end=234
   _globals['_ACCEPTMESSAGEREQUEST_ATTRIBUTESENTRY']._serialized_start=185
   _globals['_ACCEPTMESSAGEREQUEST_ATTRIBUTESENTRY']._serialized_end=234
   _globals['_ACCEPTMESSAGERESPONSE']._serialized_start=236
   _globals['_ACCEPTMESSAGERESPONSE']._serialized_end=298
-  _globals['_REGISTERREQUEST']._serialized_start=300
-  _globals['_REGISTERREQUEST']._serialized_end=377
-  _globals['_REGISTERRESPONSE']._serialized_start=379
-  _globals['_REGISTERRESPONSE']._serialized_end=418
-  _globals['_UNREGISTERREQUEST']._serialized_start=420
-  _globals['_UNREGISTERREQUEST']._serialized_end=460
-  _globals['_UNREGISTERRESPONSE']._serialized_start=462
-  _globals['_UNREGISTERRESPONSE']._serialized_end=482
-  _globals['_MESSAGEQUEUE']._serialized_start=485
-  _globals['_MESSAGEQUEUE']._serialized_end=751
+  _globals['_REGISTERREQUEST']._serialized_start=301
+  _globals['_REGISTERREQUEST']._serialized_end=487
+  _globals['_REGISTERREQUEST_ATTRIBUTESENTRY']._serialized_start=185
+  _globals['_REGISTERREQUEST_ATTRIBUTESENTRY']._serialized_end=234
+  _globals['_REGISTERRESPONSE']._serialized_start=489
+  _globals['_REGISTERRESPONSE']._serialized_end=528
+  _globals['_UNREGISTERREQUEST']._serialized_start=530
+  _globals['_UNREGISTERREQUEST']._serialized_end=570
+  _globals['_UNREGISTERRESPONSE']._serialized_start=572
+  _globals['_UNREGISTERRESPONSE']._serialized_end=592
+  _globals['_SUBSCRIBEREQUEST']._serialized_start=594
+  _globals['_SUBSCRIBEREQUEST']._serialized_end=648
+  _globals['_QUEUEMESSAGE']._serialized_start=651
+  _globals['_QUEUEMESSAGE']._serialized_end=868
+  _globals['_QUEUEMESSAGE_ATTRIBUTESENTRY']._serialized_start=185
+  _globals['_QUEUEMESSAGE_ATTRIBUTESENTRY']._serialized_end=234
+  _globals['_ACKMESSAGEREQUEST']._serialized_start=870
+  _globals['_ACKMESSAGEREQUEST']._serialized_end=956
+  _globals['_ACKMESSAGERESPONSE']._serialized_start=958
+  _globals['_ACKMESSAGERESPONSE']._serialized_end=996
+  _globals['_MESSAGEQUEUE']._serialized_start=999
+  _globals['_MESSAGEQUEUE']._serialized_end=1430
 # @@protoc_insertion_point(module_scope)
