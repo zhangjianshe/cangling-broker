@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bump the patch version, commit, tag, and push so GitHub Actions builds images.
+# Bump the patch version, commit, tag, and push. GitHub Actions deploys Docker and Maven Central.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")" && pwd)"
@@ -35,16 +35,23 @@ python3 - "$current" "$new" <<'PY'
 from pathlib import Path
 import sys
 current, new = sys.argv[1], sys.argv[2]
-path = Path("Cargo.lock")
+lock = Path("Cargo.lock")
 old = f'name = "cangling-message"\nversion = "{current}"'
 updated = f'name = "cangling-message"\nversion = "{new}"'
-text = path.read_text()
+text = lock.read_text()
 if old not in text:
     raise SystemExit(f"Cargo.lock is missing {old!r}")
-path.write_text(text.replace(old, updated, 1))
+lock.write_text(text.replace(old, updated, 1))
+pom = Path("java/pom.xml")
+pom_old = f"<artifactId>cangling-message</artifactId>\n    <version>{current}</version>"
+pom_new = f"<artifactId>cangling-message</artifactId>\n    <version>{new}</version>"
+pom_text = pom.read_text()
+if pom_old not in pom_text:
+    raise SystemExit(f"java/pom.xml is missing {pom_old!r}")
+pom.write_text(pom_text.replace(pom_old, pom_new, 1))
 PY
 
-git add Cargo.toml Cargo.lock
+git add Cargo.toml Cargo.lock java/pom.xml
 git commit -m "Release v${new}"
 git tag -a "v${new}" -m "Release v${new}"
 
@@ -57,3 +64,4 @@ echo "released v${current} -> v${new} and pushed ${branch} to ${remote}"
 echo "CI will build and push:"
 echo "  docker.io/mapway/cangling-message:${new}"
 echo "  harbor.cangling.cn:22002/cangling/cangling-message:${new}"
+echo "  Maven Central cn.mapway:cangling-message:${new}"

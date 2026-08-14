@@ -66,9 +66,17 @@ The image listens on `7500` (gRPC) and `7501` (status) and stores SQLite under `
 
 ### Java client (`cn.mapway.message`)
 
-Maven module in [`java/`](java/). Produce on `AcceptMessages`, consume on `Subscribe`. `Register` is optional metadata.
+Maven module in [`java/`](java/). Coordinates: `cn.mapway:cangling-message`. Produce on `AcceptMessages`, consume on `Subscribe`. `Register` is optional metadata.
 
 `SatwayClient.connect(...)` starts reconnect immediately. The channel is kept alive; `send` / `register` / `ack` retry with backoff while the broker is down; each `subscribe` stream reopens on the same `consumer_id` after a drop. Call `close()` to stop.
+
+```xml
+<dependency>
+  <groupId>cn.mapway</groupId>
+  <artifactId>cangling-message</artifactId>
+  <version>0.1.1</version>
+</dependency>
+```
 
 ```bash
 cd java
@@ -115,7 +123,7 @@ CI compiles on **x86_64** (`ubuntu-latest`) and **aarch64** (`ubuntu-24.04-arm`)
 ./release.sh
 ```
 
-Each run bumps the patch version in `Cargo.toml` (`0.1.0` → `0.1.1`), commits, tags `v0.1.1`, and pushes to GitHub so Actions builds the multi-arch image.
+Each run bumps the patch version in `Cargo.toml` and `java/pom.xml` (`0.1.0` → `0.1.1`), commits, tags `v0.1.1`, and pushes. Deploy stays in GitHub Actions: the tag publishes Docker images and `cn.mapway:cangling-message` to Maven Central. A branch push or pull request only compiles.
 
 Set these repository secrets:
 
@@ -125,6 +133,10 @@ Set these repository secrets:
 | `DOCKERHUB_TOKEN` | Docker Hub access token |
 | `HARBOR_USERNAME` | Harbor user or robot account |
 | `HARBOR_PASSWORD` | Harbor password or robot token |
+| `CENTRAL_USERNAME` | Maven Central user-token username |
+| `CENTRAL_PASSWORD` | Maven Central user-token password |
+| `GPG_PRIVATE_KEY` | Armored GPG private key that signs the jars |
+| `GPG_PASSPHRASE` | Passphrase for that GPG key |
 
 The gRPC API definition is [`proto/queue.proto`](proto/queue.proto). Generate a client in your preferred language from that contract; the endpoint defaults to `127.0.0.1:7500`.
 
