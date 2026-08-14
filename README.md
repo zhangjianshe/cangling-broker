@@ -15,13 +15,73 @@ DATABASE_URL=sqlite:./queue.db \
 cargo run
 ```
 
-### Docker
+### Docker: start the broker, then subscribe and consume
+
+`--network host` lets the broker POST back to a consumer on the same machine.
 
 ```bash
-docker run --rm \
-  -p 7500:7500 -p 7501:7501 \
+# Terminal 1 — broker
+docker run --rm --name cangling-message \
+  --network host \
   -v cangling-data:/data \
   docker.io/mapway/cangling-message:latest
+```
+
+Harbor:
+
+```bash
+docker run --rm --name cangling-message \
+  --network host \
+  -v cangling-data:/data \
+  harbor.cangling.cn:22002/cangling/cangling-message:latest
+```
+
+```bash
+# Terminal 2 — subscribe / consume (registers an HTTP callback, then prints each message)
+cd .test
+../.venv/bin/python test_subscriber.py \
+  --broker 127.0.0.1:7500 \
+  --topic cangling-test \
+  --listen 127.0.0.1:8080 \
+  --name s0
+```
+
+```bash
+# Terminal 3 — publish one message
+cd .test
+../.venv/bin/python test_client.py \
+  --broker 127.0.0.1:7500 \
+  --topic cangling-test \
+  --text hello \
+  --count 1
+```
+
+The subscriber should print `s0 received | {"id": "...", "topic": "cangling-test", "payload": "hello", ...}`. Status UI: [http://127.0.0.1:7501/](http://127.0.0.1:7501/).
+
+Rust consumer instead of Python:
+
+```bash
+cargo run --example receiver -- --broker-addr http://127.0.0.1:7500 --topic cangling-test
+```
+
+If you publish ports instead of `--network host`, the broker cannot use `127.0.0.1` as the callback (that is inside the container). Bind the consumer on all interfaces and give a host URL:
+
+```bash
+# Terminal 1
+docker run --rm --name cangling-message \
+  -p 7500:7500 -p 7501:7501 \
+  --add-host=host.docker.internal:host-gateway \
+  -v cangling-data:/data \
+  docker.io/mapway/cangling-message:latest
+
+# Terminal 2
+cd .test
+../.venv/bin/python test_subscriber.py \
+  --broker 127.0.0.1:7500 \
+  --topic cangling-test \
+  --listen 0.0.0.0:8080 \
+  --callback-url http://host.docker.internal:8080/messages \
+  --name s0
 ```
 
 The image listens on `7500` (gRPC) and `7501` (status) and stores SQLite under `/data`.
