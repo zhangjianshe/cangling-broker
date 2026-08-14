@@ -31,8 +31,20 @@ if git rev-parse -q --verify "refs/tags/v${new}" >/dev/null; then
 fi
 
 sed -i "s/^version = \"${current}\"/version = \"${new}\"/" Cargo.toml
+python3 - "$current" "$new" <<'PY'
+from pathlib import Path
+import sys
+current, new = sys.argv[1], sys.argv[2]
+path = Path("Cargo.lock")
+old = f'name = "cangling-message"\nversion = "{current}"'
+updated = f'name = "cangling-message"\nversion = "{new}"'
+text = path.read_text()
+if old not in text:
+    raise SystemExit(f"Cargo.lock is missing {old!r}")
+path.write_text(text.replace(old, updated, 1))
+PY
 
-git add Cargo.toml
+git add Cargo.toml Cargo.lock
 git commit -m "Release v${new}"
 git tag -a "v${new}" -m "Release v${new}"
 
