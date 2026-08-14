@@ -9,7 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   IMAGE: docker.io/mapway/cangling-message
-  HARBOR_IMAGE: harbor.cangling.cn/cangling/cangling-message
+  HARBOR_IMAGE: harbor.cangling.cn:22002/cangling/cangling-message
 
 jobs:
   build:
@@ -52,7 +52,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - uses: docker/login-action@v3
         with:
-          registry: harbor.cangling.cn
+          registry: harbor.cangling.cn:22002
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
       - uses: docker/build-push-action@v6
