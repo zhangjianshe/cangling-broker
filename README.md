@@ -26,7 +26,7 @@ docker run --rm \
 
 The image listens on `7500` (gRPC) and `7501` (status) and stores SQLite under `/data`.
 
-CI compiles on **x86_64** (`ubuntu-latest`) and **aarch64** (`ubuntu-24.04-arm`), then publishes a multi-arch image to both:
+CI compiles on **x86_64** (`ubuntu-latest`) and **aarch64** (`ubuntu-24.04-arm`), caches the Cargo output for the next run, then publishes a multi-arch image to both:
 
 - `docker.io/mapway/cangling-message:latest`
 - `harbor.cangling.cn:22002/cangling/cangling-message:latest`

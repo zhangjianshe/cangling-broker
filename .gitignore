@@ -1,5 +1,6 @@
 /target
 /data
+/binaries
 .venv/
 __pycache__/
 *.pyc

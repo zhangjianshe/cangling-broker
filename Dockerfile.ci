@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1
+# CI image: copies a prebuilt binary compiled on the matching runner.
+# Local builds should use Dockerfile instead.
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --home-dir /data --create-home app
+
+ARG TARGETARCH
+COPY binaries/${TARGETARCH}/cangling-message /usr/local/bin/cangling-message
+
+USER app
+WORKDIR /data
+ENV DATABASE_URL=sqlite:///data/queue.db
+EXPOSE 7500 7501
+ENTRYPOINT ["cangling-message"]
