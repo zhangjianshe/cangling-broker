@@ -26,7 +26,7 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: maven
-      - name: Package cn.satway.message
+      - name: Package cn.mapway.message
         run: mvn -f java/pom.xml -B -q package -DskipTests
 
   build:

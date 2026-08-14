@@ -1,7 +1,7 @@
-package cn.satway.message.example;
+package cn.mapway.message.example;
 
-import cn.satway.message.MessageClient;
-import cn.satway.message.SendResult;
+import cn.mapway.message.MessageClient;
+import cn.mapway.message.SendResult;
 
 public final class ProducerMain {
     public static void main(String[] args) {

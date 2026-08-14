@@ -1,8 +1,8 @@
-package cn.satway.message;
+package cn.mapway.message;
 
-import cn.satway.message.proto.AcceptMessageRequest;
-import cn.satway.message.proto.AcceptMessageResponse;
-import cn.satway.message.proto.MessageQueueGrpc;
+import cn.mapway.message.proto.AcceptMessageRequest;
+import cn.mapway.message.proto.AcceptMessageResponse;
+import cn.mapway.message.proto.MessageQueueGrpc;
 import com.google.protobuf.ByteString;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;

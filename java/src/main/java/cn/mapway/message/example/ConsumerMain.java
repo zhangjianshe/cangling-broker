@@ -1,7 +1,7 @@
-package cn.satway.message.example;
+package cn.mapway.message.example;
 
-import cn.satway.message.MessageClient;
-import cn.satway.message.SubscribeOptions;
+import cn.mapway.message.MessageClient;
+import cn.mapway.message.SubscribeOptions;
 
 public final class ConsumerMain {
     public static void main(String[] args) throws Exception {

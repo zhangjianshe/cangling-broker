@@ -1,4 +1,4 @@
-package cn.satway.message;
+package cn.mapway.message;
 
 public final class SendResult {
     private final String messageId;

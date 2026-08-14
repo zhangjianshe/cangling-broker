@@ -1,4 +1,4 @@
-package cn.satway.message;
+package cn.mapway.message;
 
 @FunctionalInterface
 public interface MessageHandler {

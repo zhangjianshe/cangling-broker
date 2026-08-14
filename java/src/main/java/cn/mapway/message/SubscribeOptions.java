@@ -1,4 +1,4 @@
-package cn.satway.message;
+package cn.mapway.message;
 
 import java.time.Duration;
 import java.util.Objects;

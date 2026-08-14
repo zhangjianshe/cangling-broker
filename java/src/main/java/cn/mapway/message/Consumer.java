@@ -1,8 +1,8 @@
-package cn.satway.message;
+package cn.mapway.message;
 
-import cn.satway.message.proto.MessageQueueGrpc;
-import cn.satway.message.proto.RegisterRequest;
-import cn.satway.message.proto.UnregisterRequest;
+import cn.mapway.message.proto.MessageQueueGrpc;
+import cn.mapway.message.proto.RegisterRequest;
+import cn.mapway.message.proto.UnregisterRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 
