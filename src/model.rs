@@ -1,0 +1,90 @@
+use serde::Serialize;
+
+#[derive(Debug)]
+pub struct ClaimedMessage {
+    pub id: String,
+    pub topic: String,
+    pub payload: Vec<u8>,
+    pub attributes: serde_json::Value,
+    pub created_at: String,
+    pub lease: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Consumer {
+    pub id: String,
+    #[allow(dead_code)]
+    pub topic: String,
+    pub downstream_url: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ConsumerSnapshot {
+    pub id: String,
+    pub downstream_url: String,
+    pub last_seen_at: String,
+    pub live: bool,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct TopicSnapshot {
+    pub name: String,
+    pub accepted: i64,
+    pub duplicates: i64,
+    pub pending: i64,
+    pub processing: i64,
+    pub delivered: i64,
+    pub failed: i64,
+    pub consumers: Vec<ConsumerSnapshot>,
+}
+
+impl ClaimedMessage {
+    pub fn to_downstream(&self) -> DownstreamMessage {
+        let (payload, payload_encoding) = match String::from_utf8(self.payload.clone()) {
+            Ok(text) => (text, "utf-8"),
+            Err(_) => (base64_encode(&self.payload), "base64"),
+        };
+        DownstreamMessage {
+            id: self.id.clone(),
+            topic: self.topic.clone(),
+            payload,
+            payload_encoding,
+            attributes: self.attributes.clone(),
+            created_at: self.created_at.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct DownstreamMessage {
+    pub id: String,
+    pub topic: String,
+    /// UTF-8 payloads are sent as text; arbitrary bytes are base64 encoded.
+    pub payload: String,
+    pub payload_encoding: &'static str,
+    pub attributes: serde_json::Value,
+    pub created_at: String,
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        output.push(TABLE[((n >> 18) & 63) as usize] as char);
+        output.push(TABLE[((n >> 12) & 63) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
+}

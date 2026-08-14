@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package dispatcher.v1;
+
+service MessageQueue {
+  // AcceptMessage returns only after the message is durably committed to SQLite.
+  rpc AcceptMessage(AcceptMessageRequest) returns (AcceptMessageResponse);
+
+  // Register a downstream HTTP URL for a topic. Call again with the returned
+  // consumer_id to refresh liveness. Multiple consumers on one topic compete:
+  // each message is POSTed to exactly one registered URL.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // Unregister stops delivery to this consumer.
+  rpc Unregister(UnregisterRequest) returns (UnregisterResponse);
+}
+
+message AcceptMessageRequest {
+  // Optional caller-provided idempotency key. Reusing it returns the original message id.
+  string idempotency_key = 1;
+  string topic = 2;
+  bytes payload = 3;
+  map<string, string> attributes = 4;
+}
+
+message AcceptMessageResponse {
+  string message_id = 1;
+  bool duplicate = 2;
+}
+
+message RegisterRequest {
+  string topic = 1;
+  // Broker POSTs the delivery JSON to this URL.
+  string downstream_url = 2;
+  // Optional. Pass the id from a previous Register to refresh the same consumer.
+  string consumer_id = 3;
+}
+
+message RegisterResponse {
+  string consumer_id = 1;
+}
+
+message UnregisterRequest {
+  string consumer_id = 1;
+}
+
+message UnregisterResponse {}
