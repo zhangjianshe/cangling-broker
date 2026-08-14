@@ -31,6 +31,14 @@ CI compiles on **x86_64** (`ubuntu-latest`) and **aarch64** (`ubuntu-24.04-arm`)
 - `docker.io/mapway/cangling-message:latest`
 - `harbor.cangling.cn/cangling/cangling-message:latest`
 
+### Release
+
+```bash
+./release.sh
+```
+
+Each run bumps the patch version in `Cargo.toml` (`0.1.0` → `0.1.1`), commits, tags `v0.1.1`, and pushes to GitHub so Actions builds the multi-arch image.
+
 Set these repository secrets:
 
 | Secret | Used for |
