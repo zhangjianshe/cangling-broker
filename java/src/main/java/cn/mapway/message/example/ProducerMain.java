@@ -1,6 +1,6 @@
 package cn.mapway.message.example;
 
-import cn.mapway.message.MessageClient;
+import cn.mapway.message.SatwayClient;
 import cn.mapway.message.SendResult;
 
 public final class ProducerMain {
@@ -9,7 +9,7 @@ public final class ProducerMain {
         String topic = arg(args, "--topic", "cangling-test");
         String text = arg(args, "--text", "hello");
         int count = Integer.parseInt(arg(args, "--count", "1"));
-        try (MessageClient client = MessageClient.connect(broker)) {
+        try (SatwayClient client = SatwayClient.connect(broker)) {
             for (int i = 0; i < count; i++) {
                 String payload = count == 1 ? text : text + "-" + i;
                 SendResult result = client.send(topic, payload);

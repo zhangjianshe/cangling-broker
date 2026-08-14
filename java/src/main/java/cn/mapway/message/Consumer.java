@@ -1,8 +1,6 @@
 package cn.mapway.message;
 
-import cn.mapway.message.proto.AckMessageRequest;
-import cn.mapway.message.proto.MessageQueueGrpc;
-import cn.mapway.message.proto.QueueMessage;
+import cn.mapway.message.proto.SatwayMessage;
 import cn.mapway.message.proto.SubscribeRequest;
 import io.grpc.StatusRuntimeException;
 
@@ -15,47 +13,15 @@ import java.util.logging.Logger;
 public final class Consumer implements AutoCloseable {
     private static final Logger LOG = Logger.getLogger(Consumer.class.getName());
 
+    private final SatwayClient client;
     private final Thread worker;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final String consumerId;
 
-    Consumer(
-            MessageQueueGrpc.MessageQueueBlockingStub stub,
-            SubscribeOptions options,
-            String consumerId,
-            MessageHandler handler) {
+    Consumer(SatwayClient client, SubscribeOptions options, String consumerId, MessageHandler handler) {
+        this.client = client;
         this.consumerId = consumerId;
-        this.worker = new Thread(() -> {
-            try {
-                Iterator<QueueMessage> stream = stub.subscribe(SubscribeRequest.newBuilder()
-                        .setTopic(options.topic())
-                        .setConsumerId(consumerId)
-                        .build());
-                while (!closed.get() && stream.hasNext()) {
-                    QueueMessage incoming = stream.next();
-                    try {
-                        handler.onMessage(toQueueMessage(incoming));
-                        stub.ackMessage(AckMessageRequest.newBuilder()
-                                .setMessageId(incoming.getMessageId())
-                                .setLease(incoming.getLease())
-                                .setSuccess(true)
-                                .build());
-                    } catch (Exception error) {
-                        LOG.log(Level.WARNING, "handler failed", error);
-                        stub.ackMessage(AckMessageRequest.newBuilder()
-                                .setMessageId(incoming.getMessageId())
-                                .setLease(incoming.getLease())
-                                .setSuccess(false)
-                                .setError(error.getMessage() == null ? "handler failed" : error.getMessage())
-                                .build());
-                    }
-                }
-            } catch (StatusRuntimeException error) {
-                if (!closed.get()) {
-                    LOG.log(Level.WARNING, "subscribe stream closed", error);
-                }
-            }
-        }, "cangling-subscribe");
+        this.worker = new Thread(() -> run(options, handler), "cangling-subscribe");
         this.worker.setDaemon(true);
         this.worker.start();
     }
@@ -70,8 +36,67 @@ public final class Consumer implements AutoCloseable {
         worker.interrupt();
     }
 
-    private static cn.mapway.message.QueueMessage toQueueMessage(QueueMessage incoming) {
-        cn.mapway.message.QueueMessage message = new cn.mapway.message.QueueMessage();
+    private void run(SubscribeOptions options, MessageHandler handler) {
+        long backoffMs = SatwayClient.INITIAL_BACKOFF_MS;
+        while (running()) {
+            try {
+                if (!client.awaitReady()) {
+                    return;
+                }
+                if (!running()) {
+                    return;
+                }
+                client.ensureRegistered(options, consumerId);
+                Iterator<SatwayMessage> stream = client.blockingStub()
+                        .subscribe(SubscribeRequest.newBuilder()
+                                .setTopic(options.topic())
+                                .setConsumerId(consumerId == null ? "" : consumerId)
+                                .build());
+                backoffMs = SatwayClient.INITIAL_BACKOFF_MS;
+                while (running() && stream.hasNext()) {
+                    SatwayMessage incoming = stream.next();
+                    try {
+                        handler.onMessage(toSatwayMessage(incoming));
+                        client.ack(incoming.getMessageId(), incoming.getLease(), true, "");
+                    } catch (Exception error) {
+                        LOG.log(Level.WARNING, "handler failed", error);
+                        client.ack(
+                                incoming.getMessageId(),
+                                incoming.getLease(),
+                                false,
+                                error.getMessage() == null ? "handler failed" : error.getMessage());
+                    }
+                }
+                if (running()) {
+                    LOG.info("subscribe stream ended, reconnecting");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (StatusRuntimeException error) {
+                if (running()) {
+                    LOG.log(Level.WARNING, "subscribe stream closed, reconnecting", error);
+                }
+            } catch (RuntimeException error) {
+                if (running()) {
+                    LOG.log(Level.WARNING, "subscribe failed, reconnecting", error);
+                } else {
+                    return;
+                }
+            }
+            if (running()) {
+                client.sleepBackoff(backoffMs);
+                backoffMs = Math.min(backoffMs * 2, SatwayClient.MAX_BACKOFF_MS);
+            }
+        }
+    }
+
+    private boolean running() {
+        return !closed.get() && client.isOpen();
+    }
+
+    private static cn.mapway.message.SatwayMessage toSatwayMessage(SatwayMessage incoming) {
+        cn.mapway.message.SatwayMessage message = new cn.mapway.message.SatwayMessage();
         message.setId(incoming.getMessageId());
         message.setTopic(incoming.getTopic());
         message.setPayload(incoming.getPayload().toStringUtf8());

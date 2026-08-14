@@ -68,6 +68,8 @@ The image listens on `7500` (gRPC) and `7501` (status) and stores SQLite under `
 
 Maven module in [`java/`](java/). Produce on `AcceptMessages`, consume on `Subscribe`. `Register` is optional metadata.
 
+`SatwayClient.connect(...)` starts reconnect immediately. The channel is kept alive; `send` / `register` / `ack` retry with backoff while the broker is down; each `subscribe` stream reopens on the same `consumer_id` after a drop. Call `close()` to stop.
+
 ```bash
 cd java
 mvn -q package
@@ -89,10 +91,10 @@ In your own code:
 
 ```java
 import cn.mapway.message.Consumer;
-import cn.mapway.message.MessageClient;
+import cn.mapway.message.SatwayClient;
 import cn.mapway.message.SubscribeOptions;
 
-try (MessageClient client = MessageClient.connect("127.0.0.1:7500")) {
+try (SatwayClient client = SatwayClient.connect("127.0.0.1:7500")) {
     client.send("cangling-test", "hello");
     try (Consumer consumer = client.subscribe(
             SubscribeOptions.topic("cangling-test").name("worker-1").build(),
@@ -154,7 +156,7 @@ Each message is claimed by one live stream. If that subscriber disconnects or do
 
 ## Delivery contract
 
-The consumer receives one `QueueMessage` on the `Subscribe` stream:
+The consumer receives one `SatwayMessage` on the `Subscribe` stream:
 
 ```json
 {

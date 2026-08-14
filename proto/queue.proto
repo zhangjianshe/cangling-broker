@@ -18,7 +18,7 @@ service MessageQueue {
 
   // Open a consume stream. Multiple subscribers on one topic compete:
   // each message is sent to exactly one of them.
-  rpc Subscribe(SubscribeRequest) returns (stream QueueMessage);
+  rpc Subscribe(SubscribeRequest) returns (stream SatwayMessage);
 
   // Confirm or reject a message received from Subscribe.
   rpc AckMessage(AckMessageRequest) returns (AckMessageResponse);
@@ -62,7 +62,7 @@ message SubscribeRequest {
   string consumer_id = 2;
 }
 
-message QueueMessage {
+message SatwayMessage {
   string message_id = 1;
   string topic = 2;
   bytes payload = 3;

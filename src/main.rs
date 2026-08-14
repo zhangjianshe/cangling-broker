@@ -22,7 +22,7 @@ pub mod proto {
 }
 use proto::{
     message_queue_server::{MessageQueue, MessageQueueServer},
-    AcceptMessageRequest, AcceptMessageResponse, AckMessageRequest, AckMessageResponse, QueueMessage,
+    AcceptMessageRequest, AcceptMessageResponse, AckMessageRequest, AckMessageResponse, SatwayMessage,
     RegisterRequest, RegisterResponse, SubscribeRequest, UnregisterRequest, UnregisterResponse,
 };
 
@@ -51,7 +51,7 @@ fn attrs_to_map(value: &serde_json::Value) -> HashMap<String, String> {
 #[tonic::async_trait]
 impl MessageQueue for QueueService {
     type AcceptMessagesStream = ResponseStream<AcceptMessageResponse>;
-    type SubscribeStream = ResponseStream<QueueMessage>;
+    type SubscribeStream = ResponseStream<SatwayMessage>;
 
     async fn accept_messages(
         &self,
@@ -203,7 +203,7 @@ impl MessageQueue for QueueService {
                     continue;
                 };
                 let ack = inflight.register(message.id.clone(), message.lease.clone());
-                let outgoing = QueueMessage {
+                let outgoing = SatwayMessage {
                     message_id: message.id.clone(),
                     topic: message.topic.clone(),
                     payload: message.payload,

@@ -52,7 +52,7 @@ class MessageQueueStub:
         self.Subscribe = channel.unary_stream(
                 '/dispatcher.v1.MessageQueue/Subscribe',
                 request_serializer=queue__pb2.SubscribeRequest.SerializeToString,
-                response_deserializer=queue__pb2.QueueMessage.FromString,
+                response_deserializer=queue__pb2.SatwayMessage.FromString,
                 _registered_method=True)
         self.AckMessage = channel.unary_unary(
                 '/dispatcher.v1.MessageQueue/AckMessage',
@@ -121,7 +121,7 @@ def add_MessageQueueServicer_to_server(servicer, server):
             'Subscribe': grpc.unary_stream_rpc_method_handler(
                     servicer.Subscribe,
                     request_deserializer=queue__pb2.SubscribeRequest.FromString,
-                    response_serializer=queue__pb2.QueueMessage.SerializeToString,
+                    response_serializer=queue__pb2.SatwayMessage.SerializeToString,
             ),
             'AckMessage': grpc.unary_unary_rpc_method_handler(
                     servicer.AckMessage,
@@ -236,7 +236,7 @@ class MessageQueue:
             target,
             '/dispatcher.v1.MessageQueue/Subscribe',
             queue__pb2.SubscribeRequest.SerializeToString,
-            queue__pb2.QueueMessage.FromString,
+            queue__pb2.SatwayMessage.FromString,
             options,
             channel_credentials,
             insecure,

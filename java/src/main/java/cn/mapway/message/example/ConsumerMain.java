@@ -1,6 +1,6 @@
 package cn.mapway.message.example;
 
-import cn.mapway.message.MessageClient;
+import cn.mapway.message.SatwayClient;
 import cn.mapway.message.SubscribeOptions;
 
 public final class ConsumerMain {
@@ -8,7 +8,7 @@ public final class ConsumerMain {
         String broker = arg(args, "--broker", "127.0.0.1:7500");
         String topic = arg(args, "--topic", "cangling-test");
         String name = arg(args, "--name", "java-consumer");
-        try (MessageClient client = MessageClient.connect(broker);
+        try (SatwayClient client = SatwayClient.connect(broker);
              var consumer = client.subscribe(
                      SubscribeOptions.topic(topic).name(name).build(),
                      message -> System.out.println(

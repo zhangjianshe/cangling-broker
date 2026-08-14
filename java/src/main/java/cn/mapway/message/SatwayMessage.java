@@ -9,7 +9,7 @@ import java.util.Collections;
 import java.util.Map;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-public final class QueueMessage {
+public final class SatwayMessage {
     private String id;
     private String topic;
     private String payload;
@@ -82,6 +82,6 @@ public final class QueueMessage {
 
     @Override
     public String toString() {
-        return "QueueMessage{id='" + id + "', topic='" + topic + "', payload='" + payload + "'}";
+        return "SatwayMessage{id='" + id + "', topic='" + topic + "', payload='" + payload + "'}";
     }
 }
