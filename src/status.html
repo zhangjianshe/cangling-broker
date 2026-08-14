@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>苍岭消息 · 运行状态</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2129;
+      --line: #2a3440;
+      --text: #e7ecf1;
+      --muted: #8b98a5;
+      --live: #3dd68c;
+      --stale: #f0b429;
+      --fail: #f07178;
+      --pending: #59c2ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.45 system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 20px 24px 8px;
+    }
+    h1 { font-size: 18px; font-weight: 600; margin: 0; }
+    #meta { color: var(--muted); font-size: 13px; }
+    #error {
+      display: none;
+      margin: 8px 24px;
+      padding: 8px 12px;
+      border: 1px solid var(--fail);
+      color: var(--fail);
+      border-radius: 6px;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+      gap: 10px;
+      padding: 12px 24px 20px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+    .card .label { color: var(--muted); font-size: 12px; }
+    .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+    section { padding: 0 24px 24px; }
+    h2 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 0 0 10px; }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 8px; overflow: hidden; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; }
+    tr:last-child td { border-bottom: 0; }
+    .empty { color: var(--muted); padding: 16px 24px; }
+    .pill {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .live { background: #143d2c; color: var(--live); }
+    .stale { background: #3d3114; color: var(--stale); }
+    .consumer { color: var(--muted); font-size: 12px; margin: 2px 0; }
+    .url { color: var(--text); word-break: break-all; }
+    .fail { color: var(--fail); }
+    .pending { color: var(--pending); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>苍岭消息</h1>
+    <div id="meta">正在加载…</div>
+  </header>
+  <div id="error"></div>
+  <div class="cards" id="cards"></div>
+  <section>
+    <h2>主题</h2>
+    <div id="topics"></div>
+  </section>
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function fmtUptime(secs) {
+      const s = Number(secs) || 0;
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const r = s % 60;
+      if (h) return h + " 小时 " + m + " 分";
+      if (m) return m + " 分 " + r + " 秒";
+      return r + " 秒";
+    }
+
+    function card(label, value, cls) {
+      return '<div class="card"><div class="label">' + label + '</div>' +
+        '<div class="value' + (cls ? " " + cls : "") + '">' + value + "</div></div>";
+    }
+
+    function consumersHtml(list) {
+      if (!list || !list.length) return '<div class="consumer">暂无消费者</div>';
+      return list.map((c) => {
+        const pill = c.live
+          ? '<span class="pill live">在线</span>'
+          : '<span class="pill stale">离线</span>';
+        return '<div class="consumer">' + pill +
+          ' <span class="url">' + escapeHtml(c.downstream_url) + "</span>" +
+          "<br>编号 " + escapeHtml(c.id) +
+          " · 最近心跳 " + escapeHtml(c.last_seen_at) + "</div>";
+      }).join("");
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function render(data) {
+      $("error").style.display = "none";
+      $("meta").textContent = "已运行 " + fmtUptime(data.uptime_secs) + " · 刷新于 " +
+        new Date().toLocaleTimeString();
+      $("cards").innerHTML =
+        card("主题数", data.topics) +
+        card("在线消费者", data.consumers) +
+        card("已接收", data.accepted) +
+        card("待处理", data.pending, data.pending ? "pending" : "") +
+        card("投递中", data.processing) +
+        card("已投递", data.delivered) +
+        card("失败", data.failed, data.failed ? "fail" : "") +
+        card("重复提交", data.duplicates);
+
+      const topics = data.topics_detail || [];
+      if (!topics.length) {
+        $("topics").innerHTML = '<div class="empty">暂无主题</div>';
+        return;
+      }
+      $("topics").innerHTML =
+        "<table><thead><tr>" +
+        "<th>主题</th><th>已接收</th><th>待处理</th><th>投递中</th>" +
+        "<th>已投递</th><th>失败</th><th>重复</th><th>消费者</th>" +
+        "</tr></thead><tbody>" +
+        topics.map((t) =>
+          "<tr><td>" + escapeHtml(t.name) + "</td>" +
+          "<td>" + t.accepted + "</td>" +
+          "<td>" + t.pending + "</td>" +
+          "<td>" + t.processing + "</td>" +
+          "<td>" + t.delivered + "</td>" +
+          '<td class="' + (t.failed ? "fail" : "") + '">' + t.failed + "</td>" +
+          "<td>" + t.duplicates + "</td>" +
+          "<td>" + consumersHtml(t.consumers) + "</td></tr>"
+        ).join("") +
+        "</tbody></table>";
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch("/status", { cache: "no-store" });
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        render(await response.json());
+      } catch (error) {
+        $("error").style.display = "block";
+        $("error").textContent = "无法加载状态接口：" + error.message;
+        $("meta").textContent = "离线";
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>

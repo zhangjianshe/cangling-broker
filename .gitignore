@@ -1,2 +1,10 @@
 /target
-./data
+/data
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.db-shm
+*.db-wal
+.idea/workspace.xml
+.idea/j2kLlmSettings.xml
