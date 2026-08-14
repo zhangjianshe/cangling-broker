@@ -16,6 +16,19 @@ permissions:
   actions: write
 
 jobs:
+  java:
+    name: compile java client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - name: Package cn.satway.message
+        run: mvn -f java/pom.xml -B -q package -DskipTests
+
   build:
     name: compile (${{ matrix.name }})
     runs-on: ${{ matrix.os }}

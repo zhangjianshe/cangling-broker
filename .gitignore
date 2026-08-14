@@ -1,6 +1,7 @@
 /target
 /data
 /binaries
+java/target/
 .venv/
 __pycache__/
 *.pyc

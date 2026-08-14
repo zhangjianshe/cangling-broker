@@ -86,6 +86,43 @@ cd .test
 
 The image listens on `7500` (gRPC) and `7501` (status) and stores SQLite under `/data`.
 
+### Java client (`cn.satway.message`)
+
+Maven module in [`java/`](java/). It produces with `AcceptMessage` and consumes by registering an HTTP callback.
+
+```bash
+cd java
+mvn -q package
+```
+
+```bash
+# consume
+mvn -q exec:java \
+  -Dexec.mainClass=cn.satway.message.example.ConsumerMain \
+  -Dexec.args="--broker 127.0.0.1:7500 --topic cangling-test --listen 127.0.0.1:8080"
+
+# produce
+mvn -q exec:java \
+  -Dexec.mainClass=cn.satway.message.example.ProducerMain \
+  -Dexec.args="--broker 127.0.0.1:7500 --topic cangling-test --text hello --count 1"
+```
+
+In your own code:
+
+```java
+import cn.satway.message.Consumer;
+import cn.satway.message.MessageClient;
+
+try (MessageClient client = MessageClient.connect("127.0.0.1:7500")) {
+    client.send("cangling-test", "hello");
+    try (Consumer consumer = client.subscribe("cangling-test", "127.0.0.1", 8080, message -> {
+        System.out.println(message.id() + " " + message.payload());
+    })) {
+        Thread.currentThread().join();
+    }
+}
+```
+
 CI compiles on **x86_64** (`ubuntu-latest`) and **aarch64** (`ubuntu-24.04-arm`), caches the Cargo output for the next run, then publishes a multi-arch image to both:
 
 - `docker.io/mapway/cangling-message:latest`
