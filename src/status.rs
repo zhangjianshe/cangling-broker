@@ -35,6 +35,9 @@ struct Health {
 
 #[derive(Debug, Serialize)]
 struct BrokerStatus {
+    version: &'static str,
+    git: &'static str,
+    built: &'static str,
     uptime_secs: u64,
     topics: usize,
     consumers: usize,
@@ -204,6 +207,9 @@ async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, 
     }
     let consumers = topics_detail.iter().map(|topic| topic.streams).sum();
     Ok(Json(BrokerStatus {
+        version: env!("CARGO_PKG_VERSION"),
+        git: env!("GIT_HASH"),
+        built: env!("BUILD_TIME"),
         uptime_secs: state.started.elapsed().as_secs(),
         topics: topics_detail.len(),
         consumers,

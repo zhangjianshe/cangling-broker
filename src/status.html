@@ -25,13 +25,20 @@
     }
     header {
       display: flex;
-      align-items: baseline;
+      align-items: center;
       justify-content: space-between;
       gap: 16px;
       padding: 20px 24px 8px;
     }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
     h1 { font-size: 18px; font-weight: 600; margin: 0; }
-    #meta { color: var(--muted); font-size: 13px; }
+    #build { color: var(--muted); font-size: 12px; margin-top: 2px; word-break: break-all; }
+    #meta { color: var(--muted); font-size: 13px; text-align: right; }
     #error {
       display: none;
       margin: 8px 24px;
@@ -78,19 +85,23 @@
 </head>
 <body>
   <header>
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="80" height="60px">
-      <defs>
-        <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="#00F2FE"></stop>
-          <stop offset="100%" stop-color="#3b82f6"></stop>
-        </linearGradient>
-      </defs>
-
-      <!-- Clean Minimalist Tech 'C' / Message Icon -->
-      <rect x="2" y="2" width="36" height="36" rx="10" fill="#1e293b" stroke="url(#logoGrad)" stroke-width="2"></rect>
-      <path d="M 26 12 C 22 10 16 12 13 16 C 10 20 12 26 16 28 C 20 30 26 27 28 24" fill="none" stroke="url(#logoGrad)" stroke-width="3" stroke-linecap="round"></path>
-      <circle cx="27" cy="14" r="3" fill="#00F2FE"></circle>
-    </svg>
+    <div class="brand">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="48" height="48">
+        <defs>
+          <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#00F2FE"></stop>
+            <stop offset="100%" stop-color="#3b82f6"></stop>
+          </linearGradient>
+        </defs>
+        <rect x="2" y="2" width="36" height="36" rx="10" fill="#1e293b" stroke="url(#logoGrad)" stroke-width="2"></rect>
+        <path d="M 26 12 C 22 10 16 12 13 16 C 10 20 12 26 16 28 C 20 30 26 27 28 24" fill="none" stroke="url(#logoGrad)" stroke-width="3" stroke-linecap="round"></path>
+        <circle cx="27" cy="14" r="3" fill="#00F2FE"></circle>
+      </svg>
+      <div>
+        <h1>苍岭消息</h1>
+        <div id="build">正在加载版本…</div>
+      </div>
+    </div>
     <div id="meta">正在加载…</div>
   </header>
   <div id="error"></div>
@@ -138,8 +149,16 @@
         .replace(/"/g, "&quot;");
     }
 
+    function buildLabel(data) {
+      const version = data.version ? "v" + data.version : "";
+      const git = data.git && data.git !== "unknown" ? data.git : "";
+      const built = data.built && data.built !== "unknown" ? data.built : "";
+      return [version, git, built ? "构建 " + built : ""].filter(Boolean).join(" · ") || "版本未知";
+    }
+
     function render(data) {
       $("error").style.display = "none";
+      $("build").textContent = buildLabel(data);
       $("meta").textContent = "已运行 " + fmtUptime(data.uptime_secs) + " · 刷新于 " +
         new Date().toLocaleTimeString();
       $("cards").innerHTML =
