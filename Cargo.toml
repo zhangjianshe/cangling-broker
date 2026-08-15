@@ -1,6 +1,6 @@
 [package]
 name = "cangling-message"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 description = "Durable gRPC message intake with a SQLite-backed dispatch queue"
 
