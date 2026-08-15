@@ -6,7 +6,9 @@ FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --home-dir /data --create-home app
+    && useradd --system --uid 10001 --home-dir /data --create-home app \
+    && mkdir -p /data/logs \
+    && chown -R app:app /data
 
 ARG TARGETARCH
 COPY binaries/${TARGETARCH}/cangling-message /usr/local/bin/cangling-message
@@ -14,5 +16,6 @@ COPY binaries/${TARGETARCH}/cangling-message /usr/local/bin/cangling-message
 USER app
 WORKDIR /data
 ENV DATABASE_URL=sqlite:///data/queue.db
+ENV LOG_DIR=/data/logs
 EXPOSE 7500 7501
 ENTRYPOINT ["cangling-message"]

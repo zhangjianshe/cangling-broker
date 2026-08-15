@@ -233,6 +233,9 @@ Call `AckMessage` with that `message_id` and `lease`. `success = true` marks the
 | `MESSAGE_RETENTION_DAYS` | `10` | delete messages older than this; `0` keeps them forever |
 | `ACK_TIMEOUT_SECS` | `30` | how long a subscriber may take to `AckMessage` before the message is retried |
 | `CONSUMER_TTL_SECS` | `60` | drop registered consumer metadata that is not seen again; `0` keeps it until `Unregister` |
+| `LOG_DIR` | unset (image: `/data/logs`) | write rotating files here; unset = stdout only |
+| `LOG_MAX_BYTES` | `104857600` | rotate after this many bytes (100 MiB) |
+| `LOG_KEEP_FILES` | `3` | keep this many files, including the current one |
 
 ## 数据库 ER
 

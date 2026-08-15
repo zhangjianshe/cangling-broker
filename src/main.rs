@@ -1,6 +1,7 @@
 mod auth;
 mod config;
 mod db;
+mod logging;
 mod model;
 mod status;
 mod subscribers;
@@ -282,8 +283,16 @@ impl MessageQueue for QueueService {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt().with_env_filter("info").init();
     let config = Arc::new(Config::parse());
+    let _log_guard = logging::init(&config)?;
+    if let Some(dir) = config.log_dir.as_ref() {
+        info!(
+            dir = %dir.display(),
+            max_bytes = config.log_max_bytes,
+            keep_files = config.log_keep_files,
+            "file logging enabled"
+        );
+    }
     let db = Database::connect(&config.database_url).await?;
     let shutdown = CancellationToken::new();
     let subscribers = TopicSubscribers::default();

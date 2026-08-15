@@ -13,10 +13,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM debian:bookworm-slim
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-RUN useradd --system --uid 10001 --home-dir /data --create-home app
+RUN useradd --system --uid 10001 --home-dir /data --create-home app \
+    && mkdir -p /data/logs \
+    && chown -R app:app /data
 COPY --from=builder /usr/local/bin/cangling-message /usr/local/bin/cangling-message
 USER app
 WORKDIR /data
 ENV DATABASE_URL=sqlite:///data/queue.db
+ENV LOG_DIR=/data/logs
 EXPOSE 7500 7501
 ENTRYPOINT ["cangling-message"]

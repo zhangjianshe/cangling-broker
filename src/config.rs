@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
 
@@ -43,4 +43,16 @@ pub struct Config {
     /// Drop a registered consumer if it does not Register again within this many seconds. 0 keeps it until Unregister.
     #[arg(long, env = "CONSUMER_TTL_SECS", default_value_t = 60)]
     pub consumer_ttl_secs: u64,
+
+    /// Directory for rotating log files. Unset logs only to stdout.
+    #[arg(long, env = "LOG_DIR")]
+    pub log_dir: Option<PathBuf>,
+
+    /// Rotate the log file after this many bytes. Default 100 MiB.
+    #[arg(long, env = "LOG_MAX_BYTES", default_value_t = 100 * 1024 * 1024)]
+    pub log_max_bytes: usize,
+
+    /// How many log files to keep, including the current one.
+    #[arg(long, env = "LOG_KEEP_FILES", default_value_t = 3)]
+    pub log_keep_files: usize,
 }
