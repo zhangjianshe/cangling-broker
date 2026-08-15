@@ -37,7 +37,7 @@ struct Health {
 struct BrokerStatus {
     version: &'static str,
     git: &'static str,
-    built: &'static str,
+    built: String,
     uptime_secs: u64,
     topics: usize,
     consumers: usize,
@@ -209,7 +209,7 @@ async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, 
     Ok(Json(BrokerStatus {
         version: env!("CARGO_PKG_VERSION"),
         git: env!("GIT_HASH"),
-        built: env!("BUILD_TIME"),
+        built: crate::logging::format_wall_time(env!("BUILD_TIME")),
         uptime_secs: state.started.elapsed().as_secs(),
         topics: topics_detail.len(),
         consumers,

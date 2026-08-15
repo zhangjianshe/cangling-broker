@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>苍岭消息 · 运行状态</title>
+  <title>CANGLING BROKER · 运行状态</title>
   <style>
     :root {
       --bg: #0f1419;
@@ -98,7 +98,7 @@
         <circle cx="27" cy="14" r="3" fill="#00F2FE"></circle>
       </svg>
       <div>
-        <h1>苍岭消息</h1>
+        <h1>CANGLING BROKER</h1>
         <div id="build">正在加载版本…</div>
       </div>
     </div>
@@ -149,10 +149,23 @@
         .replace(/"/g, "&quot;");
     }
 
+    function fmtBuildTime(value) {
+      if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) return value;
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      const pad = (n) => String(n).padStart(2, "0");
+      return date.getUTCFullYear() + "-" +
+        pad(date.getUTCMonth() + 1) + "-" +
+        pad(date.getUTCDate()) + " " +
+        pad(date.getUTCHours()) + ":" +
+        pad(date.getUTCMinutes()) + ":" +
+        pad(date.getUTCSeconds());
+    }
+
     function buildLabel(data) {
       const version = data.version ? "v" + data.version : "";
       const git = data.git && data.git !== "unknown" ? data.git : "";
-      const built = data.built && data.built !== "unknown" ? data.built : "";
+      const built = data.built && data.built !== "unknown" ? fmtBuildTime(data.built) : "";
       return [version, git, built ? "构建 " + built : ""].filter(Boolean).join(" · ") || "版本未知";
     }
 

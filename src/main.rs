@@ -477,7 +477,7 @@ async fn main() -> anyhow::Result<()> {
     info!(
         version = env!("CARGO_PKG_VERSION"),
         git = env!("GIT_HASH"),
-        built = env!("BUILD_TIME"),
+        built = crate::logging::format_wall_time(env!("BUILD_TIME")),
         "cangling-broker starting"
     );
     if let Some(dir) = config.log_dir() {
