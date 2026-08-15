@@ -116,6 +116,7 @@ public final class SatwayClient implements AutoCloseable {
                 request.addTopics(cn.mapway.broker.proto.TopicConfig.newBuilder()
                         .setTopic(topic.topic())
                         .setDelivery(topic.delivery())
+                        .setPersistence(topic.persistence())
                         .build());
             }
             return blockingStub()
@@ -123,7 +124,7 @@ public final class SatwayClient implements AutoCloseable {
                     .configureTopics(request.build())
                     .getTopicsList()
                     .stream()
-                    .map(item -> new TopicConfig(item.getTopic(), item.getDelivery()))
+                    .map(item -> new TopicConfig(item.getTopic(), item.getDelivery(), item.getPersistence()))
                     .toList();
         });
     }
@@ -134,7 +135,7 @@ public final class SatwayClient implements AutoCloseable {
                 .listTopics(ListTopicsRequest.getDefaultInstance())
                 .getTopicsList()
                 .stream()
-                .map(item -> new TopicConfig(item.getTopic(), item.getDelivery()))
+                .map(item -> new TopicConfig(item.getTopic(), item.getDelivery(), item.getPersistence()))
                 .toList());
     }
 

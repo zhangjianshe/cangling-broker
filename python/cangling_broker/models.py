@@ -30,6 +30,7 @@ class SatwayMessage:
 class TopicConfig:
     topic: str
     delivery: str = "single"
+    persistence: str = "persistent"
 
     def __post_init__(self) -> None:
         if not self.topic or not self.topic.strip():
@@ -41,8 +42,24 @@ class TopicConfig:
             delivery = "single"
         if delivery in {"fanout", "pubsub"}:
             delivery = "broadcast"
+        persistence = (self.persistence or "persistent").strip().lower()
+        if persistence not in {
+            "persistent",
+            "durable",
+            "store",
+            "ephemeral",
+            "transient",
+            "none",
+            "drop",
+        }:
+            raise ValueError("persistence must be persistent or ephemeral")
+        if persistence in {"durable", "store"}:
+            persistence = "persistent"
+        if persistence in {"transient", "none", "drop"}:
+            persistence = "ephemeral"
         object.__setattr__(self, "topic", self.topic.strip())
         object.__setattr__(self, "delivery", delivery)
+        object.__setattr__(self, "persistence", persistence)
 
 
 @dataclass(frozen=True)

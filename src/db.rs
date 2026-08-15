@@ -9,7 +9,9 @@ use sqlx::{
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::model::{ClaimedMessage, ConsumerSnapshot, DeliveryMode, TopicConfig, TopicSnapshot};
+use crate::model::{
+    ClaimedMessage, ConsumerSnapshot, DeliveryMode, PersistenceMode, TopicConfig, TopicSnapshot,
+};
 
 #[derive(Clone)]
 pub struct Database(pub SqlitePool);
@@ -99,7 +101,9 @@ impl Database {
                 duplicates INTEGER NOT NULL DEFAULT 0,
                 delivered INTEGER NOT NULL DEFAULT 0,
                 failed INTEGER NOT NULL DEFAULT 0,
-                delivery TEXT NOT NULL DEFAULT 'single'
+                delivery TEXT NOT NULL DEFAULT 'single',
+                persistence TEXT NOT NULL DEFAULT 'persistent',
+                dropped INTEGER NOT NULL DEFAULT 0
             )",
         )
             .execute(&pool)
@@ -107,6 +111,16 @@ impl Database {
             .context("creating SQLite topic stats schema")?;
         let _ = sqlx::query(
             "ALTER TABLE topic_stats ADD COLUMN delivery TEXT NOT NULL DEFAULT 'single'",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query(
+            "ALTER TABLE topic_stats ADD COLUMN persistence TEXT NOT NULL DEFAULT 'persistent'",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query(
+            "ALTER TABLE topic_stats ADD COLUMN dropped INTEGER NOT NULL DEFAULT 0",
         )
         .execute(&pool)
         .await;
@@ -129,25 +143,49 @@ impl Database {
         Ok(Self(pool))
     }
 
-    pub async fn topic_delivery(&self, topic: &str) -> anyhow::Result<DeliveryMode> {
-        let row = sqlx::query("SELECT delivery FROM topic_stats WHERE topic = ?")
+    pub async fn topic_persistence(&self, topic: &str) -> anyhow::Result<PersistenceMode> {
+        Ok(self.topic_config(topic).await?.persistence)
+    }
+
+    pub async fn topic_config(&self, topic: &str) -> anyhow::Result<TopicConfig> {
+        let row = sqlx::query("SELECT delivery, persistence FROM topic_stats WHERE topic = ?")
             .bind(topic)
             .fetch_optional(&self.0)
             .await?;
         Ok(row
-            .and_then(|row| DeliveryMode::parse(&row.get::<String, _>("delivery")))
-            .unwrap_or(DeliveryMode::Single))
+            .map(|row| TopicConfig {
+                topic: topic.to_string(),
+                delivery: DeliveryMode::parse(&row.get::<String, _>("delivery"))
+                    .unwrap_or(DeliveryMode::Single),
+                persistence: PersistenceMode::parse(&row.get::<String, _>("persistence"))
+                    .unwrap_or(PersistenceMode::Persistent),
+            })
+            .unwrap_or_else(|| TopicConfig {
+                topic: topic.to_string(),
+                delivery: DeliveryMode::Single,
+                persistence: PersistenceMode::Persistent,
+            }))
+    }
+
+    pub async fn ephemeral_topics(&self) -> anyhow::Result<Vec<String>> {
+        let rows = sqlx::query("SELECT topic FROM topic_stats WHERE persistence = 'ephemeral'")
+            .fetch_all(&self.0)
+            .await?;
+        Ok(rows.into_iter().map(|row| row.get("topic")).collect())
     }
 
     pub async fn configure_topics(&self, configs: &[TopicConfig]) -> anyhow::Result<Vec<TopicConfig>> {
         for config in configs {
             sqlx::query(
-                "INSERT INTO topic_stats (topic, delivery)
-                 VALUES (?, ?)
-                 ON CONFLICT(topic) DO UPDATE SET delivery = excluded.delivery",
+                "INSERT INTO topic_stats (topic, delivery, persistence)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT(topic) DO UPDATE SET
+                    delivery = excluded.delivery,
+                    persistence = excluded.persistence",
             )
             .bind(&config.topic)
             .bind(config.delivery.as_str())
+            .bind(config.persistence.as_str())
             .execute(&self.0)
             .await?;
         }
@@ -155,7 +193,7 @@ impl Database {
     }
 
     pub async fn list_topic_configs(&self) -> anyhow::Result<Vec<TopicConfig>> {
-        let rows = sqlx::query("SELECT topic, delivery FROM topic_stats ORDER BY topic")
+        let rows = sqlx::query("SELECT topic, delivery, persistence FROM topic_stats ORDER BY topic")
             .fetch_all(&self.0)
             .await?;
         Ok(rows
@@ -164,6 +202,8 @@ impl Database {
                 topic: row.get("topic"),
                 delivery: DeliveryMode::parse(&row.get::<String, _>("delivery"))
                     .unwrap_or(DeliveryMode::Single),
+                persistence: PersistenceMode::parse(&row.get::<String, _>("persistence"))
+                    .unwrap_or(PersistenceMode::Persistent),
             })
             .collect())
     }
@@ -206,7 +246,8 @@ impl Database {
         let mut topics: HashMap<String, TopicSnapshot> = HashMap::new();
 
         for row in sqlx::query(
-            "SELECT topic, accepted, duplicates, delivered, failed, delivery FROM topic_stats",
+            "SELECT topic, accepted, duplicates, delivered, failed, dropped, delivery, persistence
+             FROM topic_stats",
         )
         .fetch_all(&self.0)
         .await?
@@ -220,9 +261,15 @@ impl Database {
             topic.duplicates = row.get("duplicates");
             topic.delivered = row.get("delivered");
             topic.failed = row.get("failed");
+            topic.dropped = row.get("dropped");
             let delivery: String = row.get("delivery");
             topic.delivery = DeliveryMode::parse(&delivery)
                 .unwrap_or(DeliveryMode::Single)
+                .as_str()
+                .to_string();
+            let persistence: String = row.get("persistence");
+            topic.persistence = PersistenceMode::parse(&persistence)
+                .unwrap_or(PersistenceMode::Persistent)
                 .as_str()
                 .to_string();
         }
@@ -397,6 +444,69 @@ impl Database {
         }
         self.bump_topic_stat(topic, 1, 0, 0, 0).await?;
         Ok((id, false))
+    }
+
+    pub async fn accept_dropped(&self, topic: &str) -> anyhow::Result<String> {
+        let id = Uuid::new_v4().to_string();
+        self.bump_topic_stat(topic, 1, 0, 0, 0).await?;
+        self.bump_dropped(topic, 1).await?;
+        Ok(id)
+    }
+
+    pub async fn drop_pending(&self, topic: &str) -> anyhow::Result<u64> {
+        let result = sqlx::query(
+            "UPDATE messages SET status = 'dropped', last_error = 'no live subscriber', lease = NULL
+             WHERE topic = ? AND status = 'pending'",
+        )
+        .bind(topic)
+        .execute(&self.0)
+        .await?;
+        let dropped = result.rows_affected();
+        if dropped > 0 {
+            self.bump_dropped(topic, dropped as i64).await?;
+        }
+        Ok(dropped)
+    }
+
+    pub async fn drop_claimed(&self, id: &str, lease: &str, error: &str) -> anyhow::Result<bool> {
+        let row = sqlx::query(
+            "SELECT topic FROM messages WHERE id = ? AND lease = ? AND status = 'processing'",
+        )
+        .bind(id)
+        .bind(lease)
+        .fetch_optional(&self.0)
+        .await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let topic: String = row.get("topic");
+        let result = sqlx::query(
+            "UPDATE messages SET status = 'dropped', last_error = ?, lease = NULL
+             WHERE id = ? AND lease = ? AND status = 'processing'",
+        )
+        .bind(error)
+        .bind(id)
+        .bind(lease)
+        .execute(&self.0)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(false);
+        }
+        self.bump_dropped(&topic, 1).await?;
+        Ok(true)
+    }
+
+    async fn bump_dropped(&self, topic: &str, dropped: i64) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO topic_stats (topic, dropped)
+             VALUES (?, ?)
+             ON CONFLICT(topic) DO UPDATE SET dropped = topic_stats.dropped + excluded.dropped",
+        )
+        .bind(topic)
+        .bind(dropped)
+        .execute(&self.0)
+        .await?;
+        Ok(())
     }
 
     pub async fn reclaim_stale(&self) -> anyhow::Result<u64> {
@@ -642,4 +752,69 @@ fn sqlite_file_path(url: &str) -> Option<PathBuf> {
         return None;
     }
     Some(PathBuf::from(rest))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    async fn temp_db() -> (Database, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("cangling-broker-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let url = format!("sqlite:{}/queue.db", dir.display());
+        let db = Database::connect(&url).await.unwrap();
+        (db, dir)
+    }
+
+    #[tokio::test]
+    async fn configure_persistence_and_drop_without_subscribers() {
+        let (db, dir) = temp_db().await;
+        db.configure_topics(&[TopicConfig {
+            topic: "live-events".into(),
+            delivery: DeliveryMode::Broadcast,
+            persistence: PersistenceMode::Ephemeral,
+        }])
+        .await
+        .unwrap();
+
+        let listed = db.list_topic_configs().await.unwrap();
+        let topic = listed.iter().find(|item| item.topic == "live-events").unwrap();
+        assert_eq!(topic.delivery, DeliveryMode::Broadcast);
+        assert_eq!(topic.persistence, PersistenceMode::Ephemeral);
+        assert_eq!(
+            db.topic_persistence("live-events").await.unwrap(),
+            PersistenceMode::Ephemeral
+        );
+        assert_eq!(db.ephemeral_topics().await.unwrap(), vec!["live-events"]);
+
+        let id = db.accept_dropped("live-events").await.unwrap();
+        assert!(!id.is_empty());
+        let snapshot = db.status_snapshot(None).await.unwrap();
+        let stats = snapshot.iter().find(|item| item.name == "live-events").unwrap();
+        assert_eq!(stats.accepted, 1);
+        assert_eq!(stats.dropped, 1);
+        assert_eq!(stats.pending, 0);
+        assert_eq!(stats.persistence, "ephemeral");
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn drop_pending_marks_queued_messages() {
+        let (db, dir) = temp_db().await;
+        db.enqueue(None, "live-events", b"hello", HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(db.drop_pending("live-events").await.unwrap(), 1);
+        assert_eq!(db.drop_pending("live-events").await.unwrap(), 0);
+        let snapshot = db.status_snapshot(None).await.unwrap();
+        let stats = snapshot.iter().find(|item| item.name == "live-events").unwrap();
+        assert_eq!(stats.pending, 0);
+        assert_eq!(stats.dropped, 1);
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

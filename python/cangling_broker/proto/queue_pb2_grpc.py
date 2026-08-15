@@ -111,15 +111,17 @@ class MessageQueueServicer:
         raise NotImplementedError('Method not implemented!')
 
     def ConfigureTopics(self, request, context):
-        """Create or replace delivery mode for many topics at once.
+        """Create or replace delivery and persistence for many topics at once.
         delivery is "single" (competing consumers, default) or "broadcast" (every live stream).
+        persistence is "persistent" (store and deliver later, default) or "ephemeral"
+        (deliver only to live Subscribe streams; drop if nobody is connected).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def ListTopics(self, request, context):
-        """List stored topic delivery configs.
+        """List stored topic delivery and persistence configs.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

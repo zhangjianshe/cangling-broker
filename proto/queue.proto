@@ -23,11 +23,13 @@ service MessageQueue {
   // Confirm or reject a message received from Subscribe.
   rpc AckMessage(AckMessageRequest) returns (AckMessageResponse);
 
-  // Create or replace delivery mode for many topics at once.
+  // Create or replace delivery and persistence for many topics at once.
   // delivery is "single" (competing consumers, default) or "broadcast" (every live stream).
+  // persistence is "persistent" (store and deliver later, default) or "ephemeral"
+  // (deliver only to live Subscribe streams; drop if nobody is connected).
   rpc ConfigureTopics(ConfigureTopicsRequest) returns (ConfigureTopicsResponse);
 
-  // List stored topic delivery configs.
+  // List stored topic delivery and persistence configs.
   rpc ListTopics(ListTopicsRequest) returns (ListTopicsResponse);
 }
 
@@ -93,6 +95,8 @@ message TopicConfig {
   string topic = 1;
   // "single" or "broadcast". Empty on configure is rejected.
   string delivery = 2;
+  // "persistent" (default) or "ephemeral". Empty on configure means persistent.
+  string persistence = 3;
 }
 
 message ConfigureTopicsRequest {

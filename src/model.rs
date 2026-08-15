@@ -47,10 +47,40 @@ impl Default for DeliveryMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistenceMode {
+    Persistent,
+    Ephemeral,
+}
+
+impl PersistenceMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Persistent => "persistent",
+            Self::Ephemeral => "ephemeral",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "persistent" | "durable" | "store" => Some(Self::Persistent),
+            "ephemeral" | "transient" | "none" | "drop" => Some(Self::Ephemeral),
+            _ => None,
+        }
+    }
+}
+
+impl Default for PersistenceMode {
+    fn default() -> Self {
+        Self::Persistent
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TopicConfig {
     pub topic: String,
     pub delivery: DeliveryMode,
+    pub persistence: PersistenceMode,
 }
 
 #[derive(Debug, Serialize, Clone, Default)]
@@ -66,7 +96,30 @@ pub struct TopicSnapshot {
     pub streams: usize,
     #[serde(default)]
     pub delivery: String,
+    #[serde(default)]
+    pub persistence: String,
+    #[serde(default)]
+    pub dropped: i64,
     pub consumers: Vec<ConsumerSnapshot>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persistence_parse_defaults_empty_to_persistent() {
+        assert_eq!(PersistenceMode::parse(""), Some(PersistenceMode::Persistent));
+        assert_eq!(
+            PersistenceMode::parse("DURABLE"),
+            Some(PersistenceMode::Persistent)
+        );
+        assert_eq!(
+            PersistenceMode::parse("drop"),
+            Some(PersistenceMode::Ephemeral)
+        );
+        assert_eq!(PersistenceMode::parse("maybe"), None);
+    }
 }
 
 impl ClaimedMessage {

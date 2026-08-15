@@ -2,7 +2,7 @@
 
 A small, Kafka-like building block. Producers and consumers both use **gRPC streams**. The service commits each publish to SQLite first, then delivers it according to the topic mode.
 
-Topics default to **single** (competing consumers: one live stream gets each message). Set a topic to **broadcast** and every live `Subscribe` stream on that topic gets a copy. `Register` only stores extra consumer metadata. `DOWNSTREAM_URL` is an optional HTTP fallback when a topic has no live stream.
+Topics default to **single** (competing consumers: one live stream gets each message). Set a topic to **broadcast** and every live `Subscribe` stream on that topic gets a copy. Persistence defaults to **persistent** (queue and deliver later). Set a topic to **ephemeral** and a publish with no live `Subscribe` stream is dropped. `Register` only stores extra consumer metadata. `DOWNSTREAM_URL` is an optional HTTP fallback when a **persistent** topic has no live stream.
 
 Set `CL_BROKER_AUTH_TOKEN` on the broker for production. Clients must send the same value as `authorization: Bearer <token>` (or `--token` / `CL_BROKER_AUTH_TOKEN`). Unset keeps the broker open.
 
@@ -210,15 +210,22 @@ Default is `single`. Configure many topics at once:
 curl -s -H 'authorization: Bearer change-me' \
   -H 'content-type: application/json' \
   -d '{"topics":[
-        {"topic":"jobs","delivery":"single"},
-        {"topic":"alerts","delivery":"broadcast"}
+        {"topic":"jobs","delivery":"single","persistence":"persistent"},
+        {"topic":"alerts","delivery":"broadcast","persistence":"persistent"},
+        {"topic":"live-events","delivery":"broadcast","persistence":"ephemeral"}
       ]}' \
   http://127.0.0.1:7501/topics
 
 curl -s -H 'authorization: Bearer change-me' http://127.0.0.1:7501/topics
 ```
 
-gRPC: `ConfigureTopics` / `ListTopics`. Java: `client.configureTopics(List.of(TopicConfig.broadcast("alerts"), TopicConfig.single("jobs")))`. Python: `client.configure_topics([TopicConfig("alerts", "broadcast"), TopicConfig("jobs", "single")])`.
+gRPC: `ConfigureTopics` / `ListTopics`. Java: `client.configureTopics(List.of(TopicConfig.broadcast("alerts"), TopicConfig.single("jobs"), TopicConfig.ephemeral("live-events", TopicConfig.BROADCAST)))`. Python: `client.configure_topics([TopicConfig("alerts", "broadcast"), TopicConfig("jobs", "single"), TopicConfig("live-events", "broadcast", "ephemeral")])`.
+
+### Topic persistence
+
+Default is `persistent`. On a **persistent** topic the broker stores the message and delivers it later, including via `DOWNSTREAM_URL` when nobody is subscribed.
+
+On an **ephemeral** topic the broker delivers only to live `Subscribe` streams. If nobody is connected at publish time, the message is dropped (not queued, no HTTP fallback). A later subscriber does not receive those dropped messages. `delivery` still applies among whoever is connected: `single` sends to one live stream, `broadcast` sends a copy to every live stream.
 
 ## Delivery contract
 
@@ -281,6 +288,8 @@ erDiagram
         INTEGER delivered "累计投递成功"
         INTEGER failed "累计投递失败"
         TEXT delivery "single 或 broadcast"
+        TEXT persistence "persistent 或 ephemeral"
+        INTEGER dropped "无在线流时丢弃"
     }
 
     messages {

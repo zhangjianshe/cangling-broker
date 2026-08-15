@@ -15,7 +15,7 @@ use crate::{
     auth,
     config::Config,
     db::Database,
-    model::{DeliveryMode, TopicConfig, TopicSnapshot},
+    model::{DeliveryMode, PersistenceMode, TopicConfig, TopicSnapshot},
     subscribers::TopicSubscribers,
 };
 
@@ -44,6 +44,7 @@ struct BrokerStatus {
     processing: i64,
     delivered: i64,
     failed: i64,
+    dropped: i64,
     topics_detail: Vec<TopicSnapshot>,
 }
 
@@ -123,6 +124,8 @@ struct ConfigureTopicsBody {
 struct TopicConfigBody {
     topic: String,
     delivery: String,
+    #[serde(default)]
+    persistence: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -157,9 +160,13 @@ async fn configure_topics(
         let Some(delivery) = DeliveryMode::parse(&item.delivery) else {
             return Err(StatusCode::BAD_REQUEST);
         };
+        let Some(persistence) = PersistenceMode::parse(&item.persistence) else {
+            return Err(StatusCode::BAD_REQUEST);
+        };
         configs.push(TopicConfig {
             topic: topic.to_string(),
             delivery,
+            persistence,
         });
     }
     let topics = state
@@ -176,6 +183,7 @@ fn to_body(config: TopicConfig) -> TopicConfigBody {
     TopicConfigBody {
         topic: config.topic,
         delivery: config.delivery.as_str().to_string(),
+        persistence: config.persistence.as_str().to_string(),
     }
 }
 
@@ -205,6 +213,7 @@ async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, 
         processing: topics_detail.iter().map(|topic| topic.processing).sum(),
         delivered: topics_detail.iter().map(|topic| topic.delivered).sum(),
         failed: topics_detail.iter().map(|topic| topic.failed).sum(),
+        dropped: topics_detail.iter().map(|topic| topic.dropped).sum(),
         topics_detail,
     }))
 }

@@ -150,6 +150,7 @@
         card("投递中", data.processing) +
         card("已投递", data.delivered) +
         card("失败", data.failed, data.failed ? "fail" : "") +
+        card("已丢弃", data.dropped || 0) +
         card("重复提交", data.duplicates);
 
       const topics = data.topics_detail || [];
@@ -159,17 +160,19 @@
       }
       $("topics").innerHTML =
         "<table><thead><tr>" +
-        "<th>主题</th><th>投递</th><th>已接收</th><th>待处理</th><th>投递中</th>" +
-        "<th>已投递</th><th>失败</th><th>重复</th><th>在线流</th><th>消费者</th>" +
+        "<th>主题</th><th>投递</th><th>持久</th><th>已接收</th><th>待处理</th><th>投递中</th>" +
+        "<th>已投递</th><th>失败</th><th>丢弃</th><th>重复</th><th>在线流</th><th>消费者</th>" +
         "</tr></thead><tbody>" +
         topics.map((t) =>
           "<tr><td>" + escapeHtml(t.name) + "</td>" +
           "<td>" + escapeHtml(t.delivery === "broadcast" ? "广播" : "单投") + "</td>" +
+          "<td>" + escapeHtml(t.persistence === "ephemeral" ? "即弃" : "持久") + "</td>" +
           "<td>" + t.accepted + "</td>" +
           "<td>" + t.pending + "</td>" +
           "<td>" + t.processing + "</td>" +
           "<td>" + t.delivered + "</td>" +
           '<td class="' + (t.failed ? "fail" : "") + '">' + t.failed + "</td>" +
+          "<td>" + (t.dropped || 0) + "</td>" +
           "<td>" + t.duplicates + "</td>" +
           "<td>" + (t.streams || 0) + "</td>" +
           "<td>" + consumersHtml(t.consumers) + "</td></tr>"

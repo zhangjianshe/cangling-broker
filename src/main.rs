@@ -30,7 +30,7 @@ use proto::{
     RegisterRequest, RegisterResponse, SatwayMessage, SubscribeRequest, TopicConfig as ProtoTopicConfig,
     UnregisterRequest, UnregisterResponse,
 };
-use crate::model::{DeliveryMode, TopicConfig};
+use crate::model::{DeliveryMode, PersistenceMode, TopicConfig};
 
 #[derive(Clone)]
 struct QueueService {
@@ -47,6 +47,7 @@ fn to_proto_topic(config: TopicConfig) -> ProtoTopicConfig {
     ProtoTopicConfig {
         topic: config.topic,
         delivery: config.delivery.as_str().to_string(),
+        persistence: config.persistence.as_str().to_string(),
     }
 }
 
@@ -74,6 +75,7 @@ impl MessageQueue for QueueService {
         let mut inbound = request.into_inner();
         let (tx, rx) = mpsc::channel(16);
         let db = self.db.clone();
+        let subscribers = self.subscribers.clone();
         tokio::spawn(async move {
             while let Some(message) = inbound.next().await {
                 let message = match message {
@@ -95,10 +97,41 @@ impl MessageQueue for QueueService {
                         .await;
                     continue;
                 }
+                let topic = message.topic.trim();
+                let ephemeral = db
+                    .topic_persistence(topic)
+                    .await
+                    .ok()
+                    .is_some_and(|mode| mode == PersistenceMode::Ephemeral);
+                if ephemeral && subscribers.count(topic) == 0 {
+                    match db.accept_dropped(topic).await {
+                        Ok(message_id) => {
+                            info!(topic, id = %message_id, "ephemeral message dropped: no live subscriber");
+                            if tx
+                                .send(Ok(AcceptMessageResponse {
+                                    message_id,
+                                    duplicate: false,
+                                }))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            error!(%error, "could not record dropped message");
+                            let _ = tx
+                                .send(Err(Status::internal("could not persist message")))
+                                .await;
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 match db
                     .enqueue(
                         Some(&message.idempotency_key),
-                        &message.topic,
+                        topic,
                         &message.payload,
                         message.attributes,
                     )
@@ -198,7 +231,7 @@ impl MessageQueue for QueueService {
         let config = self.config.clone();
         let shutdown = self.shutdown.clone();
         tokio::spawn(async move {
-            let _guard = SubscriptionGuard::new(
+            let guard = SubscriptionGuard::new(
                 subscribers.clone(),
                 topic.clone(),
                 session.clone(),
@@ -207,7 +240,7 @@ impl MessageQueue for QueueService {
             info!(topic = %topic, consumer_id = %consumer_id, "subscriber connected");
             let visibility = Duration::from_secs(config.ack_timeout_secs.max(1));
             loop {
-                if shutdown.is_cancelled() {
+                if shutdown.is_cancelled() || tx.is_closed() {
                     break;
                 }
                 let claimed = match db.claim_next_for_topic(&topic, visibility).await {
@@ -229,11 +262,13 @@ impl MessageQueue for QueueService {
                     }
                     continue;
                 };
-                let broadcast = db
-                    .topic_delivery(&topic)
-                    .await
-                    .ok()
-                    .is_some_and(|mode| mode == DeliveryMode::Broadcast);
+                let settings = db.topic_config(&topic).await.ok();
+                let broadcast = settings
+                    .as_ref()
+                    .is_some_and(|config| config.delivery == DeliveryMode::Broadcast);
+                let ephemeral = settings
+                    .as_ref()
+                    .is_some_and(|config| config.persistence == PersistenceMode::Ephemeral);
                 let targets = if broadcast {
                     let mut senders = subscribers.senders(&topic);
                     if senders.is_empty() {
@@ -268,14 +303,27 @@ impl MessageQueue for QueueService {
                     }
                 }
                 if waits.is_empty() {
-                    let _ = db
-                        .failed(
-                            &message.id,
-                            &message.lease,
-                            "no live subscriber accepted the message",
-                            config.max_delivery_attempts,
-                        )
-                        .await;
+                    if ephemeral {
+                        let _ = db
+                            .drop_claimed(
+                                &message.id,
+                                &message.lease,
+                                "no live subscriber accepted the message",
+                            )
+                            .await;
+                    } else {
+                        let _ = db
+                            .failed(
+                                &message.id,
+                                &message.lease,
+                                "no live subscriber accepted the message",
+                                config.max_delivery_attempts,
+                            )
+                            .await;
+                    }
+                    if tx.is_closed() {
+                        break;
+                    }
                     continue;
                 }
                 let mut all_ok = true;
@@ -330,6 +378,25 @@ impl MessageQueue for QueueService {
                         .await;
                 }
             }
+            drop(guard);
+            if subscribers.count(&topic) == 0 {
+                if db
+                    .topic_persistence(&topic)
+                    .await
+                    .ok()
+                    .is_some_and(|mode| mode == PersistenceMode::Ephemeral)
+                {
+                    match db.drop_pending(&topic).await {
+                        Ok(0) => {}
+                        Ok(dropped) => info!(
+                            topic = %topic,
+                            dropped,
+                            "dropped ephemeral messages after last subscriber left"
+                        ),
+                        Err(error) => error!(%error, topic = %topic, "could not drop ephemeral messages"),
+                    }
+                }
+            }
             info!(topic = %topic, "subscriber disconnected");
         });
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
@@ -354,9 +421,15 @@ impl MessageQueue for QueueService {
                     "delivery must be single or broadcast",
                 ));
             };
+            let Some(persistence) = PersistenceMode::parse(&item.persistence) else {
+                return Err(Status::invalid_argument(
+                    "persistence must be persistent or ephemeral",
+                ));
+            };
             configs.push(TopicConfig {
                 topic: topic.to_string(),
                 delivery,
+                persistence,
             });
         }
         let stored = self.db.configure_topics(&configs).await.map_err(|error| {
@@ -436,7 +509,12 @@ async fn main() -> anyhow::Result<()> {
         subscribers.clone(),
         shutdown.clone(),
     ));
-    let cleaner = tokio::spawn(retention_loop(db.clone(), config.clone(), shutdown.clone()));
+    let cleaner = tokio::spawn(retention_loop(
+        db.clone(),
+        config.clone(),
+        subscribers.clone(),
+        shutdown.clone(),
+    ));
     let address = config.grpc_listen_addr();
     let interceptor = AuthInterceptor::new(config.auth_token.clone());
     if interceptor.enabled() {
@@ -522,7 +600,14 @@ async fn dispatch_loop(
             _ = shutdown.cancelled() => break,
             _ = tokio::time::sleep(Duration::from_millis(config.worker_poll_ms)) => {}
         }
-        let skip = subscribers.topics();
+        let mut skip = subscribers.topics();
+        if let Ok(ephemeral) = db.ephemeral_topics().await {
+            for topic in ephemeral {
+                if !skip.iter().any(|live| live == &topic) {
+                    skip.push(topic);
+                }
+            }
+        }
         let Some(message) = (match db.claim_next_excluding(visibility, &skip).await {
             Ok(message) => message,
             Err(error) => {
@@ -558,9 +643,35 @@ async fn dispatch_loop(
     }
 }
 
-async fn retention_loop(db: Database, config: Arc<Config>, shutdown: CancellationToken) {
+async fn retention_loop(
+    db: Database,
+    config: Arc<Config>,
+    subscribers: TopicSubscribers,
+    shutdown: CancellationToken,
+) {
     const SWEEP_SECS: u64 = 60;
     loop {
+        match db.ephemeral_topics().await {
+            Ok(topics) => {
+                for topic in topics {
+                    if subscribers.count(&topic) > 0 {
+                        continue;
+                    }
+                    match db.drop_pending(&topic).await {
+                        Ok(0) => {}
+                        Ok(dropped) => info!(
+                            topic = %topic,
+                            dropped,
+                            "dropped ephemeral messages with no live subscriber"
+                        ),
+                        Err(error) => {
+                            error!(%error, topic = %topic, "unable to drop ephemeral messages")
+                        }
+                    }
+                }
+            }
+            Err(error) => error!(%error, "unable to list ephemeral topics"),
+        }
         if config.message_retention_days > 0 {
             let cutoff = chrono::Utc::now() - chrono::Duration::days(config.message_retention_days);
             match db.purge_older_than(&cutoff.to_rfc3339()).await {

@@ -128,14 +128,25 @@ class SatwayClient:
             response = self._stub.ConfigureTopics(
                 queue_pb2.ConfigureTopicsRequest(
                     topics=[
-                        queue_pb2.TopicConfig(topic=item.topic, delivery=item.delivery)
+                        queue_pb2.TopicConfig(
+                            topic=item.topic,
+                            delivery=item.delivery,
+                            persistence=item.persistence,
+                        )
                         for item in topics
                     ]
                 ),
                 timeout=RPC_DEADLINE_SECS,
                 metadata=self._metadata,
             )
-            return [TopicConfig(topic=item.topic, delivery=item.delivery) for item in response.topics]
+            return [
+                TopicConfig(
+                    topic=item.topic,
+                    delivery=item.delivery,
+                    persistence=item.persistence,
+                )
+                for item in response.topics
+            ]
 
         return self._call_with_reconnect("configure_topics", once)
 
@@ -146,7 +157,14 @@ class SatwayClient:
                 timeout=RPC_DEADLINE_SECS,
                 metadata=self._metadata,
             )
-            return [TopicConfig(topic=item.topic, delivery=item.delivery) for item in response.topics]
+            return [
+                TopicConfig(
+                    topic=item.topic,
+                    delivery=item.delivery,
+                    persistence=item.persistence,
+                )
+                for item in response.topics
+            ]
 
         return self._call_with_reconnect("list_topics", once)
 
