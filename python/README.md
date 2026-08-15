@@ -30,6 +30,17 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
 
 `SatwayClient.connect(broker)` also reads `AUTH_TOKEN` from the environment.
 
+Existing Kafka senders can keep ``send(topic, value)`` / ``flush()``:
+
+```python
+# from kafka import KafkaProducer
+from cangling_message import KafkaProducer
+
+producer = KafkaProducer(bootstrap_servers="127.0.0.1:7500")
+producer.send(topic, msg)
+producer.flush()
+```
+
 ```bash
 # consume
 python python/examples/consumer.py --broker 127.0.0.1:7500 --topic cangling-test --name py-s0 --token change-me
