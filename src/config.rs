@@ -13,6 +13,11 @@ pub struct Config {
     #[arg(long, env = "STATUS_LISTEN_ADDR", default_value = "0.0.0.0:7501")]
     pub status_listen_addr: SocketAddr,
 
+    /// Shared secret. When set, every gRPC call must send it
+    /// (`authorization: Bearer <token>` or `x-auth-token`). Empty disables auth.
+    #[arg(long, env = "AUTH_TOKEN")]
+    pub auth_token: Option<String>,
+
     /// SQLite database URL. Use sqlite:./queue.db to place it beside the binary.
     #[arg(long, env = "DATABASE_URL", default_value = "sqlite:./queue.db")]
     pub database_url: String,

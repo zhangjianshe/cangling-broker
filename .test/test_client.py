@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 import time
 
@@ -7,9 +8,19 @@ from proto.queue_pb2 import AcceptMessageRequest
 from proto.queue_pb2_grpc import MessageQueueStub
 
 
+def auth_metadata(token):
+    token = (token or "").strip()
+    if not token:
+        return None
+    if not token.lower().startswith("bearer "):
+        token = "Bearer " + token
+    return [("authorization", token)]
+
+
 class TestClient:
-    def __init__(self, server_addr="127.0.0.1:7500"):
+    def __init__(self, server_addr="127.0.0.1:7500", token=""):
         self.server_addr = server_addr
+        self.metadata = auth_metadata(token)
         self.channel = grpc.insecure_channel(server_addr)
         self.stub = MessageQueueStub(self.channel)
 
@@ -27,7 +38,7 @@ class TestClient:
             yield request
 
         try:
-            for response in self.stub.AcceptMessages(requests(), timeout=5):
+            for response in self.stub.AcceptMessages(requests(), timeout=5, metadata=self.metadata):
                 print(f"Success | ID: {response.message_id} | Duplicate: {response.duplicate}")
                 return response.message_id
             print("gRPC error: empty publish stream")
@@ -44,9 +55,10 @@ def main():
     parser.add_argument("--text", default="")
     parser.add_argument("--count", type=int, default=0, help="send this many times then exit; 0 = loop")
     parser.add_argument("--interval", type=float, default=2.0)
+    parser.add_argument("--token", default=os.environ.get("AUTH_TOKEN", ""))
     args = parser.parse_args()
 
-    client = TestClient(args.broker)
+    client = TestClient(args.broker, args.token)
     text = args.text.strip()
     if not text:
         try:

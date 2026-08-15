@@ -1,3 +1,4 @@
+mod auth;
 mod config;
 mod db;
 mod model;
@@ -7,6 +8,7 @@ mod subscribers;
 use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 
 use clap::Parser;
+use auth::AuthInterceptor;
 use config::Config;
 use db::Database;
 use subscribers::{InflightAcks, SubscriptionGuard, TopicSubscribers};
@@ -303,14 +305,22 @@ async fn main() -> anyhow::Result<()> {
     ));
     let cleaner = tokio::spawn(retention_loop(db.clone(), config.clone(), shutdown.clone()));
     let address = config.grpc_listen_addr;
-    info!(%address, "gRPC intake service listening");
+    let interceptor = AuthInterceptor::new(config.auth_token.clone());
+    if interceptor.enabled() {
+        info!(%address, "gRPC intake service listening (AUTH_TOKEN required)");
+    } else {
+        info!(%address, "gRPC intake service listening (AUTH_TOKEN unset, open)");
+    }
     Server::builder()
-        .add_service(MessageQueueServer::new(QueueService {
-            db,
-            config,
-            subscribers,
-            inflight,
-        }))
+        .add_service(MessageQueueServer::with_interceptor(
+            QueueService {
+                db,
+                config,
+                subscribers,
+                inflight,
+            },
+            interceptor,
+        ))
         .serve_with_shutdown(address, async move {
             let _ = tokio::signal::ctrl_c().await;
             shutdown.cancel();

@@ -7,9 +7,16 @@ import cn.mapway.message.proto.MessageQueueGrpc;
 import cn.mapway.message.proto.RegisterRequest;
 import cn.mapway.message.proto.UnregisterRequest;
 import com.google.protobuf.ByteString;
+import io.grpc.CallOptions;
+import io.grpc.Channel;
+import io.grpc.ClientCall;
+import io.grpc.ClientInterceptor;
 import io.grpc.ConnectivityState;
+import io.grpc.ForwardingClientCall;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
@@ -55,9 +62,20 @@ public final class SatwayClient implements AutoCloseable {
     }
 
     /**
+     * Connects using {@code AUTH_TOKEN} from the environment when set.
+     *
      * @param broker host:port, for example {@code 127.0.0.1:7500}
      */
     public static SatwayClient connect(String broker) {
+        return connect(broker, authTokenFromEnv());
+    }
+
+    /**
+     * @param broker host:port, for example {@code 127.0.0.1:7500}
+     * @param token  shared secret matching the broker {@code AUTH_TOKEN}.
+     *               Blank skips the header (only works if the broker has no token).
+     */
+    public static SatwayClient connect(String broker, String token) {
         Objects.requireNonNull(broker, "broker");
         if (broker.isBlank()) {
             throw new IllegalArgumentException("broker is required");
@@ -65,14 +83,21 @@ public final class SatwayClient implements AutoCloseable {
         String target = broker.startsWith("http://")
                 ? broker.substring("http://".length())
                 : broker.startsWith("https://") ? broker.substring("https://".length()) : broker;
-        ManagedChannel channel = ManagedChannelBuilder.forTarget(target)
+        ManagedChannelBuilder<?> builder = ManagedChannelBuilder.forTarget(target)
                 .usePlaintext()
                 .keepAliveTime(30, TimeUnit.SECONDS)
                 .keepAliveTimeout(10, TimeUnit.SECONDS)
                 .keepAliveWithoutCalls(true)
-                .idleTimeout(365, TimeUnit.DAYS)
-                .build();
-        return new SatwayClient(channel);
+                .idleTimeout(365, TimeUnit.DAYS);
+        if (token != null && !token.isBlank()) {
+            builder.intercept(tokenInterceptor(token.trim()));
+        }
+        return new SatwayClient(builder.build());
+    }
+
+    public static String authTokenFromEnv() {
+        String token = System.getenv("AUTH_TOKEN");
+        return token == null ? "" : token.trim();
     }
 
     public String register(String topic, String name, Map<String, String> attributes) {
@@ -296,6 +321,24 @@ public final class SatwayClient implements AutoCloseable {
                 || code == Status.Code.DEADLINE_EXCEEDED
                 || code == Status.Code.ABORTED
                 || code == Status.Code.UNKNOWN;
+    }
+
+    private static ClientInterceptor tokenInterceptor(String token) {
+        Metadata.Key<String> key = Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+        String header = token.regionMatches(true, 0, "Bearer ", 0, 7) ? token : "Bearer " + token;
+        return new ClientInterceptor() {
+            @Override
+            public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
+                    MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next) {
+                return new ForwardingClientCall.SimpleForwardingClientCall<>(next.newCall(method, callOptions)) {
+                    @Override
+                    public void start(Listener<RespT> responseListener, Metadata headers) {
+                        headers.put(key, header);
+                        super.start(responseListener, headers);
+                    }
+                };
+            }
+        };
     }
 
     private static String rootMessage(Throwable error) {

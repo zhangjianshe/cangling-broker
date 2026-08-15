@@ -166,7 +166,10 @@
 
     async function refresh() {
       try {
-        const response = await fetch("/status", { cache: "no-store" });
+        const token = new URLSearchParams(location.search).get("token") || "";
+        const headers = {};
+        if (token) headers.Authorization = "Bearer " + token;
+        const response = await fetch("/status", { cache: "no-store", headers });
         if (!response.ok) throw new Error("HTTP " + response.status);
         render(await response.json());
       } catch (error) {

@@ -8,7 +8,8 @@ public final class ConsumerMain {
         String broker = arg(args, "--broker", "127.0.0.1:7500");
         String topic = arg(args, "--topic", "cangling-test");
         String name = arg(args, "--name", "java-consumer");
-        try (SatwayClient client = SatwayClient.connect(broker);
+        String token = arg(args, "--token", SatwayClient.authTokenFromEnv());
+        try (SatwayClient client = SatwayClient.connect(broker, token);
              var consumer = client.subscribe(
                      SubscribeOptions.topic(topic).name(name).build(),
                      message -> System.out.println(

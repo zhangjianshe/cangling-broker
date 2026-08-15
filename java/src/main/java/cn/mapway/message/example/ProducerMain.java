@@ -9,7 +9,8 @@ public final class ProducerMain {
         String topic = arg(args, "--topic", "cangling-test");
         String text = arg(args, "--text", "hello");
         int count = Integer.parseInt(arg(args, "--count", "1"));
-        try (SatwayClient client = SatwayClient.connect(broker)) {
+        String token = arg(args, "--token", SatwayClient.authTokenFromEnv());
+        try (SatwayClient client = SatwayClient.connect(broker, token)) {
             for (int i = 0; i < count; i++) {
                 String payload = count == 1 ? text : text + "-" + i;
                 SendResult result = client.send(topic, payload);

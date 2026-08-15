@@ -4,11 +4,13 @@ A small, Kafka-like building block. Producers and consumers both use **gRPC stre
 
 Topics are work queues, not broadcast. `Register` only stores extra consumer metadata (name, attributes). Delivery is the `Subscribe` stream. `DOWNSTREAM_URL` is an optional HTTP fallback for topics that currently have no live stream.
 
+Set `AUTH_TOKEN` on the broker for production. Clients must send the same value as `authorization: Bearer <token>` (or `--token` / `AUTH_TOKEN`). Unset keeps the broker open.
+
 ## Run it
 
 ```bash
 # Terminal 1: broker
-DATABASE_URL=sqlite:./queue.db cargo run
+AUTH_TOKEN=change-me DATABASE_URL=sqlite:./queue.db cargo run
 
 # Terminal 2: consume on a gRPC stream
 cargo run --example receiver
@@ -22,6 +24,7 @@ The client dials out over gRPC, so port publish is enough:
 # Terminal 1 — broker
 docker run --rm --name cangling-message \
   -p 7500:7500 -p 7501:7501 \
+  -e AUTH_TOKEN=change-me \
   -v cangling-data:/data \
   docker.io/mapway/cangling-message:latest
 ```
@@ -31,6 +34,7 @@ Harbor:
 ```bash
 docker run --rm --name cangling-message \
   -p 7500:7500 -p 7501:7501 \
+  -e AUTH_TOKEN=change-me \
   -v cangling-data:/data \
   harbor.cangling.cn:22002/cangling/cangling-message:latest
 ```
@@ -41,7 +45,8 @@ cd .test
 ../.venv/bin/python test_subscriber.py \
   --broker 127.0.0.1:7500 \
   --topic cangling-test \
-  --name s0
+  --name s0 \
+  --token change-me
 ```
 
 ```bash
@@ -51,10 +56,11 @@ cd .test
   --broker 127.0.0.1:7500 \
   --topic cangling-test \
   --text hello \
-  --count 1
+  --count 1 \
+  --token change-me
 ```
 
-The subscriber should print `s0 received | <message_id> | hello`. Status UI: [http://127.0.0.1:7501/](http://127.0.0.1:7501/).
+The subscriber should print `s0 received | <message_id> | hello`. Status UI: [http://127.0.0.1:7501/?token=change-me](http://127.0.0.1:7501/?token=change-me).
 
 Rust consumer:
 
@@ -70,11 +76,13 @@ Maven module in [`java/`](java/). Coordinates: `cn.mapway:cangling-message`. Pro
 
 `SatwayClient.connect(...)` starts reconnect immediately. The channel is kept alive; `send` / `register` / `ack` retry with backoff while the broker is down; each `subscribe` stream reopens on the same `consumer_id` after a drop. Call `close()` to stop.
 
+When the broker has `AUTH_TOKEN`, pass the same value: `SatwayClient.connect(broker, token)`, `--token`, or the `AUTH_TOKEN` environment variable. The client sends `authorization: Bearer <token>` on every RPC.
+
 ```xml
 <dependency>
   <groupId>cn.mapway</groupId>
   <artifactId>cangling-message</artifactId>
-  <version>0.1.1</version>
+  <version>0.1.2</version>
 </dependency>
 ```
 
@@ -87,12 +95,12 @@ mvn -q package
 # consume
 mvn -q exec:java \
   -Dexec.mainClass=cn.mapway.message.example.ConsumerMain \
-  -Dexec.args="--broker 127.0.0.1:7500 --topic cangling-test --name java-s0"
+  -Dexec.args="--broker 127.0.0.1:7500 --topic cangling-test --name java-s0 --token change-me"
 
 # produce
 mvn -q exec:java \
   -Dexec.mainClass=cn.mapway.message.example.ProducerMain \
-  -Dexec.args="--broker 127.0.0.1:7500 --topic cangling-test --text hello --count 1"
+  -Dexec.args="--broker 127.0.0.1:7500 --topic cangling-test --text hello --count 1 --token change-me"
 ```
 
 In your own code:
@@ -102,7 +110,7 @@ import cn.mapway.message.Consumer;
 import cn.mapway.message.SatwayClient;
 import cn.mapway.message.SubscribeOptions;
 
-try (SatwayClient client = SatwayClient.connect("127.0.0.1:7500")) {
+try (SatwayClient client = SatwayClient.connect("127.0.0.1:7500", "change-me")) {
     client.send("cangling-test", "hello");
     try (Consumer consumer = client.subscribe(
             SubscribeOptions.topic("cangling-test").name("worker-1").build(),
@@ -143,11 +151,11 @@ The gRPC API definition is [`proto/queue.proto`](proto/queue.proto). Generate a 
 Broker internals are on a separate HTTP port (`STATUS_LISTEN_ADDR`, default `7501`):
 
 ```bash
-# dashboard
-open http://127.0.0.1:7501/
+# dashboard (pass the token when AUTH_TOKEN is set)
+open 'http://127.0.0.1:7501/?token=change-me'
 
 curl -s http://127.0.0.1:7501/health
-curl -s http://127.0.0.1:7501/status
+curl -s -H 'authorization: Bearer change-me' http://127.0.0.1:7501/status
 ```
 
 `/` is a single HTML page that refreshes from `/status`. `/status` is the JSON. `consumers` / `streams` is the number of live `Subscribe` streams.
@@ -189,6 +197,7 @@ Call `AckMessage` with that `message_id` and `lease`. `success = true` marks the
 | --- | --- | --- |
 | `GRPC_LISTEN_ADDR` | `0.0.0.0:7500` | gRPC listener |
 | `STATUS_LISTEN_ADDR` | `0.0.0.0:7501` | HTTP status (`GET /`, `GET /status`, `GET /health`) |
+| `AUTH_TOKEN` | unset | shared secret; when set, gRPC and `/` `/status` require it. `/health` stays open |
 | `DATABASE_URL` | `sqlite:./queue.db` | SQLite connection URL |
 | `DOWNSTREAM_URL` | unset | optional HTTP POST fallback when a topic has no live `Subscribe` stream |
 | `WORKER_POLL_MS` | `500` | queue polling interval |

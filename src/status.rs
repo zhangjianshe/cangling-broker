@@ -1,10 +1,19 @@
 use std::time::Instant;
 
-use axum::{extract::State, http::StatusCode, response::Html, routing::get, Json, Router};
+use axum::{
+    extract::State,
+    http::{header::AUTHORIZATION, Request, StatusCode},
+    middleware::{self, Next},
+    response::{Html, Response},
+    routing::get,
+    Json, Router,
+};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
-use crate::{config::Config, db::Database, model::TopicSnapshot, subscribers::TopicSubscribers};
+use crate::{
+    auth, config::Config, db::Database, model::TopicSnapshot, subscribers::TopicSubscribers,
+};
 
 #[derive(Clone)]
 struct StatusState {
@@ -12,6 +21,7 @@ struct StatusState {
     subscribers: TopicSubscribers,
     consumer_ttl_secs: u64,
     started: Instant,
+    auth_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,11 +63,13 @@ pub async fn serve(
         subscribers,
         consumer_ttl_secs: config.consumer_ttl_secs,
         started: Instant::now(),
+        auth_token: auth::normalize(config.auth_token.as_deref()),
     };
     let app = Router::new()
         .route("/", get(page))
         .route("/health", get(health))
         .route("/status", get(status))
+        .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state);
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -65,6 +77,28 @@ pub async fn serve(
         })
         .await?;
     Ok(())
+}
+
+async fn require_token(
+    State(state): State<StatusState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if request.uri().path() == "/health" {
+        return Ok(next.run(request).await);
+    }
+    let Some(expected) = state.auth_token.as_deref() else {
+        return Ok(next.run(request).await);
+    };
+    let authorization = request
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    if auth::tokens_match(expected, auth::http_token(authorization, request.uri().query()).as_deref())
+    {
+        return Ok(next.run(request).await);
+    }
+    Err(StatusCode::UNAUTHORIZED)
 }
 
 async fn page() -> Html<&'static str> {
