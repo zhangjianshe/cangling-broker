@@ -401,6 +401,12 @@ impl MessageQueue for QueueService {
 async fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config::parse());
     let _log_guard = logging::init(&config)?;
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        git = env!("GIT_HASH"),
+        built = env!("BUILD_TIME"),
+        "cangling-message starting"
+    );
     if let Some(dir) = config.log_dir.as_ref() {
         info!(
             dir = %dir.display(),

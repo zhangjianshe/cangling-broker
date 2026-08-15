@@ -2,12 +2,15 @@
 
 FROM rust:1.88-bookworm AS builder
 WORKDIR /app
+ARG GIT_HASH
+ARG BUILD_TIME
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY proto ./proto
 COPY src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
+    GIT_HASH="$GIT_HASH" BUILD_TIME="$BUILD_TIME" \
     cargo build --release --locked --bin cangling-message \
     && cp /app/target/release/cangling-message /usr/local/bin/cangling-message
 
