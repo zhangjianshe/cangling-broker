@@ -405,7 +405,7 @@ async fn main() -> anyhow::Result<()> {
         version = env!("CARGO_PKG_VERSION"),
         git = env!("GIT_HASH"),
         built = env!("BUILD_TIME"),
-        "cangling-message starting"
+        "cangling-broker starting"
     );
     if let Some(dir) = config.log_dir() {
         info!(
@@ -440,9 +440,9 @@ async fn main() -> anyhow::Result<()> {
     let address = config.grpc_listen_addr();
     let interceptor = AuthInterceptor::new(config.auth_token.clone());
     if interceptor.enabled() {
-        info!(%address, "gRPC intake service listening (CL_MESSAGE_AUTH_TOKEN required)");
+        info!(%address, "gRPC intake service listening (CL_BROKER_AUTH_TOKEN required)");
     } else {
-        info!(%address, "gRPC intake service listening (CL_MESSAGE_AUTH_TOKEN unset, open)");
+        info!(%address, "gRPC intake service listening (CL_BROKER_AUTH_TOKEN unset, open)");
     }
     Server::builder()
         .add_service(MessageQueueServer::with_interceptor(

@@ -11,7 +11,7 @@ import grpc
 from .models import SatwayMessage, SendResult, SubscribeOptions, TopicConfig, auth_token_from_env
 from .proto import queue_pb2, queue_pb2_grpc
 
-LOG = logging.getLogger("cangling_message")
+LOG = logging.getLogger("cangling_broker")
 
 INITIAL_BACKOFF_SECS = 0.2
 MAX_BACKOFF_SECS = 5.0

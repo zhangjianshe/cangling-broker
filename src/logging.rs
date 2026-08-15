@@ -14,7 +14,7 @@ pub fn init(config: &Config) -> anyhow::Result<Option<WorkerGuard>> {
     };
 
     std::fs::create_dir_all(&dir)?;
-    let path = dir.join("cangling-message.log");
+    let path = dir.join("cangling-broker.log");
     let archives = config.log_keep_files.saturating_sub(1).max(1);
     let rotate = FileRotate::new(
         path,

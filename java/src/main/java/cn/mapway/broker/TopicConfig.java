@@ -1,4 +1,4 @@
-package cn.mapway.message;
+package cn.mapway.broker;
 
 import java.util.Objects;
 

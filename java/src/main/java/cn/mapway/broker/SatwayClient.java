@@ -1,13 +1,13 @@
-package cn.mapway.message;
+package cn.mapway.broker;
 
-import cn.mapway.message.proto.AcceptMessageRequest;
-import cn.mapway.message.proto.AcceptMessageResponse;
-import cn.mapway.message.proto.AckMessageRequest;
-import cn.mapway.message.proto.ConfigureTopicsRequest;
-import cn.mapway.message.proto.ListTopicsRequest;
-import cn.mapway.message.proto.MessageQueueGrpc;
-import cn.mapway.message.proto.RegisterRequest;
-import cn.mapway.message.proto.UnregisterRequest;
+import cn.mapway.broker.proto.AcceptMessageRequest;
+import cn.mapway.broker.proto.AcceptMessageResponse;
+import cn.mapway.broker.proto.AckMessageRequest;
+import cn.mapway.broker.proto.ConfigureTopicsRequest;
+import cn.mapway.broker.proto.ListTopicsRequest;
+import cn.mapway.broker.proto.MessageQueueGrpc;
+import cn.mapway.broker.proto.RegisterRequest;
+import cn.mapway.broker.proto.UnregisterRequest;
 import com.google.protobuf.ByteString;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -64,7 +64,7 @@ public final class SatwayClient implements AutoCloseable {
     }
 
     /**
-     * Connects using {@code CL_MESSAGE_AUTH_TOKEN} from the environment when set.
+     * Connects using {@code CL_BROKER_AUTH_TOKEN} from the environment when set.
      *
      * @param broker host:port, for example {@code 127.0.0.1:7500}
      */
@@ -74,7 +74,7 @@ public final class SatwayClient implements AutoCloseable {
 
     /**
      * @param broker host:port, for example {@code 127.0.0.1:7500}
-     * @param token  shared secret matching the broker {@code CL_MESSAGE_AUTH_TOKEN}.
+     * @param token  shared secret matching the broker {@code CL_BROKER_AUTH_TOKEN}.
      *               Blank skips the header (only works if the broker has no token).
      */
     public static SatwayClient connect(String broker, String token) {
@@ -98,7 +98,7 @@ public final class SatwayClient implements AutoCloseable {
     }
 
     public static String authTokenFromEnv() {
-        String token = System.getenv("CL_MESSAGE_AUTH_TOKEN");
+        String token = System.getenv("CL_BROKER_AUTH_TOKEN");
         return token == null ? "" : token.trim();
     }
 
@@ -113,7 +113,7 @@ public final class SatwayClient implements AutoCloseable {
         return callWithReconnect("configureTopics", () -> {
             ConfigureTopicsRequest.Builder request = ConfigureTopicsRequest.newBuilder();
             for (TopicConfig topic : topics) {
-                request.addTopics(cn.mapway.message.proto.TopicConfig.newBuilder()
+                request.addTopics(cn.mapway.broker.proto.TopicConfig.newBuilder()
                         .setTopic(topic.topic())
                         .setDelivery(topic.delivery())
                         .build());

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Same ProgressMessageSender as the Kafka project; only the producer import changed."""
 
-from cangling_message import KafkaProducer
+from cangling_broker import KafkaProducer
 import argparse
 import json
 import os
@@ -101,7 +101,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Publish a progress message")
     parser.add_argument("--broker", default="127.0.0.1:7500")
     parser.add_argument("--topic", default="cangling-test")
-    parser.add_argument("--token", default=os.environ.get("CL_MESSAGE_AUTH_TOKEN", ""))
+    parser.add_argument("--token", default=os.environ.get("CL_BROKER_AUTH_TOKEN", ""))
     args = parser.parse_args()
 
     sender = ProgressMessageSender(bootstrap_servers=args.broker, topic=args.topic, token=args.token)

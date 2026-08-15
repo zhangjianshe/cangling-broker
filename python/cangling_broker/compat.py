@@ -9,7 +9,7 @@ class KafkaProducer:
     """Stand-in for ``kafka.KafkaProducer``.
 
     Keep calling ``send(topic, value)`` and ``flush()``. ``bootstrap_servers``
-    is the cangling-message broker (``host:port``). Extra Kafka kwargs are ignored.
+    is the cangling-broker (``host:port``). Extra Kafka kwargs are ignored.
     """
 
     def __init__(

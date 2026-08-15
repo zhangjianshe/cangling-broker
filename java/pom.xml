@@ -5,12 +5,12 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>cn.mapway</groupId>
-    <artifactId>cangling-message</artifactId>
+    <artifactId>cangling-broker</artifactId>
     <version>0.1.10</version>
     <packaging>jar</packaging>
-    <name>cangling-message</name>
-    <description>Java producer and consumer for the cangling-message broker</description>
-    <url>https://github.com/zhangjianshe/cangling-message</url>
+    <name>cangling-broker</name>
+    <description>Java producer and consumer for the cangling-broker</description>
+    <url>https://github.com/zhangjianshe/cangling-broker</url>
 
     <licenses>
         <license>
@@ -30,9 +30,9 @@
     </developers>
 
     <scm>
-        <connection>scm:git:https://github.com/zhangjianshe/cangling-message.git</connection>
-        <developerConnection>scm:git:https://github.com/zhangjianshe/cangling-message.git</developerConnection>
-        <url>https://github.com/zhangjianshe/cangling-message</url>
+        <connection>scm:git:https://github.com/zhangjianshe/cangling-broker.git</connection>
+        <developerConnection>scm:git:https://github.com/zhangjianshe/cangling-broker.git</developerConnection>
+        <url>https://github.com/zhangjianshe/cangling-broker</url>
         <tag>HEAD</tag>
     </scm>
 
@@ -116,7 +116,7 @@
                 <version>3.4.2</version>
                 <configuration>
                     <excludes>
-                        <exclude>cn/mapway/message/example/**</exclude>
+                        <exclude>cn/mapway/broker/example/**</exclude>
                     </excludes>
                 </configuration>
             </plugin>
@@ -146,7 +146,7 @@
                                 </goals>
                                 <configuration>
                                     <excludes>
-                                        <exclude>cn/mapway/message/example/**</exclude>
+                                        <exclude>cn/mapway/broker/example/**</exclude>
                                     </excludes>
                                 </configuration>
                             </execution>
@@ -159,7 +159,7 @@
                         <configuration>
                             <doclint>none</doclint>
                             <failOnError>false</failOnError>
-                            <excludePackageNames>cn.mapway.message.example</excludePackageNames>
+                            <excludePackageNames>cn.mapway.broker.example</excludePackageNames>
                             <sourcepath>
                                 ${project.build.sourceDirectory};
                                 ${project.build.directory}/generated-sources/protobuf/java;

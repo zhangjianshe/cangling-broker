@@ -6,20 +6,20 @@ use clap::Parser;
 #[command(about = "Durable gRPC message dispatcher")]
 pub struct Config {
     /// gRPC listen port (`0.0.0.0:<port>`).
-    #[arg(long, env = "CL_MESSAGE_PORT", default_value_t = 7500)]
+    #[arg(long, env = "CL_BROKER_PORT", default_value_t = 7500)]
     pub port: u16,
 
     /// HTTP status listen port (`0.0.0.0:<port>`).
-    #[arg(long, env = "CL_MESSAGE_WEBPORT", default_value_t = 7501)]
+    #[arg(long, env = "CL_BROKER_WEBPORT", default_value_t = 7501)]
     pub web_port: u16,
 
     /// Shared secret. When set, every gRPC call must send it
     /// (`authorization: Bearer <token>` or `x-auth-token`). Empty disables auth.
-    #[arg(long, env = "CL_MESSAGE_AUTH_TOKEN")]
+    #[arg(long, env = "CL_BROKER_AUTH_TOKEN")]
     pub auth_token: Option<String>,
 
     /// Data directory. SQLite is `<dir>/queue.db`, logs are `<dir>/logs`.
-    #[arg(long, env = "CL_MESSAGE_DATA")]
+    #[arg(long, env = "CL_BROKER_DATA")]
     pub data_dir: Option<PathBuf>,
 
     /// Optional HTTP fallback used only when a topic has no live gRPC Subscribe stream.

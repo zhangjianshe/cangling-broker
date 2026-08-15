@@ -1,11 +1,11 @@
-# cangling-message (Python)
+# cangling-broker (Python)
 
-Producer and consumer for the cangling-message broker. Same contract as the Java client: `AcceptMessages` to publish, `Subscribe` to consume, optional `Register` metadata, `CL_MESSAGE_AUTH_TOKEN` on every RPC.
+Producer and consumer for cangling-broker. Same contract as the Java client: `AcceptMessages` to publish, `Subscribe` to consume, optional `Register` metadata, `CL_BROKER_AUTH_TOKEN` on every RPC.
 
 ## Install
 
 ```bash
-pip install cangling-message
+pip install cangling-broker
 ```
 
 From this tree:
@@ -17,7 +17,7 @@ pip install -e python
 ## Use
 
 ```python
-from cangling_message import SatwayClient, SubscribeOptions
+from cangling_broker import SatwayClient, SubscribeOptions
 
 with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
     client.send("cangling-test", "hello")
@@ -28,12 +28,12 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
         ...
 ```
 
-`SatwayClient.connect(broker)` also reads `CL_MESSAGE_AUTH_TOKEN` from the environment.
+`SatwayClient.connect(broker)` also reads `CL_BROKER_AUTH_TOKEN` from the environment.
 
 Batch-set topic delivery (`single` = one consumer, `broadcast` = every live stream):
 
 ```python
-from cangling_message import TopicConfig
+from cangling_broker import TopicConfig
 
 client.configure_topics([
     TopicConfig("jobs", "single"),
@@ -46,7 +46,7 @@ Existing Kafka senders can keep ``send(topic, value)`` / ``flush()``:
 
 ```python
 # from kafka import KafkaProducer
-from cangling_message import KafkaProducer
+from cangling_broker import KafkaProducer
 
 producer = KafkaProducer(bootstrap_servers="127.0.0.1:7500")
 producer.send(topic, msg)

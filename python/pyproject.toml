@@ -1,7 +1,7 @@
 [project]
-name = "cangling-message"
+name = "cangling-broker"
 version = "0.1.10"
-description = "Python producer and consumer for the cangling-message broker"
+description = "Python producer and consumer for cangling-broker"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "zhangjianshe", email = "zhangjianshe@gmail.com" }]
@@ -14,8 +14,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",
 ]
-urls.Homepage = "https://github.com/zhangjianshe/cangling-message"
-urls.Repository = "https://github.com/zhangjianshe/cangling-message"
+urls.Homepage = "https://github.com/zhangjianshe/cangling-broker"
+urls.Repository = "https://github.com/zhangjianshe/cangling-broker"
 
 [project.optional-dependencies]
 dev = ["grpcio-tools>=1.83.0", "build", "twine"]
@@ -26,4 +26,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["cangling_message", "cangling_message.*"]
+include = ["cangling_broker", "cangling_broker.*"]

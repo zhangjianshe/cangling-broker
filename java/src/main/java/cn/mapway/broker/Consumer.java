@@ -1,7 +1,7 @@
-package cn.mapway.message;
+package cn.mapway.broker;
 
-import cn.mapway.message.proto.SatwayMessage;
-import cn.mapway.message.proto.SubscribeRequest;
+import cn.mapway.broker.proto.SatwayMessage;
+import cn.mapway.broker.proto.SubscribeRequest;
 import io.grpc.StatusRuntimeException;
 
 import java.nio.charset.StandardCharsets;
@@ -95,8 +95,8 @@ public final class Consumer implements AutoCloseable {
         return !closed.get() && client.isOpen();
     }
 
-    private static cn.mapway.message.SatwayMessage toSatwayMessage(SatwayMessage incoming) {
-        cn.mapway.message.SatwayMessage message = new cn.mapway.message.SatwayMessage();
+    private static cn.mapway.broker.SatwayMessage toSatwayMessage(SatwayMessage incoming) {
+        cn.mapway.broker.SatwayMessage message = new cn.mapway.broker.SatwayMessage();
         message.setId(incoming.getMessageId());
         message.setTopic(incoming.getTopic());
         message.setPayload(incoming.getPayload().toStringUtf8());

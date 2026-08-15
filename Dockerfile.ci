@@ -11,10 +11,10 @@ RUN apt-get update \
     && chown -R app:app /data
 
 ARG TARGETARCH
-COPY binaries/${TARGETARCH}/cangling-message /usr/local/bin/cangling-message
+COPY binaries/${TARGETARCH}/cangling-broker /usr/local/bin/cangling-broker
 
 USER app
 WORKDIR /data
-ENV CL_MESSAGE_DATA=/data
+ENV CL_BROKER_DATA=/data
 EXPOSE 7500 7501
-ENTRYPOINT ["cangling-message"]
+ENTRYPOINT ["cangling-broker"]

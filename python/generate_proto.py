@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate gRPC stubs from ../proto/queue.proto into cangling_message/proto."""
+"""Generate gRPC stubs from ../proto/queue.proto into cangling_broker/proto."""
 
 from pathlib import Path
 import subprocess
@@ -7,7 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent
 PROTO_DIR = ROOT.parent / "proto"
-OUT_DIR = ROOT / "cangling_message" / "proto"
+OUT_DIR = ROOT / "cangling_broker" / "proto"
 
 
 def main() -> int:

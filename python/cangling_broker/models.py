@@ -6,7 +6,7 @@ from typing import Mapping
 
 
 def auth_token_from_env() -> str:
-    return (os.environ.get("CL_MESSAGE_AUTH_TOKEN") or "").strip()
+    return (os.environ.get("CL_BROKER_AUTH_TOKEN") or "").strip()
 
 
 @dataclass(frozen=True)

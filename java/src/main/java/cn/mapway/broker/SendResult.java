@@ -1,4 +1,4 @@
-package cn.mapway.message;
+package cn.mapway.broker;
 
 public final class SendResult {
     private final String messageId;

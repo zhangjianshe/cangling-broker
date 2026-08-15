@@ -6,7 +6,7 @@ root="$(cd "$(dirname "$0")" && pwd)"
 cd "$root"
 
 if [[ ! -f Cargo.toml ]]; then
-  echo "run this script from the cangling-message repository" >&2
+  echo "run this script from the cangling-broker repository" >&2
   exit 1
 fi
 
@@ -36,15 +36,15 @@ from pathlib import Path
 import sys
 current, new = sys.argv[1], sys.argv[2]
 lock = Path("Cargo.lock")
-old = f'name = "cangling-message"\nversion = "{current}"'
-updated = f'name = "cangling-message"\nversion = "{new}"'
+old = f'name = "cangling-broker"\nversion = "{current}"'
+updated = f'name = "cangling-broker"\nversion = "{new}"'
 text = lock.read_text()
 if old not in text:
     raise SystemExit(f"Cargo.lock is missing {old!r}")
 lock.write_text(text.replace(old, updated, 1))
 pom = Path("java/pom.xml")
-pom_old = f"<artifactId>cangling-message</artifactId>\n    <version>{current}</version>"
-pom_new = f"<artifactId>cangling-message</artifactId>\n    <version>{new}</version>"
+pom_old = f"<artifactId>cangling-broker</artifactId>\n    <version>{current}</version>"
+pom_new = f"<artifactId>cangling-broker</artifactId>\n    <version>{new}</version>"
 pom_text = pom.read_text()
 if pom_old not in pom_text:
     raise SystemExit(f"java/pom.xml is missing {pom_old!r}")
@@ -68,7 +68,7 @@ git push "$remote" "v${new}"
 
 echo "released v${current} -> v${new} and pushed ${branch} to ${remote}"
 echo "CI will build and push:"
-echo "  docker.io/mapway/cangling-message:${new}"
-echo "  harbor.cangling.cn:22002/cangling/cangling-message:${new}"
-echo "  Maven Central cn.mapway:cangling-message:${new}"
-echo "  PyPI cangling-message==${new}"
+echo "  docker.io/mapway/cangling-broker:${new}"
+echo "  harbor.cangling.cn:22002/cangling/cangling-broker:${new}"
+echo "  Maven Central cn.mapway:cangling-broker:${new}"
+echo "  PyPI cangling-broker==${new}"

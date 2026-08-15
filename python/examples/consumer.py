@@ -3,7 +3,7 @@ import argparse
 import os
 import time
 
-from cangling_message import SatwayClient, SubscribeOptions
+from cangling_broker import SatwayClient, SubscribeOptions
 
 
 def main() -> int:
@@ -11,7 +11,7 @@ def main() -> int:
     parser.add_argument("--broker", default="127.0.0.1:7500")
     parser.add_argument("--topic", default="cangling-test")
     parser.add_argument("--name", default="python-consumer")
-    parser.add_argument("--token", default=os.environ.get("CL_MESSAGE_AUTH_TOKEN", ""))
+    parser.add_argument("--token", default=os.environ.get("CL_BROKER_AUTH_TOKEN", ""))
     args = parser.parse_args()
 
     def on_message(message):

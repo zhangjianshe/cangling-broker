@@ -1,7 +1,7 @@
-package cn.mapway.message.example;
+package cn.mapway.broker.example;
 
-import cn.mapway.message.SatwayClient;
-import cn.mapway.message.SubscribeOptions;
+import cn.mapway.broker.SatwayClient;
+import cn.mapway.broker.SubscribeOptions;
 
 public final class ConsumerMain {
     public static void main(String[] args) throws Exception {
