@@ -101,7 +101,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Publish a progress message")
     parser.add_argument("--broker", default="127.0.0.1:7500")
     parser.add_argument("--topic", default="cangling-test")
-    parser.add_argument("--token", default=os.environ.get("AUTH_TOKEN", ""))
+    parser.add_argument("--token", default=os.environ.get("CL_MESSAGE_AUTH_TOKEN", ""))
     args = parser.parse_args()
 
     sender = ProgressMessageSender(bootstrap_servers=args.broker, topic=args.topic, token=args.token)

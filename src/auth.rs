@@ -29,7 +29,7 @@ impl tonic::service::Interceptor for AuthInterceptor {
             Ok(request)
         } else {
             Err(Status::unauthenticated(
-                "missing or invalid token; send authorization: Bearer <AUTH_TOKEN>",
+                "missing or invalid token; send authorization: Bearer <CL_MESSAGE_AUTH_TOKEN>",
             ))
         }
     }

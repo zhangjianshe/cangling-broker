@@ -64,7 +64,7 @@ public final class SatwayClient implements AutoCloseable {
     }
 
     /**
-     * Connects using {@code AUTH_TOKEN} from the environment when set.
+     * Connects using {@code CL_MESSAGE_AUTH_TOKEN} from the environment when set.
      *
      * @param broker host:port, for example {@code 127.0.0.1:7500}
      */
@@ -74,7 +74,7 @@ public final class SatwayClient implements AutoCloseable {
 
     /**
      * @param broker host:port, for example {@code 127.0.0.1:7500}
-     * @param token  shared secret matching the broker {@code AUTH_TOKEN}.
+     * @param token  shared secret matching the broker {@code CL_MESSAGE_AUTH_TOKEN}.
      *               Blank skips the header (only works if the broker has no token).
      */
     public static SatwayClient connect(String broker, String token) {
@@ -98,7 +98,7 @@ public final class SatwayClient implements AutoCloseable {
     }
 
     public static String authTokenFromEnv() {
-        String token = System.getenv("AUTH_TOKEN");
+        String token = System.getenv("CL_MESSAGE_AUTH_TOKEN");
         return token == null ? "" : token.trim();
     }
 

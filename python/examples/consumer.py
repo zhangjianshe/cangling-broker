@@ -11,7 +11,7 @@ def main() -> int:
     parser.add_argument("--broker", default="127.0.0.1:7500")
     parser.add_argument("--topic", default="cangling-test")
     parser.add_argument("--name", default="python-consumer")
-    parser.add_argument("--token", default=os.environ.get("AUTH_TOKEN", ""))
+    parser.add_argument("--token", default=os.environ.get("CL_MESSAGE_AUTH_TOKEN", ""))
     args = parser.parse_args()
 
     def on_message(message):

@@ -407,7 +407,7 @@ async fn main() -> anyhow::Result<()> {
         built = env!("BUILD_TIME"),
         "cangling-message starting"
     );
-    if let Some(dir) = config.log_dir.as_ref() {
+    if let Some(dir) = config.log_dir() {
         info!(
             dir = %dir.display(),
             max_bytes = config.log_max_bytes,
@@ -415,13 +415,14 @@ async fn main() -> anyhow::Result<()> {
             "file logging enabled"
         );
     }
-    let db = Database::connect(&config.database_url).await?;
+    let db = Database::connect(&config.database_url()).await?;
     let db_for_shutdown = db.clone();
     let shutdown = CancellationToken::new();
     let subscribers = TopicSubscribers::default();
     let inflight = InflightAcks::default();
-    let status_listener = tokio::net::TcpListener::bind(config.status_listen_addr).await?;
-    info!(address = %config.status_listen_addr, "HTTP status listening");
+    let status_addr = config.status_listen_addr();
+    let status_listener = tokio::net::TcpListener::bind(status_addr).await?;
+    info!(address = %status_addr, "HTTP status listening");
     let status = tokio::spawn(status::serve(
         status_listener,
         db.clone(),
@@ -436,12 +437,12 @@ async fn main() -> anyhow::Result<()> {
         shutdown.clone(),
     ));
     let cleaner = tokio::spawn(retention_loop(db.clone(), config.clone(), shutdown.clone()));
-    let address = config.grpc_listen_addr;
+    let address = config.grpc_listen_addr();
     let interceptor = AuthInterceptor::new(config.auth_token.clone());
     if interceptor.enabled() {
-        info!(%address, "gRPC intake service listening (AUTH_TOKEN required)");
+        info!(%address, "gRPC intake service listening (CL_MESSAGE_AUTH_TOKEN required)");
     } else {
-        info!(%address, "gRPC intake service listening (AUTH_TOKEN unset, open)");
+        info!(%address, "gRPC intake service listening (CL_MESSAGE_AUTH_TOKEN unset, open)");
     }
     Server::builder()
         .add_service(MessageQueueServer::with_interceptor(

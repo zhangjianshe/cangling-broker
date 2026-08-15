@@ -4,13 +4,13 @@ A small, Kafka-like building block. Producers and consumers both use **gRPC stre
 
 Topics default to **single** (competing consumers: one live stream gets each message). Set a topic to **broadcast** and every live `Subscribe` stream on that topic gets a copy. `Register` only stores extra consumer metadata. `DOWNSTREAM_URL` is an optional HTTP fallback when a topic has no live stream.
 
-Set `AUTH_TOKEN` on the broker for production. Clients must send the same value as `authorization: Bearer <token>` (or `--token` / `AUTH_TOKEN`). Unset keeps the broker open.
+Set `CL_MESSAGE_AUTH_TOKEN` on the broker for production. Clients must send the same value as `authorization: Bearer <token>` (or `--token` / `CL_MESSAGE_AUTH_TOKEN`). Unset keeps the broker open.
 
 ## Run it
 
 ```bash
 # Terminal 1: broker
-AUTH_TOKEN=change-me DATABASE_URL=sqlite:./queue.db cargo run
+CL_MESSAGE_AUTH_TOKEN=change-me CL_MESSAGE_DATA=./data cargo run
 
 # Terminal 2: consume on a gRPC stream
 cargo run --example receiver
@@ -24,7 +24,7 @@ The client dials out over gRPC, so port publish is enough:
 # Terminal 1 — broker
 docker run --rm --name cangling-message \
   -p 7500:7500 -p 7501:7501 \
-  -e AUTH_TOKEN=change-me \
+  -e CL_MESSAGE_AUTH_TOKEN=change-me \
   -v cangling-data:/data \
   docker.io/mapway/cangling-message:latest
 ```
@@ -34,7 +34,7 @@ Harbor:
 ```bash
 docker run --rm --name cangling-message \
   -p 7500:7500 -p 7501:7501 \
-  -e AUTH_TOKEN=change-me \
+  -e CL_MESSAGE_AUTH_TOKEN=change-me \
   -v cangling-data:/data \
   harbor.cangling.cn:22002/cangling/cangling-message:latest
 ```
@@ -76,7 +76,7 @@ Maven module in [`java/`](java/). Coordinates: `cn.mapway:cangling-message`. Pro
 
 `SatwayClient.connect(...)` starts reconnect immediately. The channel is kept alive; `send` / `register` / `ack` retry with backoff while the broker is down; each `subscribe` stream reopens on the same `consumer_id` after a drop. Call `close()` to stop.
 
-When the broker has `AUTH_TOKEN`, pass the same value: `SatwayClient.connect(broker, token)`, `--token`, or the `AUTH_TOKEN` environment variable. The client sends `authorization: Bearer <token>` on every RPC.
+When the broker has `CL_MESSAGE_AUTH_TOKEN`, pass the same value: `SatwayClient.connect(broker, token)`, `--token`, or the `CL_MESSAGE_AUTH_TOKEN` environment variable. The client sends `authorization: Bearer <token>` on every RPC.
 
 ```xml
 <dependency>
@@ -176,10 +176,10 @@ Set these repository secrets:
 
 The gRPC API definition is [`proto/queue.proto`](proto/queue.proto). Generate a client in your preferred language from that contract; the endpoint defaults to `127.0.0.1:7500`.
 
-Broker internals are on a separate HTTP port (`STATUS_LISTEN_ADDR`, default `7501`):
+Broker internals are on a separate HTTP port (`CL_MESSAGE_WEBPORT`, default `7501`):
 
 ```bash
-# dashboard (pass the token when AUTH_TOKEN is set)
+# dashboard (pass the token when CL_MESSAGE_AUTH_TOKEN is set)
 open 'http://127.0.0.1:7501/?token=change-me'
 
 curl -s http://127.0.0.1:7501/health
@@ -241,19 +241,29 @@ Call `AckMessage` with that `message_id` and `lease`. `success = true` marks the
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `GRPC_LISTEN_ADDR` | `0.0.0.0:7500` | gRPC listener |
-| `STATUS_LISTEN_ADDR` | `0.0.0.0:7501` | HTTP status (`GET /`, `GET /status`, `GET /health`) |
-| `AUTH_TOKEN` | unset | shared secret; when set, gRPC and `/` `/status` require it. `/health` stays open |
-| `DATABASE_URL` | `sqlite:./queue.db` | SQLite connection URL |
+| `CL_MESSAGE_PORT` | `7500` | gRPC listener `0.0.0.0:<port>` |
+| `CL_MESSAGE_WEBPORT` | `7501` | HTTP status (`GET /`, `GET /status`, `GET /health`) |
+| `CL_MESSAGE_AUTH_TOKEN` | unset | shared secret; when set, gRPC and `/` `/status` require it. `/health` stays open |
+| `CL_MESSAGE_DATA` | unset (image: `/data`) | data dir; SQLite is `<dir>/queue.db`, logs are `<dir>/logs` |
 | `DOWNSTREAM_URL` | unset | optional HTTP POST fallback when a topic has no live `Subscribe` stream |
 | `WORKER_POLL_MS` | `500` | queue polling interval |
 | `MAX_DELIVERY_ATTEMPTS` | `10` | attempts before a message is marked failed |
 | `MESSAGE_RETENTION_DAYS` | `10` | delete messages older than this; `0` keeps them forever |
 | `ACK_TIMEOUT_SECS` | `30` | how long a subscriber may take to `AckMessage` before the message is retried |
 | `CONSUMER_TTL_SECS` | `60` | drop registered consumer metadata that is not seen again; `0` keeps it until `Unregister` |
-| `LOG_DIR` | unset (image: `/data/logs`) | write rotating files here; unset = stdout only |
 | `LOG_MAX_BYTES` | `104857600` | rotate after this many bytes (100 MiB) |
 | `LOG_KEEP_FILES` | `3` | keep this many files, including the current one |
+
+```bash
+docker run --rm --name cangling-message \
+  -p 7500:7500 -p 7501:7501 \
+  -e CL_MESSAGE_AUTH_TOKEN=hello_world \
+  -e CL_MESSAGE_PORT=7500 \
+  -e CL_MESSAGE_WEBPORT=7501 \
+  -e CL_MESSAGE_DATA=/data \
+  -v cangling-data:/data \
+  docker.io/mapway/cangling-message:latest
+```
 
 ## 数据库 ER
 

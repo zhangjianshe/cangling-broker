@@ -1,6 +1,6 @@
 # cangling-message (Python)
 
-Producer and consumer for the cangling-message broker. Same contract as the Java client: `AcceptMessages` to publish, `Subscribe` to consume, optional `Register` metadata, `AUTH_TOKEN` on every RPC.
+Producer and consumer for the cangling-message broker. Same contract as the Java client: `AcceptMessages` to publish, `Subscribe` to consume, optional `Register` metadata, `CL_MESSAGE_AUTH_TOKEN` on every RPC.
 
 ## Install
 
@@ -28,7 +28,7 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
         ...
 ```
 
-`SatwayClient.connect(broker)` also reads `AUTH_TOKEN` from the environment.
+`SatwayClient.connect(broker)` also reads `CL_MESSAGE_AUTH_TOKEN` from the environment.
 
 Batch-set topic delivery (`single` = one consumer, `broadcast` = every live stream):
 

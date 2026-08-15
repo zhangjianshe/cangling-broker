@@ -25,7 +25,7 @@ struct Args {
     #[arg(long, env = "CONSUMER_NAME", default_value = "receiver")]
     name: String,
 
-    #[arg(long, env = "AUTH_TOKEN")]
+    #[arg(long, env = "CL_MESSAGE_AUTH_TOKEN")]
     token: Option<String>,
 }
 
@@ -55,7 +55,7 @@ async fn main() {
             } else {
                 format!("Bearer {token}")
             };
-            value.parse().expect("AUTH_TOKEN must be ASCII")
+            value.parse().expect("CL_MESSAGE_AUTH_TOKEN must be ASCII")
         });
     let channel = Channel::from_shared(args.broker_addr.clone())
         .expect("broker url")

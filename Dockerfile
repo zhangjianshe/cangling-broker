@@ -22,7 +22,6 @@ RUN useradd --system --uid 10001 --home-dir /data --create-home app \
 COPY --from=builder /usr/local/bin/cangling-message /usr/local/bin/cangling-message
 USER app
 WORKDIR /data
-ENV DATABASE_URL=sqlite:///data/queue.db
-ENV LOG_DIR=/data/logs
+ENV CL_MESSAGE_DATA=/data
 EXPOSE 7500 7501
 ENTRYPOINT ["cangling-message"]

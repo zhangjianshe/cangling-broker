@@ -5,22 +5,22 @@ use clap::Parser;
 #[derive(Debug, Clone, Parser)]
 #[command(about = "Durable gRPC message dispatcher")]
 pub struct Config {
-    /// Address for the gRPC intake service.
-    #[arg(long, env = "GRPC_LISTEN_ADDR", default_value = "0.0.0.0:7500")]
-    pub grpc_listen_addr: SocketAddr,
+    /// gRPC listen port (`0.0.0.0:<port>`).
+    #[arg(long, env = "CL_MESSAGE_PORT", default_value_t = 7500)]
+    pub port: u16,
 
-    /// Address for the HTTP status endpoint (`GET /status`, `GET /health`).
-    #[arg(long, env = "STATUS_LISTEN_ADDR", default_value = "0.0.0.0:7501")]
-    pub status_listen_addr: SocketAddr,
+    /// HTTP status listen port (`0.0.0.0:<port>`).
+    #[arg(long, env = "CL_MESSAGE_WEBPORT", default_value_t = 7501)]
+    pub web_port: u16,
 
     /// Shared secret. When set, every gRPC call must send it
     /// (`authorization: Bearer <token>` or `x-auth-token`). Empty disables auth.
-    #[arg(long, env = "AUTH_TOKEN")]
+    #[arg(long, env = "CL_MESSAGE_AUTH_TOKEN")]
     pub auth_token: Option<String>,
 
-    /// SQLite database URL. Use sqlite:./queue.db to place it beside the binary.
-    #[arg(long, env = "DATABASE_URL", default_value = "sqlite:./queue.db")]
-    pub database_url: String,
+    /// Data directory. SQLite is `<dir>/queue.db`, logs are `<dir>/logs`.
+    #[arg(long, env = "CL_MESSAGE_DATA")]
+    pub data_dir: Option<PathBuf>,
 
     /// Optional HTTP fallback used only when a topic has no live gRPC Subscribe stream.
     #[arg(long, env = "DOWNSTREAM_URL")]
@@ -44,10 +44,6 @@ pub struct Config {
     #[arg(long, env = "CONSUMER_TTL_SECS", default_value_t = 60)]
     pub consumer_ttl_secs: u64,
 
-    /// Directory for rotating log files. Unset logs only to stdout.
-    #[arg(long, env = "LOG_DIR")]
-    pub log_dir: Option<PathBuf>,
-
     /// Rotate the log file after this many bytes. Default 100 MiB.
     #[arg(long, env = "LOG_MAX_BYTES", default_value_t = 100 * 1024 * 1024)]
     pub log_max_bytes: usize,
@@ -55,4 +51,34 @@ pub struct Config {
     /// How many log files to keep, including the current one.
     #[arg(long, env = "LOG_KEEP_FILES", default_value_t = 3)]
     pub log_keep_files: usize,
+}
+
+impl Config {
+    pub fn grpc_listen_addr(&self) -> SocketAddr {
+        SocketAddr::from(([0, 0, 0, 0], self.port))
+    }
+
+    pub fn status_listen_addr(&self) -> SocketAddr {
+        SocketAddr::from(([0, 0, 0, 0], self.web_port))
+    }
+
+    pub fn database_url(&self) -> String {
+        match self.data_dir.as_ref() {
+            Some(dir) => sqlite_url(&dir.to_string_lossy()),
+            None => "sqlite:./queue.db".into(),
+        }
+    }
+
+    pub fn log_dir(&self) -> Option<PathBuf> {
+        self.data_dir.as_ref().map(|dir| dir.join("logs"))
+    }
+}
+
+fn sqlite_url(dir: &str) -> String {
+    let dir = dir.trim().trim_end_matches('/');
+    if dir.starts_with('/') {
+        format!("sqlite://{dir}/queue.db")
+    } else {
+        format!("sqlite:{dir}/queue.db")
+    }
 }
