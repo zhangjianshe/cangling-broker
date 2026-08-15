@@ -1,8 +1,11 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use anyhow::Context;
 use chrono::Utc;
-use sqlx::{sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions, Row, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
+    Row, SqlitePool,
+};
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -13,16 +16,35 @@ pub struct Database(pub SqlitePool);
 
 impl Database {
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
+        if let Some(path) = sqlite_file_path(url) {
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("create sqlite directory {}", parent.display())
+                    })?;
+                }
+            }
+        }
+
         let options = SqliteConnectOptions::from_str(url)?
             .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
             .busy_timeout(Duration::from_secs(5));
 
         let pool = SqlitePoolOptions::new()
             .max_connections(10)
             .connect_with(options)
-            .await?;
+            .await
+            .with_context(|| {
+                format!(
+                    "open sqlite {url} (leftover .db-wal/.db-shm is normal after a crash; \
+                     this fails if another process still holds the file or the volume is not writable)"
+                )
+            })?;
 
         sqlx::query("PRAGMA journal_mode = WAL").execute(&pool).await?;
+        let _ = sqlx::query("PRAGMA wal_checkpoint(RESTART)").execute(&pool).await;
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY NOT NULL,
@@ -99,6 +121,13 @@ impl Database {
             .execute(&pool)
             .await?;
         Ok(Self(pool))
+    }
+
+    pub async fn close(self) {
+        let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&self.0)
+            .await;
+        self.0.close().await;
     }
 
     async fn bump_topic_stat(
@@ -550,4 +579,15 @@ async fn migrate_consumers(pool: &SqlitePool) -> anyhow::Result<()> {
         .execute(pool)
         .await?;
     Ok(())
+}
+
+fn sqlite_file_path(url: &str) -> Option<PathBuf> {
+    let rest = url.strip_prefix("sqlite:")?;
+    if let Some(path) = rest.strip_prefix("///") {
+        return Some(PathBuf::from(format!("/{path}")));
+    }
+    if rest.starts_with("//") {
+        return None;
+    }
+    Some(PathBuf::from(rest))
 }

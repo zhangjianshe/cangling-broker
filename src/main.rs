@@ -35,6 +35,7 @@ struct QueueService {
     config: Arc<Config>,
     subscribers: TopicSubscribers,
     inflight: InflightAcks,
+    shutdown: CancellationToken,
 }
 
 type ResponseStream<T> = Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Send>>;
@@ -185,23 +186,31 @@ impl MessageQueue for QueueService {
         let inflight = self.inflight.clone();
         let subscribers = self.subscribers.clone();
         let config = self.config.clone();
+        let shutdown = self.shutdown.clone();
         tokio::spawn(async move {
             let _guard = SubscriptionGuard::new(subscribers, topic.clone(), session);
             info!(topic = %topic, consumer_id = %consumer_id, "subscriber connected");
             let visibility = Duration::from_secs(config.ack_timeout_secs.max(1));
             loop {
+                if shutdown.is_cancelled() {
+                    break;
+                }
                 let claimed = match db.claim_next_for_topic(&topic, visibility).await {
                     Ok(claimed) => claimed,
                     Err(error) => {
                         error!(%error, topic = %topic, "unable to claim queue message for subscriber");
-                        tokio::time::sleep(Duration::from_millis(config.worker_poll_ms)).await;
+                        if !sleep_or_shutdown(&shutdown, config.worker_poll_ms).await {
+                            break;
+                        }
                         continue;
                     }
                 };
                 let Some(message) = claimed else {
-                    tokio::time::sleep(Duration::from_millis(config.worker_poll_ms)).await;
                     if !consumer_id.is_empty() {
                         let _ = db.touch_consumer(&consumer_id).await;
+                    }
+                    if !sleep_or_shutdown(&shutdown, config.worker_poll_ms).await {
+                        break;
                     }
                     continue;
                 };
@@ -226,38 +235,46 @@ impl MessageQueue for QueueService {
                         .await;
                     break;
                 }
-                match tokio::time::timeout(visibility, ack).await {
-                    Ok(Ok(decision)) if decision.success => {
-                        if let Err(error) = db.delivered(&message.id, &message.lease).await {
-                            error!(%error, "could not mark delivery");
-                        } else {
-                            info!(id = %message.id, topic = %topic, "message delivered to subscriber");
-                        }
-                    }
-                    Ok(Ok(decision)) => {
-                        let _ = db
-                            .failed(
-                                &message.id,
-                                &message.lease,
-                                if decision.error.is_empty() {
-                                    "nack"
-                                } else {
-                                    &decision.error
-                                },
-                                config.max_delivery_attempts,
-                            )
-                            .await;
-                    }
-                    Ok(Err(_)) | Err(_) => {
+                tokio::select! {
+                    _ = shutdown.cancelled() => {
                         inflight.cancel(&message.id);
-                        let _ = db
-                            .failed(
-                                &message.id,
-                                &message.lease,
-                                "ack timeout or subscriber gone",
-                                config.max_delivery_attempts,
-                            )
-                            .await;
+                        break;
+                    }
+                    timed = tokio::time::timeout(visibility, ack) => {
+                        match timed {
+                            Ok(Ok(decision)) if decision.success => {
+                                if let Err(error) = db.delivered(&message.id, &message.lease).await {
+                                    error!(%error, "could not mark delivery");
+                                } else {
+                                    info!(id = %message.id, topic = %topic, "message delivered to subscriber");
+                                }
+                            }
+                            Ok(Ok(decision)) => {
+                                let _ = db
+                                    .failed(
+                                        &message.id,
+                                        &message.lease,
+                                        if decision.error.is_empty() {
+                                            "nack"
+                                        } else {
+                                            &decision.error
+                                        },
+                                        config.max_delivery_attempts,
+                                    )
+                                    .await;
+                            }
+                            Ok(Err(_)) | Err(_) => {
+                                inflight.cancel(&message.id);
+                                let _ = db
+                                    .failed(
+                                        &message.id,
+                                        &message.lease,
+                                        "ack timeout or subscriber gone",
+                                        config.max_delivery_attempts,
+                                    )
+                                    .await;
+                            }
+                        }
                     }
                 }
             }
@@ -294,6 +311,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let db = Database::connect(&config.database_url).await?;
+    let db_for_shutdown = db.clone();
     let shutdown = CancellationToken::new();
     let subscribers = TopicSubscribers::default();
     let inflight = InflightAcks::default();
@@ -327,18 +345,47 @@ async fn main() -> anyhow::Result<()> {
                 config,
                 subscribers,
                 inflight,
+                shutdown: shutdown.clone(),
             },
             interceptor,
         ))
         .serve_with_shutdown(address, async move {
-            let _ = tokio::signal::ctrl_c().await;
+            wait_for_shutdown().await;
+            info!("shutdown signal received");
             shutdown.cancel();
         })
         .await?;
     status.await??;
     worker.await?;
     cleaner.await?;
+    db_for_shutdown.close().await;
+    info!("broker stopped");
     Ok(())
+}
+
+async fn wait_for_shutdown() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("listen for SIGTERM");
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = sigterm.recv() => {}
+        }
+        return;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = ctrl_c.await;
+    }
+}
+
+async fn sleep_or_shutdown(shutdown: &CancellationToken, poll_ms: u64) -> bool {
+    tokio::select! {
+        _ = shutdown.cancelled() => false,
+        _ = tokio::time::sleep(Duration::from_millis(poll_ms)) => true,
+    }
 }
 
 fn consumer_cutoff(ttl_secs: u64) -> Option<String> {
@@ -379,13 +426,11 @@ async fn dispatch_loop(
         }) else {
             continue;
         };
-        match client
-            .post(&fallback)
-            .json(&message.to_downstream())
-            .send()
-            .await
-            .and_then(|response| response.error_for_status())
-        {
+        let response = tokio::select! {
+            _ = shutdown.cancelled() => break,
+            response = client.post(&fallback).json(&message.to_downstream()).send() => response,
+        };
+        match response.and_then(|response| response.error_for_status()) {
             Ok(_) => {
                 info!(id = %message.id, topic = %message.topic, url = %fallback, "message delivered");
                 if let Err(error) = db.delivered(&message.id, &message.lease).await {
