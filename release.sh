@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bump the patch version, commit, tag, and push. GitHub Actions deploys Docker and Maven Central.
+# Bump the patch version, commit, tag, and push. GitHub Actions deploys Docker, Maven Central, and PyPI.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")" && pwd)"
@@ -49,9 +49,15 @@ pom_text = pom.read_text()
 if pom_old not in pom_text:
     raise SystemExit(f"java/pom.xml is missing {pom_old!r}")
 pom.write_text(pom_text.replace(pom_old, pom_new, 1))
+py = Path("python/pyproject.toml")
+py_old = f'version = "{current}"'
+py_text = py.read_text()
+if py_old not in py_text:
+    raise SystemExit(f"python/pyproject.toml is missing {py_old!r}")
+py.write_text(py_text.replace(py_old, f'version = "{new}"', 1))
 PY
 
-git add Cargo.toml Cargo.lock java/pom.xml
+git add Cargo.toml Cargo.lock java/pom.xml python/pyproject.toml
 git commit -m "Release v${new}"
 git tag -a "v${new}" -m "Release v${new}"
 
@@ -65,3 +71,4 @@ echo "CI will build and push:"
 echo "  docker.io/mapway/cangling-message:${new}"
 echo "  harbor.cangling.cn:22002/cangling/cangling-message:${new}"
 echo "  Maven Central cn.mapway:cangling-message:${new}"
+echo "  PyPI cangling-message==${new}"

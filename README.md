@@ -120,6 +120,33 @@ try (SatwayClient client = SatwayClient.connect("127.0.0.1:7500", "change-me")) 
 }
 ```
 
+### Python client (`cangling_message`)
+
+Module in [`python/`](python/). Package: `cangling-message`. Same API as Java: produce on `AcceptMessages`, consume on `Subscribe`. Published to [PyPI](https://pypi.org/project/cangling-message/).
+
+```bash
+pip install cangling-message
+```
+
+```python
+from cangling_message import SatwayClient, SubscribeOptions
+
+with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
+    client.send("cangling-test", "hello")
+    with client.subscribe(
+            SubscribeOptions(topic="cangling-test", name="worker-1"),
+            lambda message: print(message.id, message.payload)):
+        ...
+```
+
+```bash
+# consume
+python python/examples/consumer.py --broker 127.0.0.1:7500 --topic cangling-test --name py-s0 --token change-me
+
+# produce
+python python/examples/producer.py --broker 127.0.0.1:7500 --topic cangling-test --text hello --count 1 --token change-me
+```
+
 CI compiles on **x86_64** (`ubuntu-latest`) and **aarch64** (`ubuntu-24.04-arm`), caches the Cargo output for the next run, then publishes a multi-arch image to both:
 
 - `docker.io/mapway/cangling-message:latest`
@@ -131,7 +158,7 @@ CI compiles on **x86_64** (`ubuntu-latest`) and **aarch64** (`ubuntu-24.04-arm`)
 ./release.sh
 ```
 
-Each run bumps the patch version in `Cargo.toml` and `java/pom.xml` (`0.1.0` → `0.1.1`), commits, tags `v0.1.1`, and pushes. Deploy stays in GitHub Actions: the tag publishes Docker images and `cn.mapway:cangling-message` to Maven Central. A branch push or pull request only compiles.
+Each run bumps the patch version in `Cargo.toml`, `java/pom.xml`, and `python/pyproject.toml` (`0.1.0` → `0.1.1`), commits, tags `v0.1.1`, and pushes. Deploy stays in GitHub Actions: the tag publishes Docker images, `cn.mapway:cangling-message` to Maven Central, and `cangling-message` to PyPI. A branch push or pull request only compiles.
 
 Set these repository secrets:
 
@@ -145,6 +172,7 @@ Set these repository secrets:
 | `CENTRAL_PASSWORD` | Maven Central user-token password |
 | `GPG_PRIVATE_KEY` | Armored GPG private key that signs the jars |
 | `GPG_PASSPHRASE` | Passphrase for that GPG key |
+| `PYPI_API_TOKEN` | PyPI API token that publishes `cangling-message` |
 
 The gRPC API definition is [`proto/queue.proto`](proto/queue.proto). Generate a client in your preferred language from that contract; the endpoint defaults to `127.0.0.1:7500`.
 

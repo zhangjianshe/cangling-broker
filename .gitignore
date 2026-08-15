@@ -5,6 +5,10 @@ java/target/
 .venv/
 __pycache__/
 *.pyc
+python/dist/
+python/build/
+python/*.egg-info/
+python/**/*.egg-info/
 *.db
 *.db-shm
 *.db-wal
