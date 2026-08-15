@@ -33,6 +33,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -53,11 +54,15 @@ public final class SatwayClient implements AutoCloseable {
     private final AtomicBoolean open = new AtomicBoolean(true);
     private final Thread reconnect;
     private final List<Consumer> consumers = new CopyOnWriteArrayList<>();
+    private final List<ConnectionListener> connectionListeners = new CopyOnWriteArrayList<>();
 
-    private SatwayClient(ManagedChannel channel) {
+    private SatwayClient(ManagedChannel channel, ConnectionListener onConnected) {
         this.channel = channel;
         this.stub = MessageQueueGrpc.newBlockingStub(channel);
         this.async = MessageQueueGrpc.newStub(channel);
+        if (onConnected != null) {
+            connectionListeners.add(onConnected);
+        }
         this.reconnect = new Thread(this::maintainConnection, "satway-reconnect");
         this.reconnect.setDaemon(true);
         this.reconnect.start();
@@ -78,6 +83,15 @@ public final class SatwayClient implements AutoCloseable {
      *               Blank skips the header (only works if the broker has no token).
      */
     public static SatwayClient connect(String broker, String token) {
+        return connect(broker, token, null);
+    }
+
+    /**
+     * Same as {@link #connect(String, String)}, and also registers a listener
+     * that runs when the channel becomes ready (first connect and every reconnect).
+     * Use this to {@link #configureTopics} as soon as the broker is up.
+     */
+    public static SatwayClient connect(String broker, String token, ConnectionListener onConnected) {
         Objects.requireNonNull(broker, "broker");
         if (broker.isBlank()) {
             throw new IllegalArgumentException("broker is required");
@@ -94,7 +108,24 @@ public final class SatwayClient implements AutoCloseable {
         if (token != null && !token.isBlank()) {
             builder.intercept(tokenInterceptor(token.trim()));
         }
-        return new SatwayClient(builder.build());
+        return new SatwayClient(builder.build(), onConnected);
+    }
+
+    /**
+     * Register a listener for READY. If the channel is already ready, {@code listener}
+     * is invoked immediately. Returns {@code this} for chaining.
+     */
+    public SatwayClient onConnected(ConnectionListener listener) {
+        Objects.requireNonNull(listener, "listener");
+        connectionListeners.add(listener);
+        if (channel.getState(false) == ConnectivityState.READY) {
+            notifyConnected(listener);
+        }
+        return this;
+    }
+
+    public boolean connected() {
+        return open.get() && channel.getState(false) == ConnectivityState.READY;
     }
 
     public static String authTokenFromEnv() {
@@ -280,8 +311,12 @@ public final class SatwayClient implements AutoCloseable {
                 if (state != last) {
                     if (state == ConnectivityState.READY) {
                         LOG.info("connected to broker");
+                        notifyConnected();
                     } else if (state != ConnectivityState.SHUTDOWN) {
                         LOG.log(Level.WARNING, "broker {0}, reconnecting", state);
+                        if (last == ConnectivityState.READY) {
+                            notifyDisconnected();
+                        }
                     }
                     last = state;
                 }
@@ -291,6 +326,30 @@ public final class SatwayClient implements AutoCloseable {
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 return;
+            }
+        }
+    }
+
+    private void notifyConnected() {
+        for (ConnectionListener listener : connectionListeners) {
+            notifyConnected(listener);
+        }
+    }
+
+    private void notifyConnected(ConnectionListener listener) {
+        try {
+            listener.onConnected(this);
+        } catch (Exception error) {
+            LOG.log(Level.WARNING, "connection listener failed", error);
+        }
+    }
+
+    private void notifyDisconnected() {
+        for (ConnectionListener listener : connectionListeners) {
+            try {
+                listener.onDisconnected(this);
+            } catch (Exception error) {
+                LOG.log(Level.WARNING, "disconnect listener failed", error);
             }
         }
     }

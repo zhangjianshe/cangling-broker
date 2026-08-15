@@ -109,8 +109,15 @@ In your own code:
 import cn.mapway.broker.Consumer;
 import cn.mapway.broker.SatwayClient;
 import cn.mapway.broker.SubscribeOptions;
+import cn.mapway.broker.TopicConfig;
 
-try (SatwayClient client = SatwayClient.connect("127.0.0.1:7500", "change-me")) {
+import java.util.List;
+
+try (SatwayClient client = SatwayClient.connect("127.0.0.1:7500", "change-me", connected -> {
+    connected.configureTopics(List.of(
+            TopicConfig.single("jobs"),
+            TopicConfig.ephemeral("live-events", TopicConfig.BROADCAST)));
+})) {
     client.send("cangling-test", "hello");
     try (Consumer consumer = client.subscribe(
             SubscribeOptions.topic("cangling-test").name("worker-1").build(),
@@ -119,6 +126,8 @@ try (SatwayClient client = SatwayClient.connect("127.0.0.1:7500", "change-me")) 
     }
 }
 ```
+
+`onConnected` also runs after a reconnect, so topic config is applied again when the broker comes back. You can register later with `client.onConnected(...)`; if the channel is already ready, that listener runs immediately.
 
 ### Python client (`cangling_broker`)
 

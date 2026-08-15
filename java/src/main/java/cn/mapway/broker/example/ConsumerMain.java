@@ -9,7 +9,8 @@ public final class ConsumerMain {
         String topic = arg(args, "--topic", "cangling-test");
         String name = arg(args, "--name", "java-consumer");
         String token = arg(args, "--token", SatwayClient.authTokenFromEnv());
-        try (SatwayClient client = SatwayClient.connect(broker, token);
+        try (SatwayClient client = SatwayClient.connect(broker, token, connected ->
+                     System.out.println("connected to " + broker));
              var consumer = client.subscribe(
                      SubscribeOptions.topic(topic).name(name).build(),
                      message -> System.out.println(
