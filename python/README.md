@@ -30,6 +30,18 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
 
 `SatwayClient.connect(broker)` also reads `AUTH_TOKEN` from the environment.
 
+Batch-set topic delivery (`single` = one consumer, `broadcast` = every live stream):
+
+```python
+from cangling_message import TopicConfig
+
+client.configure_topics([
+    TopicConfig("jobs", "single"),
+    TopicConfig("alerts", "broadcast"),
+])
+print(client.list_topics())
+```
+
 Existing Kafka senders can keep ``send(topic, value)`` / ``flush()``:
 
 ```python

@@ -3,6 +3,8 @@ package cn.mapway.message;
 import cn.mapway.message.proto.AcceptMessageRequest;
 import cn.mapway.message.proto.AcceptMessageResponse;
 import cn.mapway.message.proto.AckMessageRequest;
+import cn.mapway.message.proto.ConfigureTopicsRequest;
+import cn.mapway.message.proto.ListTopicsRequest;
 import cn.mapway.message.proto.MessageQueueGrpc;
 import cn.mapway.message.proto.RegisterRequest;
 import cn.mapway.message.proto.UnregisterRequest;
@@ -102,6 +104,38 @@ public final class SatwayClient implements AutoCloseable {
 
     public String register(String topic, String name, Map<String, String> attributes) {
         return register(topic, "", name, attributes);
+    }
+
+    public java.util.List<TopicConfig> configureTopics(java.util.List<TopicConfig> topics) {
+        if (topics == null || topics.isEmpty()) {
+            throw new IllegalArgumentException("topics is required");
+        }
+        return callWithReconnect("configureTopics", () -> {
+            ConfigureTopicsRequest.Builder request = ConfigureTopicsRequest.newBuilder();
+            for (TopicConfig topic : topics) {
+                request.addTopics(cn.mapway.message.proto.TopicConfig.newBuilder()
+                        .setTopic(topic.topic())
+                        .setDelivery(topic.delivery())
+                        .build());
+            }
+            return blockingStub()
+                    .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                    .configureTopics(request.build())
+                    .getTopicsList()
+                    .stream()
+                    .map(item -> new TopicConfig(item.getTopic(), item.getDelivery()))
+                    .toList();
+        });
+    }
+
+    public java.util.List<TopicConfig> listTopics() {
+        return callWithReconnect("listTopics", () -> blockingStub()
+                .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                .listTopics(ListTopicsRequest.getDefaultInstance())
+                .getTopicsList()
+                .stream()
+                .map(item -> new TopicConfig(item.getTopic(), item.getDelivery()))
+                .toList());
     }
 
     public void unregister(String consumerId) {

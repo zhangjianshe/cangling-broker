@@ -22,6 +22,13 @@ service MessageQueue {
 
   // Confirm or reject a message received from Subscribe.
   rpc AckMessage(AckMessageRequest) returns (AckMessageResponse);
+
+  // Create or replace delivery mode for many topics at once.
+  // delivery is "single" (competing consumers, default) or "broadcast" (every live stream).
+  rpc ConfigureTopics(ConfigureTopicsRequest) returns (ConfigureTopicsResponse);
+
+  // List stored topic delivery configs.
+  rpc ListTopics(ListTopicsRequest) returns (ListTopicsResponse);
 }
 
 message AcceptMessageRequest {
@@ -80,4 +87,24 @@ message AckMessageRequest {
 
 message AckMessageResponse {
   bool accepted = 1;
+}
+
+message TopicConfig {
+  string topic = 1;
+  // "single" or "broadcast". Empty on configure is rejected.
+  string delivery = 2;
+}
+
+message ConfigureTopicsRequest {
+  repeated TopicConfig topics = 1;
+}
+
+message ConfigureTopicsResponse {
+  repeated TopicConfig topics = 1;
+}
+
+message ListTopicsRequest {}
+
+message ListTopicsResponse {
+  repeated TopicConfig topics = 1;
 }

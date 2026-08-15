@@ -1,6 +1,6 @@
 from .client import SatwayClient
 from .compat import KafkaProducer
-from .models import SatwayMessage, SendResult, SubscribeOptions
+from .models import SatwayMessage, SendResult, SubscribeOptions, TopicConfig
 
 __all__ = [
     "KafkaProducer",
@@ -8,4 +8,5 @@ __all__ = [
     "SatwayMessage",
     "SendResult",
     "SubscribeOptions",
+    "TopicConfig",
 ]

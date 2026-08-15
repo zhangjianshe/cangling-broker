@@ -1,8 +1,8 @@
 # cangling-message
 
-A small, Kafka-like building block. Producers and consumers both use **gRPC streams**. The service commits each publish to SQLite first, then sends it on **one** consumer stream.
+A small, Kafka-like building block. Producers and consumers both use **gRPC streams**. The service commits each publish to SQLite first, then delivers it according to the topic mode.
 
-Topics are work queues, not broadcast. `Register` only stores extra consumer metadata (name, attributes). Delivery is the `Subscribe` stream. `DOWNSTREAM_URL` is an optional HTTP fallback for topics that currently have no live stream.
+Topics default to **single** (competing consumers: one live stream gets each message). Set a topic to **broadcast** and every live `Subscribe` stream on that topic gets a copy. `Register` only stores extra consumer metadata. `DOWNSTREAM_URL` is an optional HTTP fallback when a topic has no live stream.
 
 Set `AUTH_TOKEN` on the broker for production. Clients must send the same value as `authorization: Bearer <token>` (or `--token` / `AUTH_TOKEN`). Unset keeps the broker open.
 
@@ -200,7 +200,25 @@ cd .test
 ../.venv/bin/python test_client.py --text hello --count 1
 ```
 
-Each message is claimed by one live stream. If that subscriber disconnects or does not `AckMessage` before `ACK_TIMEOUT_SECS`, the message goes back on the queue for another client. `Register` is optional metadata; use `message_id` to make handling idempotent. Delivery is at-least-once.
+On a **single** topic, each message is claimed by one live stream. On a **broadcast** topic, every live stream gets a copy; the message is delivered when all of them ack. If a subscriber disconnects or does not `AckMessage` before `ACK_TIMEOUT_SECS`, that delivery is retried. Use `message_id` to make handling idempotent. Delivery is at-least-once.
+
+### Topic delivery mode
+
+Default is `single`. Configure many topics at once:
+
+```bash
+curl -s -H 'authorization: Bearer change-me' \
+  -H 'content-type: application/json' \
+  -d '{"topics":[
+        {"topic":"jobs","delivery":"single"},
+        {"topic":"alerts","delivery":"broadcast"}
+      ]}' \
+  http://127.0.0.1:7501/topics
+
+curl -s -H 'authorization: Bearer change-me' http://127.0.0.1:7501/topics
+```
+
+gRPC: `ConfigureTopics` / `ListTopics`. Java: `client.configureTopics(List.of(TopicConfig.broadcast("alerts"), TopicConfig.single("jobs")))`. Python: `client.configure_topics([TopicConfig("alerts", "broadcast"), TopicConfig("jobs", "single")])`.
 
 ## Delivery contract
 
@@ -252,6 +270,7 @@ erDiagram
         INTEGER duplicates "重复提交"
         INTEGER delivered "累计投递成功"
         INTEGER failed "累计投递失败"
+        TEXT delivery "single 或 broadcast"
     }
 
     messages {

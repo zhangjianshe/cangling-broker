@@ -25,9 +25,12 @@ pub mod proto {
 }
 use proto::{
     message_queue_server::{MessageQueue, MessageQueueServer},
-    AcceptMessageRequest, AcceptMessageResponse, AckMessageRequest, AckMessageResponse, SatwayMessage,
-    RegisterRequest, RegisterResponse, SubscribeRequest, UnregisterRequest, UnregisterResponse,
+    AcceptMessageRequest, AcceptMessageResponse, AckMessageRequest, AckMessageResponse,
+    ConfigureTopicsRequest, ConfigureTopicsResponse, ListTopicsRequest, ListTopicsResponse,
+    RegisterRequest, RegisterResponse, SatwayMessage, SubscribeRequest, TopicConfig as ProtoTopicConfig,
+    UnregisterRequest, UnregisterResponse,
 };
+use crate::model::{DeliveryMode, TopicConfig};
 
 #[derive(Clone)]
 struct QueueService {
@@ -39,6 +42,13 @@ struct QueueService {
 }
 
 type ResponseStream<T> = Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Send>>;
+
+fn to_proto_topic(config: TopicConfig) -> ProtoTopicConfig {
+    ProtoTopicConfig {
+        topic: config.topic,
+        delivery: config.delivery.as_str().to_string(),
+    }
+}
 
 fn attrs_to_map(value: &serde_json::Value) -> HashMap<String, String> {
     value
@@ -181,14 +191,19 @@ impl MessageQueue for QueueService {
         } else {
             consumer_id.clone()
         };
-        let (tx, rx) = mpsc::channel(1);
+        let (tx, rx) = mpsc::channel(16);
         let db = self.db.clone();
         let inflight = self.inflight.clone();
         let subscribers = self.subscribers.clone();
         let config = self.config.clone();
         let shutdown = self.shutdown.clone();
         tokio::spawn(async move {
-            let _guard = SubscriptionGuard::new(subscribers, topic.clone(), session);
+            let _guard = SubscriptionGuard::new(
+                subscribers.clone(),
+                topic.clone(),
+                session.clone(),
+                tx.clone(),
+            );
             info!(topic = %topic, consumer_id = %consumer_id, "subscriber connected");
             let visibility = Duration::from_secs(config.ack_timeout_secs.max(1));
             loop {
@@ -214,73 +229,157 @@ impl MessageQueue for QueueService {
                     }
                     continue;
                 };
-                let ack = inflight.register(message.id.clone(), message.lease.clone());
-                let outgoing = SatwayMessage {
-                    message_id: message.id.clone(),
-                    topic: message.topic.clone(),
-                    payload: message.payload,
-                    attributes: attrs_to_map(&message.attributes),
-                    created_at: message.created_at,
-                    lease: message.lease.clone(),
+                let broadcast = db
+                    .topic_delivery(&topic)
+                    .await
+                    .ok()
+                    .is_some_and(|mode| mode == DeliveryMode::Broadcast);
+                let targets = if broadcast {
+                    let mut senders = subscribers.senders(&topic);
+                    if senders.is_empty() {
+                        senders.push((session.clone(), tx.clone()));
+                    }
+                    senders
+                } else {
+                    vec![(session.clone(), tx.clone())]
                 };
-                if tx.send(Ok(outgoing)).await.is_err() {
-                    inflight.cancel(&message.id);
+                let mut waits = Vec::new();
+                let mut leases = Vec::new();
+                for (_id, sender) in targets {
+                    let lease = Uuid::new_v4().to_string();
+                    let ack = inflight.register(message.id.clone(), lease.clone());
+                    let outgoing = SatwayMessage {
+                        message_id: message.id.clone(),
+                        topic: message.topic.clone(),
+                        payload: message.payload.clone(),
+                        attributes: attrs_to_map(&message.attributes),
+                        created_at: message.created_at.clone(),
+                        lease: lease.clone(),
+                    };
+                    match tokio::time::timeout(Duration::from_secs(2), sender.send(Ok(outgoing))).await
+                    {
+                        Ok(Ok(())) => {
+                            leases.push(lease);
+                            waits.push(ack);
+                        }
+                        _ => {
+                            inflight.cancel(&lease);
+                        }
+                    }
+                }
+                if waits.is_empty() {
                     let _ = db
                         .failed(
                             &message.id,
                             &message.lease,
-                            "subscriber disconnected",
+                            "no live subscriber accepted the message",
                             config.max_delivery_attempts,
                         )
                         .await;
-                    break;
+                    continue;
                 }
-                tokio::select! {
-                    _ = shutdown.cancelled() => {
-                        inflight.cancel(&message.id);
-                        break;
-                    }
-                    timed = tokio::time::timeout(visibility, ack) => {
-                        match timed {
-                            Ok(Ok(decision)) if decision.success => {
-                                if let Err(error) = db.delivered(&message.id, &message.lease).await {
-                                    error!(%error, "could not mark delivery");
-                                } else {
-                                    info!(id = %message.id, topic = %topic, "message delivered to subscriber");
+                let mut all_ok = true;
+                let mut last_error = "ack timeout or subscriber gone".to_string();
+                for ack in waits {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            all_ok = false;
+                            last_error = "broker shutting down".into();
+                        }
+                        timed = tokio::time::timeout(visibility, ack) => {
+                            match timed {
+                                Ok(Ok(decision)) if decision.success => {}
+                                Ok(Ok(decision)) => {
+                                    all_ok = false;
+                                    last_error = if decision.error.is_empty() {
+                                        "nack".into()
+                                    } else {
+                                        decision.error
+                                    };
                                 }
-                            }
-                            Ok(Ok(decision)) => {
-                                let _ = db
-                                    .failed(
-                                        &message.id,
-                                        &message.lease,
-                                        if decision.error.is_empty() {
-                                            "nack"
-                                        } else {
-                                            &decision.error
-                                        },
-                                        config.max_delivery_attempts,
-                                    )
-                                    .await;
-                            }
-                            Ok(Err(_)) | Err(_) => {
-                                inflight.cancel(&message.id);
-                                let _ = db
-                                    .failed(
-                                        &message.id,
-                                        &message.lease,
-                                        "ack timeout or subscriber gone",
-                                        config.max_delivery_attempts,
-                                    )
-                                    .await;
+                                Ok(Err(_)) | Err(_) => {
+                                    all_ok = false;
+                                }
                             }
                         }
                     }
+                    if shutdown.is_cancelled() {
+                        break;
+                    }
+                }
+                for lease in &leases {
+                    inflight.cancel(lease);
+                }
+                if shutdown.is_cancelled() {
+                    break;
+                }
+                if all_ok {
+                    if let Err(error) = db.delivered(&message.id, &message.lease).await {
+                        error!(%error, "could not mark delivery");
+                    } else {
+                        info!(id = %message.id, topic = %topic, "message delivered");
+                    }
+                } else {
+                    let _ = db
+                        .failed(
+                            &message.id,
+                            &message.lease,
+                            &last_error,
+                            config.max_delivery_attempts,
+                        )
+                        .await;
                 }
             }
             info!(topic = %topic, "subscriber disconnected");
         });
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+
+    async fn configure_topics(
+        &self,
+        request: Request<ConfigureTopicsRequest>,
+    ) -> Result<Response<ConfigureTopicsResponse>, Status> {
+        let request = request.into_inner();
+        if request.topics.is_empty() {
+            return Err(Status::invalid_argument("topics is required"));
+        }
+        let mut configs = Vec::with_capacity(request.topics.len());
+        for item in request.topics {
+            let topic = item.topic.trim();
+            if topic.is_empty() {
+                return Err(Status::invalid_argument("topic is required"));
+            }
+            let Some(delivery) = DeliveryMode::parse(&item.delivery) else {
+                return Err(Status::invalid_argument(
+                    "delivery must be single or broadcast",
+                ));
+            };
+            configs.push(TopicConfig {
+                topic: topic.to_string(),
+                delivery,
+            });
+        }
+        let stored = self.db.configure_topics(&configs).await.map_err(|error| {
+            error!(%error, "configure topics failed");
+            Status::internal("could not configure topics")
+        })?;
+        info!(count = configs.len(), "topic delivery configured");
+        Ok(Response::new(ConfigureTopicsResponse {
+            topics: stored.into_iter().map(to_proto_topic).collect(),
+        }))
+    }
+
+    async fn list_topics(
+        &self,
+        _request: Request<ListTopicsRequest>,
+    ) -> Result<Response<ListTopicsResponse>, Status> {
+        let stored = self.db.list_topic_configs().await.map_err(|error| {
+            error!(%error, "list topics failed");
+            Status::internal("could not list topics")
+        })?;
+        Ok(Response::new(ListTopicsResponse {
+            topics: stored.into_iter().map(to_proto_topic).collect(),
+        }))
     }
 
     async fn ack_message(

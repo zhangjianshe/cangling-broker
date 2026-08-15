@@ -27,6 +27,25 @@ class SatwayMessage:
 
 
 @dataclass(frozen=True)
+class TopicConfig:
+    topic: str
+    delivery: str = "single"
+
+    def __post_init__(self) -> None:
+        if not self.topic or not self.topic.strip():
+            raise ValueError("topic is required")
+        delivery = (self.delivery or "single").strip().lower()
+        if delivery not in {"single", "broadcast", "queue", "competing", "fanout", "pubsub"}:
+            raise ValueError("delivery must be single or broadcast")
+        if delivery in {"queue", "competing"}:
+            delivery = "single"
+        if delivery in {"fanout", "pubsub"}:
+            delivery = "broadcast"
+        object.__setattr__(self, "topic", self.topic.strip())
+        object.__setattr__(self, "delivery", delivery)
+
+
+@dataclass(frozen=True)
 class SubscribeOptions:
     topic: str
     consumer_id: str = ""

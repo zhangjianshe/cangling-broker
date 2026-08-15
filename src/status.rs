@@ -8,11 +8,15 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    auth, config::Config, db::Database, model::TopicSnapshot, subscribers::TopicSubscribers,
+    auth,
+    config::Config,
+    db::Database,
+    model::{DeliveryMode, TopicConfig, TopicSnapshot},
+    subscribers::TopicSubscribers,
 };
 
 #[derive(Clone)]
@@ -69,6 +73,7 @@ pub async fn serve(
         .route("/", get(page))
         .route("/health", get(health))
         .route("/status", get(status))
+        .route("/topics", get(list_topics).post(configure_topics))
         .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state);
     axum::serve(listener, app)
@@ -107,6 +112,71 @@ async fn page() -> Html<&'static str> {
 
 async fn health() -> Json<Health> {
     Json(Health { ok: true })
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfigureTopicsBody {
+    topics: Vec<TopicConfigBody>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct TopicConfigBody {
+    topic: String,
+    delivery: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TopicsBody {
+    topics: Vec<TopicConfigBody>,
+}
+
+async fn list_topics(State(state): State<StatusState>) -> Result<Json<TopicsBody>, StatusCode> {
+    let topics = state
+        .db
+        .list_topic_configs()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(TopicsBody {
+        topics: topics.into_iter().map(to_body).collect(),
+    }))
+}
+
+async fn configure_topics(
+    State(state): State<StatusState>,
+    Json(body): Json<ConfigureTopicsBody>,
+) -> Result<Json<TopicsBody>, StatusCode> {
+    if body.topics.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut configs = Vec::new();
+    for item in body.topics {
+        let topic = item.topic.trim();
+        if topic.is_empty() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let Some(delivery) = DeliveryMode::parse(&item.delivery) else {
+            return Err(StatusCode::BAD_REQUEST);
+        };
+        configs.push(TopicConfig {
+            topic: topic.to_string(),
+            delivery,
+        });
+    }
+    let topics = state
+        .db
+        .configure_topics(&configs)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(TopicsBody {
+        topics: topics.into_iter().map(to_body).collect(),
+    }))
+}
+
+fn to_body(config: TopicConfig) -> TopicConfigBody {
+    TopicConfigBody {
+        topic: config.topic,
+        delivery: config.delivery.as_str().to_string(),
+    }
 }
 
 async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, StatusCode> {

@@ -59,6 +59,16 @@ class MessageQueueStub:
                 request_serializer=queue__pb2.AckMessageRequest.SerializeToString,
                 response_deserializer=queue__pb2.AckMessageResponse.FromString,
                 _registered_method=True)
+        self.ConfigureTopics = channel.unary_unary(
+                '/dispatcher.v1.MessageQueue/ConfigureTopics',
+                request_serializer=queue__pb2.ConfigureTopicsRequest.SerializeToString,
+                response_deserializer=queue__pb2.ConfigureTopicsResponse.FromString,
+                _registered_method=True)
+        self.ListTopics = channel.unary_unary(
+                '/dispatcher.v1.MessageQueue/ListTopics',
+                request_serializer=queue__pb2.ListTopicsRequest.SerializeToString,
+                response_deserializer=queue__pb2.ListTopicsResponse.FromString,
+                _registered_method=True)
 
 
 class MessageQueueServicer:
@@ -100,6 +110,21 @@ class MessageQueueServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ConfigureTopics(self, request, context):
+        """Create or replace delivery mode for many topics at once.
+        delivery is "single" (competing consumers, default) or "broadcast" (every live stream).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListTopics(self, request, context):
+        """List stored topic delivery configs.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_MessageQueueServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -127,6 +152,16 @@ def add_MessageQueueServicer_to_server(servicer, server):
                     servicer.AckMessage,
                     request_deserializer=queue__pb2.AckMessageRequest.FromString,
                     response_serializer=queue__pb2.AckMessageResponse.SerializeToString,
+            ),
+            'ConfigureTopics': grpc.unary_unary_rpc_method_handler(
+                    servicer.ConfigureTopics,
+                    request_deserializer=queue__pb2.ConfigureTopicsRequest.FromString,
+                    response_serializer=queue__pb2.ConfigureTopicsResponse.SerializeToString,
+            ),
+            'ListTopics': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListTopics,
+                    request_deserializer=queue__pb2.ListTopicsRequest.FromString,
+                    response_serializer=queue__pb2.ListTopicsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -264,6 +299,60 @@ class MessageQueue:
             '/dispatcher.v1.MessageQueue/AckMessage',
             queue__pb2.AckMessageRequest.SerializeToString,
             queue__pb2.AckMessageResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ConfigureTopics(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.MessageQueue/ConfigureTopics',
+            queue__pb2.ConfigureTopicsRequest.SerializeToString,
+            queue__pb2.ConfigureTopicsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListTopics(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.MessageQueue/ListTopics',
+            queue__pb2.ListTopicsRequest.SerializeToString,
+            queue__pb2.ListTopicsResponse.FromString,
             options,
             channel_credentials,
             insecure,

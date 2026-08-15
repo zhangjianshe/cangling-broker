@@ -8,7 +8,7 @@ import uuid
 
 import grpc
 
-from .models import SatwayMessage, SendResult, SubscribeOptions, auth_token_from_env
+from .models import SatwayMessage, SendResult, SubscribeOptions, TopicConfig, auth_token_from_env
 from .proto import queue_pb2, queue_pb2_grpc
 
 LOG = logging.getLogger("cangling_message")
@@ -119,6 +119,36 @@ class SatwayClient:
             ).consumer_id
 
         return self._call_with_reconnect("register", once)
+
+    def configure_topics(self, topics: list[TopicConfig]) -> list[TopicConfig]:
+        if not topics:
+            raise ValueError("topics is required")
+
+        def once() -> list[TopicConfig]:
+            response = self._stub.ConfigureTopics(
+                queue_pb2.ConfigureTopicsRequest(
+                    topics=[
+                        queue_pb2.TopicConfig(topic=item.topic, delivery=item.delivery)
+                        for item in topics
+                    ]
+                ),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            )
+            return [TopicConfig(topic=item.topic, delivery=item.delivery) for item in response.topics]
+
+        return self._call_with_reconnect("configure_topics", once)
+
+    def list_topics(self) -> list[TopicConfig]:
+        def once() -> list[TopicConfig]:
+            response = self._stub.ListTopics(
+                queue_pb2.ListTopicsRequest(),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            )
+            return [TopicConfig(topic=item.topic, delivery=item.delivery) for item in response.topics]
+
+        return self._call_with_reconnect("list_topics", once)
 
     def unregister(self, consumer_id: str) -> None:
         if not consumer_id:

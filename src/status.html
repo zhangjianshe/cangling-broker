@@ -147,11 +147,12 @@
       }
       $("topics").innerHTML =
         "<table><thead><tr>" +
-        "<th>主题</th><th>已接收</th><th>待处理</th><th>投递中</th>" +
+        "<th>主题</th><th>投递</th><th>已接收</th><th>待处理</th><th>投递中</th>" +
         "<th>已投递</th><th>失败</th><th>重复</th><th>在线流</th><th>消费者</th>" +
         "</tr></thead><tbody>" +
         topics.map((t) =>
           "<tr><td>" + escapeHtml(t.name) + "</td>" +
+          "<td>" + escapeHtml(t.delivery === "broadcast" ? "广播" : "单投") + "</td>" +
           "<td>" + t.accepted + "</td>" +
           "<td>" + t.pending + "</td>" +
           "<td>" + t.processing + "</td>" +

@@ -18,6 +18,41 @@ pub struct ConsumerSnapshot {
     pub live: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryMode {
+    Single,
+    Broadcast,
+}
+
+impl DeliveryMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Broadcast => "broadcast",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "single" | "queue" | "competing" => Some(Self::Single),
+            "broadcast" | "fanout" | "pubsub" => Some(Self::Broadcast),
+            _ => None,
+        }
+    }
+}
+
+impl Default for DeliveryMode {
+    fn default() -> Self {
+        Self::Single
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TopicConfig {
+    pub topic: String,
+    pub delivery: DeliveryMode,
+}
+
 #[derive(Debug, Serialize, Clone, Default)]
 pub struct TopicSnapshot {
     pub name: String,
@@ -29,6 +64,8 @@ pub struct TopicSnapshot {
     pub failed: i64,
     #[serde(default)]
     pub streams: usize,
+    #[serde(default)]
+    pub delivery: String,
     pub consumers: Vec<ConsumerSnapshot>,
 }
 

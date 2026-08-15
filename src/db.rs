@@ -9,7 +9,7 @@ use sqlx::{
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::model::{ClaimedMessage, ConsumerSnapshot, TopicSnapshot};
+use crate::model::{ClaimedMessage, ConsumerSnapshot, DeliveryMode, TopicConfig, TopicSnapshot};
 
 #[derive(Clone)]
 pub struct Database(pub SqlitePool);
@@ -98,12 +98,18 @@ impl Database {
                 accepted INTEGER NOT NULL DEFAULT 0,
                 duplicates INTEGER NOT NULL DEFAULT 0,
                 delivered INTEGER NOT NULL DEFAULT 0,
-                failed INTEGER NOT NULL DEFAULT 0
+                failed INTEGER NOT NULL DEFAULT 0,
+                delivery TEXT NOT NULL DEFAULT 'single'
             )",
         )
             .execute(&pool)
             .await
             .context("creating SQLite topic stats schema")?;
+        let _ = sqlx::query(
+            "ALTER TABLE topic_stats ADD COLUMN delivery TEXT NOT NULL DEFAULT 'single'",
+        )
+        .execute(&pool)
+        .await;
         sqlx::query(
             "INSERT OR IGNORE INTO topic_stats (topic, accepted, delivered, failed)
              SELECT topic,
@@ -121,6 +127,45 @@ impl Database {
             .execute(&pool)
             .await?;
         Ok(Self(pool))
+    }
+
+    pub async fn topic_delivery(&self, topic: &str) -> anyhow::Result<DeliveryMode> {
+        let row = sqlx::query("SELECT delivery FROM topic_stats WHERE topic = ?")
+            .bind(topic)
+            .fetch_optional(&self.0)
+            .await?;
+        Ok(row
+            .and_then(|row| DeliveryMode::parse(&row.get::<String, _>("delivery")))
+            .unwrap_or(DeliveryMode::Single))
+    }
+
+    pub async fn configure_topics(&self, configs: &[TopicConfig]) -> anyhow::Result<Vec<TopicConfig>> {
+        for config in configs {
+            sqlx::query(
+                "INSERT INTO topic_stats (topic, delivery)
+                 VALUES (?, ?)
+                 ON CONFLICT(topic) DO UPDATE SET delivery = excluded.delivery",
+            )
+            .bind(&config.topic)
+            .bind(config.delivery.as_str())
+            .execute(&self.0)
+            .await?;
+        }
+        self.list_topic_configs().await
+    }
+
+    pub async fn list_topic_configs(&self) -> anyhow::Result<Vec<TopicConfig>> {
+        let rows = sqlx::query("SELECT topic, delivery FROM topic_stats ORDER BY topic")
+            .fetch_all(&self.0)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| TopicConfig {
+                topic: row.get("topic"),
+                delivery: DeliveryMode::parse(&row.get::<String, _>("delivery"))
+                    .unwrap_or(DeliveryMode::Single),
+            })
+            .collect())
     }
 
     pub async fn close(self) {
@@ -160,9 +205,11 @@ impl Database {
     pub async fn status_snapshot(&self, consumer_seen_after: Option<&str>) -> anyhow::Result<Vec<TopicSnapshot>> {
         let mut topics: HashMap<String, TopicSnapshot> = HashMap::new();
 
-        for row in sqlx::query("SELECT topic, accepted, duplicates, delivered, failed FROM topic_stats")
-            .fetch_all(&self.0)
-            .await?
+        for row in sqlx::query(
+            "SELECT topic, accepted, duplicates, delivered, failed, delivery FROM topic_stats",
+        )
+        .fetch_all(&self.0)
+        .await?
         {
             let name: String = row.get("topic");
             let topic = topics.entry(name.clone()).or_insert_with(|| TopicSnapshot {
@@ -173,6 +220,11 @@ impl Database {
             topic.duplicates = row.get("duplicates");
             topic.delivered = row.get("delivered");
             topic.failed = row.get("failed");
+            let delivery: String = row.get("delivery");
+            topic.delivery = DeliveryMode::parse(&delivery)
+                .unwrap_or(DeliveryMode::Single)
+                .as_str()
+                .to_string();
         }
 
         for row in sqlx::query("SELECT topic, status, COUNT(*) AS n FROM messages GROUP BY topic, status")

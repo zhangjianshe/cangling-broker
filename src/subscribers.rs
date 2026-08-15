@@ -1,21 +1,26 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{Arc, Mutex},
 };
 
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
+use tonic::Status;
+
+use crate::proto::SatwayMessage;
+
+pub type StreamSender = mpsc::Sender<Result<SatwayMessage, Status>>;
 
 #[derive(Clone, Default)]
-pub struct TopicSubscribers(Arc<Mutex<HashMap<String, HashSet<String>>>>);
+pub struct TopicSubscribers(Arc<Mutex<HashMap<String, HashMap<String, StreamSender>>>>);
 
 impl TopicSubscribers {
-    pub fn add(&self, topic: &str, session: &str) {
+    pub fn add(&self, topic: &str, session: &str, tx: StreamSender) {
         self.0
             .lock()
             .expect("subscriber map")
             .entry(topic.to_string())
             .or_default()
-            .insert(session.to_string());
+            .insert(session.to_string(), tx);
     }
 
     pub fn remove(&self, topic: &str, session: &str) {
@@ -33,7 +38,7 @@ impl TopicSubscribers {
             .lock()
             .expect("subscriber map")
             .get(topic)
-            .map(HashSet::len)
+            .map(HashMap::len)
             .unwrap_or(0)
     }
 
@@ -42,11 +47,25 @@ impl TopicSubscribers {
             .lock()
             .expect("subscriber map")
             .get(topic)
-            .is_some_and(|sessions| sessions.contains(consumer_id))
+            .is_some_and(|sessions| sessions.contains_key(consumer_id))
     }
 
     pub fn topics(&self) -> Vec<String> {
         self.0.lock().expect("subscriber map").keys().cloned().collect()
+    }
+
+    pub fn senders(&self, topic: &str) -> Vec<(String, StreamSender)> {
+        self.0
+            .lock()
+            .expect("subscriber map")
+            .get(topic)
+            .map(|sessions| {
+                sessions
+                    .iter()
+                    .map(|(id, tx)| (id.clone(), tx.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -56,7 +75,7 @@ pub struct AckDecision {
 }
 
 struct PendingAck {
-    lease: String,
+    message_id: String,
     tx: oneshot::Sender<AckDecision>,
 }
 
@@ -66,26 +85,29 @@ pub struct InflightAcks(Arc<Mutex<HashMap<String, PendingAck>>>);
 impl InflightAcks {
     pub fn register(&self, message_id: String, lease: String) -> oneshot::Receiver<AckDecision> {
         let (tx, rx) = oneshot::channel();
-        self.0
-            .lock()
-            .expect("inflight map")
-            .insert(message_id, PendingAck { lease, tx });
+        self.0.lock().expect("inflight map").insert(
+            lease,
+            PendingAck {
+                message_id,
+                tx,
+            },
+        );
         rx
     }
 
     pub fn complete(&self, message_id: &str, lease: &str, success: bool, error: String) -> bool {
         let mut inflight = self.0.lock().expect("inflight map");
-        match inflight.get(message_id) {
-            Some(pending) if pending.lease == lease => {
-                let pending = inflight.remove(message_id).expect("checked");
+        match inflight.get(lease) {
+            Some(pending) if pending.message_id == message_id => {
+                let pending = inflight.remove(lease).expect("checked");
                 pending.tx.send(AckDecision { success, error }).is_ok()
             }
             _ => false,
         }
     }
 
-    pub fn cancel(&self, message_id: &str) {
-        self.0.lock().expect("inflight map").remove(message_id);
+    pub fn cancel(&self, lease: &str) {
+        self.0.lock().expect("inflight map").remove(lease);
     }
 }
 
@@ -96,8 +118,13 @@ pub struct SubscriptionGuard {
 }
 
 impl SubscriptionGuard {
-    pub fn new(subscribers: TopicSubscribers, topic: String, session: String) -> Self {
-        subscribers.add(&topic, &session);
+    pub fn new(
+        subscribers: TopicSubscribers,
+        topic: String,
+        session: String,
+        tx: StreamSender,
+    ) -> Self {
+        subscribers.add(&topic, &session, tx);
         Self {
             subscribers,
             topic,
