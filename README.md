@@ -195,7 +195,7 @@ curl -s http://127.0.0.1:7501/health
 curl -s -H 'authorization: Bearer change-me' http://127.0.0.1:7501/status
 ```
 
-`/` is a single HTML page that refreshes from `/status`. `/status` is the JSON and includes `version`, `git`, and `built`. `consumers` / `streams` is the number of live `Subscribe` streams.
+`/` is a single HTML page that refreshes from `/status`. `/status` is the JSON and includes `version`, `git`, `built`, and `db_bytes` (on-disk size of `queue.db` plus `-wal`/`-shm`). `consumers` / `streams` is the number of live `Subscribe` streams. The dashboard card **SQLite** shows the same size.
 
 ### Competing consumers
 

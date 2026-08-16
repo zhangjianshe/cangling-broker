@@ -50,6 +50,7 @@ struct BrokerStatus {
     delivered: i64,
     failed: i64,
     dropped: i64,
+    db_bytes: u64,
     clients: Vec<ClientInfo>,
     topics_detail: Vec<TopicSnapshot>,
 }
@@ -255,6 +256,7 @@ async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, 
         &topics_detail,
     );
     let consumers = topics_detail.iter().map(|topic| topic.streams).sum();
+    let db_bytes = state.db.sqlite_size_bytes().await.unwrap_or(0);
     Ok(Json(BrokerStatus {
         version: env!("CARGO_PKG_VERSION"),
         git: env!("GIT_HASH"),
@@ -269,6 +271,7 @@ async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, 
         delivered: topics_detail.iter().map(|topic| topic.delivered).sum(),
         failed: topics_detail.iter().map(|topic| topic.failed).sum(),
         dropped: topics_detail.iter().map(|topic| topic.dropped).sum(),
+        db_bytes,
         clients,
         topics_detail,
     }))

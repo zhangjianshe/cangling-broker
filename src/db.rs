@@ -830,6 +830,22 @@ impl Database {
         self.bump_topic_stat(topic, 1, 0, 1, 0).await
     }
 
+    /// On-disk size of the main SQLite file plus `-wal` / `-shm` sidecars.
+    pub async fn sqlite_size_bytes(&self) -> anyhow::Result<u64> {
+        let row = sqlx::query("SELECT file FROM pragma_database_list WHERE name = 'main'")
+            .fetch_optional(&self.0)
+            .await?;
+        let path = row
+            .map(|row| row.get::<String, _>("file"))
+            .unwrap_or_default();
+        if path.is_empty() {
+            return Ok(0);
+        }
+        Ok(file_len(&path)
+            + file_len(&format!("{path}-wal"))
+            + file_len(&format!("{path}-shm")))
+    }
+
     pub async fn purge_older_than(&self, cutoff: &str) -> anyhow::Result<u64> {
         let result = sqlx::query("DELETE FROM messages WHERE created_at < ?")
             .bind(cutoff)
@@ -929,6 +945,10 @@ async fn migrate_consumers(pool: &SqlitePool) -> anyhow::Result<()> {
 
 fn parse_consumer_attributes(raw: String) -> HashMap<String, String> {
     serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn file_len(path: &str) -> u64 {
+    std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
 }
 
 fn sqlite_file_path(url: &str) -> Option<PathBuf> {
@@ -1033,6 +1053,21 @@ mod tests {
             topic.consumers[0].attributes.get("host").map(String::as_str),
             Some("worker-1")
         );
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn sqlite_size_bytes_includes_main_file() {
+        let (db, dir) = temp_db().await;
+        let empty = db.sqlite_size_bytes().await.unwrap();
+        assert!(empty > 0, "fresh sqlite file should have a header");
+        db.enqueue(None, "jobs", &vec![0u8; 64 * 1024], HashMap::new())
+            .await
+            .unwrap();
+        let grown = db.sqlite_size_bytes().await.unwrap();
+        assert!(grown >= empty);
 
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);
