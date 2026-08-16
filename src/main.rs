@@ -210,6 +210,10 @@ impl MessageQueue for QueueService {
         &self,
         request: Request<SubscribeRequest>,
     ) -> Result<Response<Self::SubscribeStream>, Status> {
+        let peer = request
+            .remote_addr()
+            .map(|addr| addr.to_string())
+            .unwrap_or_default();
         let request = request.into_inner();
         if request.topic.trim().is_empty() {
             return Err(Status::invalid_argument("topic is required"));
@@ -236,6 +240,7 @@ impl MessageQueue for QueueService {
                 topic.clone(),
                 session.clone(),
                 tx.clone(),
+                peer,
             );
             info!(topic = %topic, consumer_id = %consumer_id, "subscriber connected");
             let visibility = Duration::from_secs(config.ack_timeout_secs.max(1));

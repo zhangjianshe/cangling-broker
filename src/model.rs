@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Serialize;
 
 #[derive(Debug)]
@@ -16,6 +18,8 @@ pub struct ConsumerSnapshot {
     pub name: String,
     pub last_seen_at: String,
     pub live: bool,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub attributes: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -292,15 +292,18 @@ impl Database {
             }
         }
 
-        for row in sqlx::query("SELECT id, topic, name, last_seen_at FROM consumers ORDER BY created_at")
-            .fetch_all(&self.0)
-            .await?
+        for row in sqlx::query(
+            "SELECT id, topic, name, attributes, last_seen_at FROM consumers ORDER BY created_at",
+        )
+        .fetch_all(&self.0)
+        .await?
         {
             let topic_name: String = row.get("topic");
             let last_seen_at: String = row.get("last_seen_at");
             let live = consumer_seen_after
                 .map(|cutoff| last_seen_at.as_str() >= cutoff)
                 .unwrap_or(true);
+            let attributes = parse_consumer_attributes(row.get("attributes"));
             topics
                 .entry(topic_name.clone())
                 .or_insert_with(|| TopicSnapshot {
@@ -313,6 +316,7 @@ impl Database {
                     name: row.get("name"),
                     last_seen_at,
                     live,
+                    attributes,
                 });
         }
 
@@ -743,6 +747,10 @@ async fn migrate_consumers(pool: &SqlitePool) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn parse_consumer_attributes(raw: String) -> HashMap<String, String> {
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
 fn sqlite_file_path(url: &str) -> Option<PathBuf> {
     let rest = url.strip_prefix("sqlite:")?;
     if let Some(path) = rest.strip_prefix("///") {
@@ -813,6 +821,27 @@ mod tests {
         let stats = snapshot.iter().find(|item| item.name == "live-events").unwrap();
         assert_eq!(stats.pending, 0);
         assert_eq!(stats.dropped, 1);
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn snapshot_includes_consumer_attributes() {
+        let (db, dir) = temp_db().await;
+        let mut attrs = HashMap::new();
+        attrs.insert("host".into(), "worker-1".into());
+        db.register_consumer(None, "jobs", "java-s0", &attrs)
+            .await
+            .unwrap();
+        let snapshot = db.status_snapshot(None).await.unwrap();
+        let topic = snapshot.iter().find(|item| item.name == "jobs").unwrap();
+        assert_eq!(topic.consumers.len(), 1);
+        assert_eq!(topic.consumers[0].name, "java-s0");
+        assert_eq!(
+            topic.consumers[0].attributes.get("host").map(String::as_str),
+            Some("worker-1")
+        );
 
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);

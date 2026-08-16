@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{collections::HashMap, time::Instant};
 
 use axum::{
     extract::State,
@@ -15,8 +15,8 @@ use crate::{
     auth,
     config::Config,
     db::Database,
-    model::{DeliveryMode, PersistenceMode, TopicConfig, TopicSnapshot},
-    subscribers::TopicSubscribers,
+    model::{ConsumerSnapshot, DeliveryMode, PersistenceMode, TopicConfig, TopicSnapshot},
+    subscribers::{SessionInfo, TopicSubscribers},
 };
 
 #[derive(Clone)]
@@ -48,7 +48,19 @@ struct BrokerStatus {
     delivered: i64,
     failed: i64,
     dropped: i64,
+    clients: Vec<ClientInfo>,
     topics_detail: Vec<TopicSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+struct ClientInfo {
+    id: String,
+    name: String,
+    topic: String,
+    attributes: HashMap<String, String>,
+    peer: String,
+    connected_at: String,
+    last_seen_at: String,
 }
 
 fn consumer_cutoff(ttl_secs: u64) -> Option<String> {
@@ -197,6 +209,7 @@ async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, 
         .status_snapshot(cutoff.as_deref())
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let live_sessions = state.subscribers.sessions();
     for topic in &mut topics_detail {
         topic.streams = state.subscribers.count(&topic.name);
         for consumer in &mut topic.consumers {
@@ -205,6 +218,7 @@ async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, 
             }
         }
     }
+    let clients = connected_clients(&live_sessions, &topics_detail);
     let consumers = topics_detail.iter().map(|topic| topic.streams).sum();
     Ok(Json(BrokerStatus {
         version: env!("CARGO_PKG_VERSION"),
@@ -220,6 +234,70 @@ async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, 
         delivered: topics_detail.iter().map(|topic| topic.delivered).sum(),
         failed: topics_detail.iter().map(|topic| topic.failed).sum(),
         dropped: topics_detail.iter().map(|topic| topic.dropped).sum(),
+        clients,
         topics_detail,
     }))
+}
+
+fn connected_clients(sessions: &[SessionInfo], topics: &[TopicSnapshot]) -> Vec<ClientInfo> {
+    let registered: HashMap<(&str, &str), &ConsumerSnapshot> = topics
+        .iter()
+        .flat_map(|topic| {
+            topic
+                .consumers
+                .iter()
+                .map(move |consumer| ((topic.name.as_str(), consumer.id.as_str()), consumer))
+        })
+        .collect();
+    sessions
+        .iter()
+        .map(|session| {
+            let meta = registered.get(&(session.topic.as_str(), session.id.as_str()));
+            ClientInfo {
+                id: session.id.clone(),
+                name: meta.map(|consumer| consumer.name.clone()).unwrap_or_default(),
+                topic: session.topic.clone(),
+                attributes: meta
+                    .map(|consumer| consumer.attributes.clone())
+                    .unwrap_or_default(),
+                peer: session.peer.clone(),
+                connected_at: session.connected_at.clone(),
+                last_seen_at: meta
+                    .map(|consumer| consumer.last_seen_at.clone())
+                    .unwrap_or_else(|| session.connected_at.clone()),
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connected_clients_merge_register_metadata() {
+        let sessions = vec![SessionInfo {
+            id: "c1".into(),
+            topic: "jobs".into(),
+            peer: "127.0.0.1:9".into(),
+            connected_at: "2026-08-16T00:00:00Z".into(),
+        }];
+        let topics = vec![TopicSnapshot {
+            name: "jobs".into(),
+            consumers: vec![ConsumerSnapshot {
+                id: "c1".into(),
+                name: "java-s0".into(),
+                last_seen_at: "2026-08-16T00:01:00Z".into(),
+                live: true,
+                attributes: HashMap::from([("host".into(), "worker-1".into())]),
+            }],
+            ..TopicSnapshot::default()
+        }];
+        let clients = connected_clients(&sessions, &topics);
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].name, "java-s0");
+        assert_eq!(clients[0].peer, "127.0.0.1:9");
+        assert_eq!(clients[0].last_seen_at, "2026-08-16T00:01:00Z");
+        assert_eq!(clients[0].attributes.get("host").unwrap(), "worker-1");
+    }
 }

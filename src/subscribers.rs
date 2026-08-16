@@ -10,17 +10,41 @@ use crate::proto::SatwayMessage;
 
 pub type StreamSender = mpsc::Sender<Result<SatwayMessage, Status>>;
 
+#[derive(Clone)]
+pub struct SessionInfo {
+    pub id: String,
+    pub topic: String,
+    pub peer: String,
+    pub connected_at: String,
+}
+
+struct LiveEntry {
+    info: SessionInfo,
+    tx: StreamSender,
+}
+
 #[derive(Clone, Default)]
-pub struct TopicSubscribers(Arc<Mutex<HashMap<String, HashMap<String, StreamSender>>>>);
+pub struct TopicSubscribers(Arc<Mutex<HashMap<String, HashMap<String, LiveEntry>>>>);
 
 impl TopicSubscribers {
-    pub fn add(&self, topic: &str, session: &str, tx: StreamSender) {
+    pub fn add(&self, topic: &str, session: &str, tx: StreamSender, peer: &str) {
         self.0
             .lock()
             .expect("subscriber map")
             .entry(topic.to_string())
             .or_default()
-            .insert(session.to_string(), tx);
+            .insert(
+                session.to_string(),
+                LiveEntry {
+                    info: SessionInfo {
+                        id: session.to_string(),
+                        topic: topic.to_string(),
+                        peer: peer.to_string(),
+                        connected_at: chrono::Utc::now().to_rfc3339(),
+                    },
+                    tx,
+                },
+            );
     }
 
     pub fn remove(&self, topic: &str, session: &str) {
@@ -54,6 +78,22 @@ impl TopicSubscribers {
         self.0.lock().expect("subscriber map").keys().cloned().collect()
     }
 
+    pub fn sessions(&self) -> Vec<SessionInfo> {
+        let mut sessions: Vec<SessionInfo> = self
+            .0
+            .lock()
+            .expect("subscriber map")
+            .values()
+            .flat_map(|topic| topic.values().map(|entry| entry.info.clone()))
+            .collect();
+        sessions.sort_by(|left, right| {
+            left.topic
+                .cmp(&right.topic)
+                .then(left.id.cmp(&right.id))
+        });
+        sessions
+    }
+
     pub fn senders(&self, topic: &str) -> Vec<(String, StreamSender)> {
         self.0
             .lock()
@@ -62,7 +102,7 @@ impl TopicSubscribers {
             .map(|sessions| {
                 sessions
                     .iter()
-                    .map(|(id, tx)| (id.clone(), tx.clone()))
+                    .map(|(id, entry)| (id.clone(), entry.tx.clone()))
                     .collect()
             })
             .unwrap_or_default()
@@ -123,8 +163,9 @@ impl SubscriptionGuard {
         topic: String,
         session: String,
         tx: StreamSender,
+        peer: String,
     ) -> Self {
-        subscribers.add(&topic, &session, tx);
+        subscribers.add(&topic, &session, tx, &peer);
         Self {
             subscribers,
             topic,
@@ -136,5 +177,27 @@ impl SubscriptionGuard {
 impl Drop for SubscriptionGuard {
     fn drop(&mut self) {
         self.subscribers.remove(&self.topic, &self.session);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracks_live_session_metadata() {
+        let subscribers = TopicSubscribers::default();
+        let (tx, _rx) = mpsc::channel(1);
+        subscribers.add("jobs", "c1", tx, "127.0.0.1:4321");
+        assert_eq!(subscribers.count("jobs"), 1);
+        assert!(subscribers.is_live("jobs", "c1"));
+        let sessions = subscribers.sessions();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "c1");
+        assert_eq!(sessions[0].topic, "jobs");
+        assert_eq!(sessions[0].peer, "127.0.0.1:4321");
+        assert!(!sessions[0].connected_at.is_empty());
+        subscribers.remove("jobs", "c1");
+        assert!(subscribers.sessions().is_empty());
     }
 }

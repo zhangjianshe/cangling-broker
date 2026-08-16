@@ -81,6 +81,16 @@
     .url { color: var(--text); word-break: break-all; }
     .fail { color: var(--fail); }
     .pending { color: var(--pending); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .attr {
+      display: inline-block;
+      margin: 1px 4px 1px 0;
+      padding: 0 6px;
+      border-radius: 4px;
+      background: #243040;
+      color: var(--muted);
+      font-size: 11px;
+    }
   </style>
 </head>
 <body>
@@ -106,6 +116,10 @@
   </header>
   <div id="error"></div>
   <div class="cards" id="cards"></div>
+  <section>
+    <h2 id="clients-title">已连接客户端</h2>
+    <div id="clients"></div>
+  </section>
   <section>
     <h2>主题</h2>
     <div id="topics"></div>
@@ -134,11 +148,48 @@
         const pill = c.live
           ? '<span class="pill live">在线</span>'
           : '<span class="pill stale">离线</span>';
+        const attrs = attrsHtml(c.attributes);
         return '<div class="consumer">' + pill +
           ' <span class="url">' + escapeHtml(c.name || "(未命名)") + "</span>" +
           "<br>编号 " + escapeHtml(c.id) +
-          " · 最近心跳 " + escapeHtml(c.last_seen_at) + "</div>";
+          " · 最近心跳 " + escapeHtml(fmtTs(c.last_seen_at)) +
+          (attrs !== "—" ? "<br>" + attrs : "") + "</div>";
       }).join("");
+    }
+
+    function attrsHtml(attrs) {
+      if (!attrs || typeof attrs !== "object") return "—";
+      const keys = Object.keys(attrs);
+      if (!keys.length) return "—";
+      return keys.map((key) =>
+        '<span class="attr">' + escapeHtml(key) + "=" + escapeHtml(attrs[key]) + "</span>"
+      ).join("");
+    }
+
+    function fmtTs(value) {
+      if (!value) return "—";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleString();
+    }
+
+    function clientsHtml(list) {
+      if (!list || !list.length) return '<div class="empty">暂无已连接客户端</div>';
+      return "<table><thead><tr>" +
+        "<th>状态</th><th>名称</th><th>主题</th><th>编号</th><th>来源</th>" +
+        "<th>属性</th><th>连接时间</th><th>最近心跳</th>" +
+        "</tr></thead><tbody>" +
+        list.map((c) =>
+          "<tr><td><span class=\"pill live\">在线</span></td>" +
+          "<td>" + escapeHtml(c.name || "(未命名)") + "</td>" +
+          "<td>" + escapeHtml(c.topic || "") + "</td>" +
+          '<td class="mono">' + escapeHtml(c.id) + "</td>" +
+          '<td class="mono">' + escapeHtml(c.peer || "—") + "</td>" +
+          "<td>" + attrsHtml(c.attributes) + "</td>" +
+          "<td>" + escapeHtml(fmtTs(c.connected_at)) + "</td>" +
+          "<td>" + escapeHtml(fmtTs(c.last_seen_at)) + "</td></tr>"
+        ).join("") +
+        "</tbody></table>";
     }
 
     function escapeHtml(value) {
@@ -184,6 +235,10 @@
         card("失败", data.failed, data.failed ? "fail" : "") +
         card("已丢弃", data.dropped || 0) +
         card("重复提交", data.duplicates);
+
+      const clients = data.clients || [];
+      $("clients-title").textContent = "已连接客户端" + (clients.length ? " · " + clients.length : "");
+      $("clients").innerHTML = clientsHtml(clients);
 
       const topics = data.topics_detail || [];
       if (!topics.length) {
