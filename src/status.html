@@ -4,8 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CANGLING BROKER · 运行状态</title>
+  <script>
+    (function () {
+      var saved = localStorage.getItem("cl-broker-theme");
+      var theme = saved === "light" || saved === "dark"
+        ? saved
+        : (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
   <style>
-    :root {
+    :root, html[data-theme="dark"] {
       --bg: #0f1419;
       --panel: #1a2129;
       --line: #2a3440;
@@ -15,8 +24,33 @@
       --stale: #f0b429;
       --fail: #f07178;
       --pending: #59c2ff;
+      --chip: #243040;
+      --live-bg: #143d2c;
+      --stale-bg: #3d3114;
+      --hover: #222b35;
+      --selected: #1c3348;
+      --btn-hover: #243040;
+    }
+    html[data-theme="light"] {
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --line: #d8dee6;
+      --text: #1b242c;
+      --muted: #667585;
+      --live: #178a54;
+      --stale: #b58114;
+      --fail: #c43d46;
+      --pending: #1a7ab8;
+      --chip: #e8eef4;
+      --live-bg: #dff3e8;
+      --stale-bg: #f8edd0;
+      --hover: #eef3f8;
+      --selected: #dceaf6;
+      --btn-hover: #e8eef4;
     }
     * { box-sizing: border-box; }
+    html { color-scheme: dark; }
+    html[data-theme="light"] { color-scheme: light; }
     body {
       margin: 0;
       font: 14px/1.45 system-ui, sans-serif;
@@ -38,7 +72,24 @@
     }
     h1 { font-size: 18px; font-weight: 600; margin: 0; }
     #build { color: var(--muted); font-size: 12px; margin-top: 2px; word-break: break-all; }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
     #meta { color: var(--muted); font-size: 13px; text-align: right; }
+    #theme-toggle {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font: 12px/1.2 system-ui, sans-serif;
+      white-space: nowrap;
+    }
+    #theme-toggle:hover { background: var(--btn-hover); }
     #error {
       display: none;
       margin: 8px 24px;
@@ -74,11 +125,11 @@
       border-radius: 999px;
       font-size: 11px;
       font-weight: 600;
-      background: #243040;
+      background: var(--chip);
       color: var(--muted);
     }
-    .live { background: #143d2c; color: var(--live); }
-    .stale { background: #3d3114; color: var(--stale); }
+    .live { background: var(--live-bg); color: var(--live); }
+    .stale { background: var(--stale-bg); color: var(--stale); }
     .consumer { color: var(--muted); font-size: 12px; margin: 2px 0; }
     .url { color: var(--text); word-break: break-all; }
     .fail { color: var(--fail); }
@@ -89,15 +140,15 @@
       margin: 1px 4px 1px 0;
       padding: 0 6px;
       border-radius: 4px;
-      background: #243040;
+      background: var(--chip);
       color: var(--muted);
       font-size: 11px;
     }
     .client-list { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
     .client-list table { border-radius: 0; }
     .client-list tr { cursor: pointer; }
-    .client-list tr:hover td { background: #222b35; }
-    .client-list tr.selected td { background: #1c3348; }
+    .client-list tr:hover td { background: var(--hover); }
+    .client-list tr.selected td { background: var(--selected); }
     .client-detail {
       margin-top: 10px;
       background: var(--panel);
@@ -141,6 +192,7 @@
       padding: 4px 10px;
       cursor: pointer;
     }
+    .pager button:hover { background: var(--btn-hover); }
     .pager button:disabled { opacity: 0.4; cursor: default; }
   </style>
 </head>
@@ -154,7 +206,7 @@
             <stop offset="100%" stop-color="#3b82f6"></stop>
           </linearGradient>
         </defs>
-        <rect x="2" y="2" width="36" height="36" rx="10" fill="#1e293b" stroke="url(#logoGrad)" stroke-width="2"></rect>
+        <rect x="2" y="2" width="36" height="36" rx="10" fill="var(--panel)" stroke="url(#logoGrad)" stroke-width="2"></rect>
         <path d="M 26 12 C 22 10 16 12 13 16 C 10 20 12 26 16 28 C 20 30 26 27 28 24" fill="none" stroke="url(#logoGrad)" stroke-width="3" stroke-linecap="round"></path>
         <circle cx="27" cy="14" r="3" fill="#00F2FE"></circle>
       </svg>
@@ -163,7 +215,10 @@
         <div id="build">正在加载版本…</div>
       </div>
     </div>
-    <div id="meta">正在加载…</div>
+    <div class="toolbar">
+      <div id="meta">正在加载…</div>
+      <button type="button" id="theme-toggle" aria-label="切换主题">浅色</button>
+    </div>
   </header>
   <div id="error"></div>
   <div class="cards" id="cards"></div>
@@ -181,6 +236,30 @@
   </section>
   <script>
     const $ = (id) => document.getElementById(id);
+    const THEME_KEY = "cl-broker-theme";
+
+    function currentTheme() {
+      return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+    }
+
+    function syncThemeButton() {
+      const light = currentTheme() === "light";
+      const button = $("theme-toggle");
+      if (!button) return;
+      button.textContent = light ? "深色" : "浅色";
+      button.setAttribute("aria-label", light ? "切换到深色主题" : "切换到浅色主题");
+    }
+
+    function setTheme(theme) {
+      document.documentElement.setAttribute("data-theme", theme);
+      try { localStorage.setItem(THEME_KEY, theme); } catch (_) {}
+      syncThemeButton();
+    }
+
+    $("theme-toggle").addEventListener("click", () => {
+      setTheme(currentTheme() === "light" ? "dark" : "light");
+    });
+    syncThemeButton();
     const TOPIC_PAGE_SIZE = 30;
     const CLIENT_PAGE_SIZE = 10;
     let topicPage = 0;
