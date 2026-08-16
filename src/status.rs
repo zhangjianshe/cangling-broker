@@ -110,7 +110,7 @@ pub async fn serve(
         .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state);
     let app = match mqtt {
-        Some(ctx) => app.merge(crate::mqtt::ws_router(ctx)),
+        Some(ctx) => app.merge(crate::mqtt::ws_status_router(ctx)),
         None => app,
     };
     axum::serve(

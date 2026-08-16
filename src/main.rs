@@ -335,6 +335,12 @@ async fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+    if mqtt_on_status {
+        info!(
+            address = %status_addr,
+            "MQTT WebSocket attached to status port (/mqtt)"
+        );
+    }
     let mqtt_ws = if config.mqtt_enabled && config.mqtt_ws_port != 0 {
         let address = config.mqtt_ws_listen_addr();
         let listener = tokio::net::TcpListener::bind(address).await?;

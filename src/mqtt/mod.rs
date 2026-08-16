@@ -112,12 +112,20 @@ pub async fn serve_tcp(listener: TcpListener, ctx: MqttCtx) -> anyhow::Result<()
     Ok(())
 }
 
-pub fn ws_router(ctx: MqttCtx) -> Router {
+fn ws_mqtt_routes() -> Router<MqttCtx> {
     Router::new()
         .route("/mqtt", get(ws_handler))
         .route("/mqtt/", get(ws_handler))
-        .route("/", get(ws_handler))
-        .with_state(ctx)
+}
+
+/// Dedicated MQTT WebSocket port: `/mqtt` and `/`.
+pub fn ws_router(ctx: MqttCtx) -> Router {
+    ws_mqtt_routes().route("/", get(ws_handler)).with_state(ctx)
+}
+
+/// Attach to the status server. Only `/mqtt` — `/` is already the dashboard.
+pub fn ws_status_router(ctx: MqttCtx) -> Router {
+    ws_mqtt_routes().with_state(ctx)
 }
 
 pub async fn serve_ws(listener: TcpListener, ctx: MqttCtx) -> anyhow::Result<()> {
