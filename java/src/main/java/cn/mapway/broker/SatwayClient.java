@@ -35,6 +35,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 /**
  * Broker client. After {@link #connect(String)}, this object owns the gRPC channel
@@ -155,7 +156,7 @@ public final class SatwayClient implements AutoCloseable {
                     .getTopicsList()
                     .stream()
                     .map(item -> new TopicConfig(item.getTopic(), item.getDelivery(), item.getPersistence()))
-                    .toList();
+                    .collect(Collectors.toList());
         });
     }
 
@@ -166,7 +167,7 @@ public final class SatwayClient implements AutoCloseable {
                 .getTopicsList()
                 .stream()
                 .map(item -> new TopicConfig(item.getTopic(), item.getDelivery(), item.getPersistence()))
-                .toList());
+                .collect(Collectors.toList()));
     }
 
     public void unregister(String consumerId) {
@@ -398,8 +399,8 @@ public final class SatwayClient implements AutoCloseable {
     private static boolean isRetryable(Throwable error) {
         Throwable current = error;
         while (current != null) {
-            if (current instanceof StatusRuntimeException statusError) {
-                return isRetryableCode(statusError.getStatus().getCode());
+            if (current instanceof StatusRuntimeException) {
+                return isRetryableCode(((StatusRuntimeException) current).getStatus().getCode());
             }
             if (current instanceof java.util.concurrent.TimeoutException) {
                 return true;

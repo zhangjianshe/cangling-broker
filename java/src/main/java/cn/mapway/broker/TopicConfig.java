@@ -73,9 +73,10 @@ public final class TopicConfig {
         if (this == other) {
             return true;
         }
-        if (!(other instanceof TopicConfig that)) {
+        if (!(other instanceof TopicConfig)) {
             return false;
         }
+        TopicConfig that = (TopicConfig) other;
         return topic.equals(that.topic)
                 && delivery.equalsIgnoreCase(that.delivery)
                 && persistence.equalsIgnoreCase(that.persistence);

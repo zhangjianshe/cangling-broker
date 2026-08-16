@@ -1,5 +1,6 @@
 package cn.mapway.broker.example;
 
+import cn.mapway.broker.Consumer;
 import cn.mapway.broker.SatwayClient;
 import cn.mapway.broker.SubscribeOptions;
 
@@ -11,7 +12,7 @@ public final class ConsumerMain {
         String token = arg(args, "--token", SatwayClient.authTokenFromEnv());
         try (SatwayClient client = SatwayClient.connect(broker, token, connected ->
                      System.out.println("connected to " + broker));
-             var consumer = client.subscribe(
+             Consumer consumer = client.subscribe(
                      SubscribeOptions.topic(topic).name(name).build(),
                      message -> System.out.println(
                              "received | " + message.id() + " | " + message.topic() + " | " + message.payload()))) {
