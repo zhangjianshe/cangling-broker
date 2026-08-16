@@ -54,11 +54,19 @@ struct BrokerStatus {
 
 #[derive(Debug, Serialize)]
 struct ClientInfo {
+    peer: String,
+    streams: usize,
+    connected_at: String,
+    last_seen_at: String,
+    subscriptions: Vec<ClientSubscription>,
+}
+
+#[derive(Debug, Serialize)]
+struct ClientSubscription {
     id: String,
     name: String,
     topic: String,
     attributes: HashMap<String, String>,
-    peer: String,
     connected_at: String,
     last_seen_at: String,
 }
@@ -249,25 +257,57 @@ fn connected_clients(sessions: &[SessionInfo], topics: &[TopicSnapshot]) -> Vec<
                 .map(move |consumer| ((topic.name.as_str(), consumer.id.as_str()), consumer))
         })
         .collect();
-    sessions
-        .iter()
-        .map(|session| {
-            let meta = registered.get(&(session.topic.as_str(), session.id.as_str()));
-            ClientInfo {
+    let mut by_peer: HashMap<String, Vec<ClientSubscription>> = HashMap::new();
+    for session in sessions {
+        let meta = registered.get(&(session.topic.as_str(), session.id.as_str()));
+        by_peer
+            .entry(session.peer.clone())
+            .or_default()
+            .push(ClientSubscription {
                 id: session.id.clone(),
                 name: meta.map(|consumer| consumer.name.clone()).unwrap_or_default(),
                 topic: session.topic.clone(),
                 attributes: meta
                     .map(|consumer| consumer.attributes.clone())
                     .unwrap_or_default(),
-                peer: session.peer.clone(),
                 connected_at: session.connected_at.clone(),
                 last_seen_at: meta
                     .map(|consumer| consumer.last_seen_at.clone())
                     .unwrap_or_else(|| session.connected_at.clone()),
+            });
+    }
+    let mut clients: Vec<ClientInfo> = by_peer
+        .into_iter()
+        .map(|(peer, mut subscriptions)| {
+            subscriptions.sort_by(|left, right| {
+                left.topic
+                    .cmp(&right.topic)
+                    .then(left.name.cmp(&right.name))
+                    .then(left.id.cmp(&right.id))
+            });
+            let connected_at = subscriptions
+                .iter()
+                .map(|item| item.connected_at.as_str())
+                .min()
+                .unwrap_or("")
+                .to_string();
+            let last_seen_at = subscriptions
+                .iter()
+                .map(|item| item.last_seen_at.as_str())
+                .max()
+                .unwrap_or("")
+                .to_string();
+            ClientInfo {
+                peer,
+                streams: subscriptions.len(),
+                connected_at,
+                last_seen_at,
+                subscriptions,
             }
         })
-        .collect()
+        .collect();
+    clients.sort_by(|left, right| left.peer.cmp(&right.peer));
+    clients
 }
 
 #[cfg(test)]
@@ -275,13 +315,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn connected_clients_merge_register_metadata() {
-        let sessions = vec![SessionInfo {
-            id: "c1".into(),
-            topic: "jobs".into(),
-            peer: "127.0.0.1:9".into(),
-            connected_at: "2026-08-16T00:00:00Z".into(),
-        }];
+    fn connected_clients_group_streams_by_peer() {
+        let sessions = vec![
+            SessionInfo {
+                id: "c1".into(),
+                topic: "jobs".into(),
+                peer: "127.0.0.1:9".into(),
+                connected_at: "2026-08-16T00:00:02Z".into(),
+            },
+            SessionInfo {
+                id: "c2".into(),
+                topic: "logs".into(),
+                peer: "127.0.0.1:9".into(),
+                connected_at: "2026-08-16T00:00:01Z".into(),
+            },
+            SessionInfo {
+                id: "c3".into(),
+                topic: "alerts".into(),
+                peer: "10.0.0.2:8".into(),
+                connected_at: "2026-08-16T00:00:03Z".into(),
+            },
+        ];
         let topics = vec![TopicSnapshot {
             name: "jobs".into(),
             consumers: vec![ConsumerSnapshot {
@@ -294,10 +348,21 @@ mod tests {
             ..TopicSnapshot::default()
         }];
         let clients = connected_clients(&sessions, &topics);
-        assert_eq!(clients.len(), 1);
-        assert_eq!(clients[0].name, "java-s0");
-        assert_eq!(clients[0].peer, "127.0.0.1:9");
-        assert_eq!(clients[0].last_seen_at, "2026-08-16T00:01:00Z");
-        assert_eq!(clients[0].attributes.get("host").unwrap(), "worker-1");
+        assert_eq!(clients.len(), 2);
+        assert_eq!(clients[0].peer, "10.0.0.2:8");
+        assert_eq!(clients[0].streams, 1);
+        assert_eq!(clients[1].peer, "127.0.0.1:9");
+        assert_eq!(clients[1].streams, 2);
+        assert_eq!(clients[1].connected_at, "2026-08-16T00:00:01Z");
+        assert_eq!(clients[1].last_seen_at, "2026-08-16T00:01:00Z");
+        assert_eq!(clients[1].subscriptions[0].name, "java-s0");
+        assert_eq!(
+            clients[1].subscriptions[0]
+                .attributes
+                .get("host")
+                .unwrap(),
+            "worker-1"
+        );
+        assert_eq!(clients[1].subscriptions[1].topic, "logs");
     }
 }

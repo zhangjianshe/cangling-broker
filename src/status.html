@@ -91,6 +91,23 @@
       color: var(--muted);
       font-size: 11px;
     }
+    .client {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      margin-bottom: 12px;
+      overflow: hidden;
+    }
+    .client-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 8px 14px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .client-head .meta { color: var(--muted); font-size: 12px; }
+    .client table { border-radius: 0; }
   </style>
 </head>
 <body>
@@ -175,21 +192,28 @@
 
     function clientsHtml(list) {
       if (!list || !list.length) return '<div class="empty">暂无已连接客户端</div>';
-      return "<table><thead><tr>" +
-        "<th>状态</th><th>名称</th><th>主题</th><th>编号</th><th>来源</th>" +
-        "<th>属性</th><th>连接时间</th><th>最近心跳</th>" +
-        "</tr></thead><tbody>" +
-        list.map((c) =>
-          "<tr><td><span class=\"pill live\">在线</span></td>" +
-          "<td>" + escapeHtml(c.name || "(未命名)") + "</td>" +
-          "<td>" + escapeHtml(c.topic || "") + "</td>" +
-          '<td class="mono">' + escapeHtml(c.id) + "</td>" +
-          '<td class="mono">' + escapeHtml(c.peer || "—") + "</td>" +
-          "<td>" + attrsHtml(c.attributes) + "</td>" +
-          "<td>" + escapeHtml(fmtTs(c.connected_at)) + "</td>" +
-          "<td>" + escapeHtml(fmtTs(c.last_seen_at)) + "</td></tr>"
-        ).join("") +
-        "</tbody></table>";
+      return list.map((client) => {
+        const peer = client.peer || "未知来源";
+        const streams = client.streams || (client.subscriptions || []).length;
+        const rows = (client.subscriptions || []).map((sub) =>
+          "<tr><td>" + escapeHtml(sub.name || "(未命名)") + "</td>" +
+          "<td>" + escapeHtml(sub.topic || "") + "</td>" +
+          '<td class="mono">' + escapeHtml(sub.id) + "</td>" +
+          "<td>" + attrsHtml(sub.attributes) + "</td>" +
+          "<td>" + escapeHtml(fmtTs(sub.connected_at)) + "</td>" +
+          "<td>" + escapeHtml(fmtTs(sub.last_seen_at)) + "</td></tr>"
+        ).join("");
+        return '<div class="client"><div class="client-head">' +
+          '<span class="pill live">在线</span>' +
+          '<span class="mono url">' + escapeHtml(peer) + "</span>" +
+          '<span class="meta">' + streams + " 个订阅 · 连接 " +
+          escapeHtml(fmtTs(client.connected_at)) +
+          " · 最近心跳 " + escapeHtml(fmtTs(client.last_seen_at)) +
+          "</span></div>" +
+          "<table><thead><tr>" +
+          "<th>名称</th><th>主题</th><th>编号</th><th>属性</th><th>订阅时间</th><th>最近心跳</th>" +
+          "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+      }).join("");
     }
 
     function escapeHtml(value) {
@@ -227,6 +251,7 @@
         new Date().toLocaleTimeString();
       $("cards").innerHTML =
         card("主题数", data.topics) +
+        card("客户端", (data.clients || []).length) +
         card("在线流", data.consumers) +
         card("已接收", data.accepted) +
         card("待处理", data.pending, data.pending ? "pending" : "") +
