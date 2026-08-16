@@ -539,6 +539,32 @@ impl Database {
         .await
     }
 
+    pub async fn claim_next_for_filter(
+        &self,
+        filter: &str,
+        visibility: Duration,
+    ) -> anyhow::Result<Option<ClaimedMessage>> {
+        if !crate::topic::is_wildcard_filter(filter) {
+            return self.claim_next_for_topic(filter, visibility).await;
+        }
+        if let Some(prefix) = crate::topic::multi_level_prefix(filter) {
+            return self.claim_next_for_hash(prefix, visibility).await;
+        }
+        self.claim_next_matching(filter, visibility).await
+    }
+
+    pub async fn release(&self, id: &str, lease: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE messages SET status = 'pending', lease = NULL
+             WHERE id = ? AND lease = ? AND status = 'processing'",
+        )
+        .bind(id)
+        .bind(lease)
+        .execute(&self.0)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn claim_next_excluding(
         &self,
         visibility: Duration,
@@ -573,6 +599,74 @@ impl Database {
             query = query.bind(topic);
         }
         let row = query.fetch_optional(&mut *tx).await?;
+        Self::finish_claim(tx, now, visibility, row).await
+    }
+
+    async fn claim_next_for_hash(
+        &self,
+        prefix: &str,
+        visibility: Duration,
+    ) -> anyhow::Result<Option<ClaimedMessage>> {
+        let _ = self.reclaim_stale().await;
+        let mut tx = self.0.begin().await?;
+        let now = Utc::now();
+        let now_text = now.to_rfc3339();
+        let row = if prefix.is_empty() {
+            sqlx::query(
+                "SELECT id, topic, payload, attributes, created_at FROM messages
+                 WHERE status = 'pending' AND next_attempt_at <= ? AND topic NOT LIKE '$%'
+                 ORDER BY created_at LIMIT 1",
+            )
+            .bind(&now_text)
+            .fetch_optional(&mut *tx)
+            .await?
+        } else {
+            let like = format!("{}/%", escape_like(prefix));
+            sqlx::query(
+                "SELECT id, topic, payload, attributes, created_at FROM messages
+                 WHERE status = 'pending' AND next_attempt_at <= ?
+                   AND (topic = ? OR topic LIKE ? ESCAPE '\\')
+                 ORDER BY created_at LIMIT 1",
+            )
+            .bind(&now_text)
+            .bind(prefix)
+            .bind(&like)
+            .fetch_optional(&mut *tx)
+            .await?
+        };
+        Self::finish_claim(tx, now, visibility, row).await
+    }
+
+    async fn claim_next_matching(
+        &self,
+        filter: &str,
+        visibility: Duration,
+    ) -> anyhow::Result<Option<ClaimedMessage>> {
+        let _ = self.reclaim_stale().await;
+        let now_text = Utc::now().to_rfc3339();
+        let rows = sqlx::query(
+            "SELECT id, topic FROM messages
+             WHERE status = 'pending' AND next_attempt_at <= ?
+             ORDER BY created_at LIMIT 64",
+        )
+        .bind(&now_text)
+        .fetch_all(&self.0)
+        .await?;
+        let Some(id) = rows.into_iter().find_map(|row| {
+            let topic: String = row.get("topic");
+            crate::topic::filter_matches(filter, &topic).then(|| row.get::<String, _>("id"))
+        }) else {
+            return Ok(None);
+        };
+        let mut tx = self.0.begin().await?;
+        let now = Utc::now();
+        let row = sqlx::query(
+            "SELECT id, topic, payload, attributes, created_at FROM messages
+             WHERE id = ? AND status = 'pending'",
+        )
+        .bind(&id)
+        .fetch_optional(&mut *tx)
+        .await?;
         Self::finish_claim(tx, now, visibility, row).await
     }
 
@@ -762,6 +856,17 @@ fn sqlite_file_path(url: &str) -> Option<PathBuf> {
     Some(PathBuf::from(rest))
 }
 
+fn escape_like(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -842,6 +947,43 @@ mod tests {
             topic.consumers[0].attributes.get("host").map(String::as_str),
             Some("worker-1")
         );
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn hash_filter_claims_child_and_parent_topics() {
+        let (db, dir) = temp_db().await;
+        db.enqueue(None, "building/floor1/temp", b"23", HashMap::new())
+            .await
+            .unwrap();
+        db.enqueue(None, "other", b"x", HashMap::new())
+            .await
+            .unwrap();
+        let claimed = db
+            .claim_next_for_filter("building/#", Duration::from_secs(5))
+            .await
+            .unwrap()
+            .expect("child topic");
+        assert_eq!(claimed.topic, "building/floor1/temp");
+        db.delivered(&claimed.id, &claimed.lease).await.unwrap();
+
+        db.enqueue(None, "building", b"root", HashMap::new())
+            .await
+            .unwrap();
+        let parent = db
+            .claim_next_for_filter("building/#", Duration::from_secs(5))
+            .await
+            .unwrap()
+            .expect("parent topic");
+        assert_eq!(parent.topic, "building");
+
+        let skipped = db
+            .claim_next_for_filter("building/#", Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(skipped.is_none());
 
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);

@@ -1,6 +1,6 @@
 # cangling-broker
 
-A small, Kafka-like building block. Producers and consumers both use **gRPC streams**. The service commits each publish to SQLite first, then delivers it according to the topic mode.
+A small, Kafka-like building block. Producers and consumers use **gRPC streams**, and the same queue also speaks **MQTT 3.1.1** over TCP and WebSocket. The service commits each publish to SQLite first, then delivers it according to the topic mode.
 
 Topics default to **single** (competing consumers: one live stream gets each message). Set a topic to **broadcast** and every live `Subscribe` stream on that topic gets a copy. Persistence defaults to **persistent** (queue and deliver later). Set a topic to **ephemeral** and a publish with no live `Subscribe` stream is dropped. `Register` only stores extra consumer metadata. `DOWNSTREAM_URL` is an optional HTTP fallback when a **persistent** topic has no live stream.
 
@@ -23,7 +23,7 @@ The client dials out over gRPC, so port publish is enough:
 ```bash
 # Terminal 1 — broker
 docker run --rm --name cangling-broker \
-  -p 7500:7500 -p 7501:7501 \
+  -p 7500:7500 -p 7501:7501 -p 7883:7883 -p 8083:8083 \
   -e CL_BROKER_AUTH_TOKEN=change-me \
   -v cangling-data:/data \
   docker.io/mapway/cangling-broker:latest
@@ -33,7 +33,7 @@ Harbor:
 
 ```bash
 docker run --rm --name cangling-broker \
-  -p 7500:7500 -p 7501:7501 \
+  -p 7500:7500 -p 7501:7501 -p 7883:7883 -p 8083:8083 \
   -e CL_BROKER_AUTH_TOKEN=change-me \
   -v cangling-data:/data \
   harbor.cangling.cn:22002/cangling/cangling-broker:latest
@@ -68,7 +68,7 @@ Rust consumer:
 cargo run --example receiver -- --broker-addr http://127.0.0.1:7500 --topic cangling-test
 ```
 
-The image listens on `7500` (gRPC) and `7501` (status) and stores SQLite under `/data`.
+The image listens on `7500` (gRPC), `7501` (status), `7883` (MQTT TCP), and `8083` (MQTT WebSocket) and stores SQLite under `/data`. Map `1883:7883` if you want the standard MQTT port on the host.
 
 ### Java client (`cn.mapway.broker`)
 
@@ -259,7 +259,10 @@ Call `AckMessage` with that `message_id` and `lease`. `success = true` marks the
 | --- | --- | --- |
 | `CL_BROKER_PORT` | `7500` | gRPC listener `0.0.0.0:<port>` |
 | `CL_BROKER_WEBPORT` | `7501` | HTTP status (`GET /`, `GET /status`, `GET /health`) |
-| `CL_BROKER_AUTH_TOKEN` | unset | shared secret; when set, gRPC and `/` `/status` require it. `/health` stays open |
+| `CL_BROKER_MQTT_ENABLED` | `true` | accept MQTT 3.1.1 clients; `false` disables both MQTT listeners |
+| `CL_BROKER_MQTT_PORT` | `7883` | MQTT TCP listener. `0` disables TCP. Unprivileged default; map `1883:7883` or set `1883` if you can bind it |
+| `CL_BROKER_MQTT_WSPORT` | `8083` | MQTT WebSocket listener (`/mqtt`). `0` attaches `GET /mqtt` to the status port |
+| `CL_BROKER_AUTH_TOKEN` | unset | shared secret; when set, gRPC, `/` `/status`, and MQTT `CONNECT` require it. `/health` stays open |
 | `CL_BROKER_DATA` | unset (image: `/data`) | data dir; SQLite is `<dir>/queue.db`, logs are `<dir>/logs` |
 | `DOWNSTREAM_URL` | unset | optional HTTP POST fallback when a topic has no live `Subscribe` stream |
 | `WORKER_POLL_MS` | `500` | queue polling interval |
@@ -272,7 +275,7 @@ Call `AckMessage` with that `message_id` and `lease`. `success = true` marks the
 
 ```bash
 docker run --rm --name cangling-broker \
-  -p 7500:7500 -p 7501:7501 \
+  -p 7500:7500 -p 7501:7501 -p 7883:7883 -p 8083:8083 \
   -e CL_BROKER_AUTH_TOKEN=hello_world \
   -e CL_BROKER_PORT=7500 \
   -e CL_BROKER_WEBPORT=7501 \
@@ -280,6 +283,31 @@ docker run --rm --name cangling-broker \
   -v cangling-data:/data \
   docker.io/mapway/cangling-broker:latest
 ```
+
+### MQTT (TCP + WebSocket)
+
+MQTT 3.1.1, QoS 0/1. Publish and subscribe share the same SQLite queue as gRPC. Topic filters support exact names, single-level `+`, and multi-level `#` (`building/#` receives `building`, `building/floor1/temp`, …). `#` must be the last level. Retain, LWT, and QoS 2 are not implemented: incoming QoS 2 is acknowledged with `PUBREC`/`PUBCOMP` but stored once like QoS 1.
+
+When `CL_BROKER_AUTH_TOKEN` is set, send it as the MQTT password (or username).
+
+```bash
+# subscribe (TCP)
+mosquitto_sub -h 127.0.0.1 -p 7883 -t 'building/#' -P change-me
+
+# publish (TCP)
+mosquitto_pub -h 127.0.0.1 -p 7883 -t cangling-test -m hello -q 1 -P change-me
+```
+
+Browser / mqtt.js:
+
+```js
+import mqtt from "mqtt";
+const client = mqtt.connect("ws://127.0.0.1:8083/mqtt", { password: "change-me" });
+client.subscribe("cangling-test");
+client.publish("cangling-test", "hello");
+```
+
+A gRPC `AcceptMessages` publish is delivered to MQTT subscribers on that topic, and the other way around.
 
 ## 数据库 ER
 

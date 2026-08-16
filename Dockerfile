@@ -23,5 +23,5 @@ COPY --from=builder /usr/local/bin/cangling-broker /usr/local/bin/cangling-broke
 USER app
 WORKDIR /data
 ENV CL_BROKER_DATA=/data
-EXPOSE 7500 7501
+EXPOSE 7500 7501 7883 8083
 ENTRYPOINT ["cangling-broker"]

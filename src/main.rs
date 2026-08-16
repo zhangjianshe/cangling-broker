@@ -1,18 +1,22 @@
 mod auth;
 mod config;
 mod db;
+mod delivery;
 mod logging;
 mod model;
+mod mqtt;
 mod status;
 mod subscribers;
+mod topic;
 
-use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use clap::Parser;
 use auth::AuthInterceptor;
 use config::Config;
 use db::Database;
-use subscribers::{InflightAcks, SubscriptionGuard, TopicSubscribers};
+use delivery::{Ingested, PROTOCOL_GRPC};
+use subscribers::{InflightAcks, TopicSubscribers};
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tokio_util::sync::CancellationToken;
@@ -51,18 +55,6 @@ fn to_proto_topic(config: TopicConfig) -> ProtoTopicConfig {
     }
 }
 
-fn attrs_to_map(value: &serde_json::Value) -> HashMap<String, String> {
-    value
-        .as_object()
-        .map(|object| {
-            object
-                .iter()
-                .filter_map(|(key, item)| item.as_str().map(|text| (key.clone(), text.to_string())))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 #[tonic::async_trait]
 impl MessageQueue for QueueService {
     type AcceptMessagesStream = ResponseStream<AcceptMessageResponse>;
@@ -98,46 +90,33 @@ impl MessageQueue for QueueService {
                     continue;
                 }
                 let topic = message.topic.trim();
-                let ephemeral = db
-                    .topic_persistence(topic)
-                    .await
-                    .ok()
-                    .is_some_and(|mode| mode == PersistenceMode::Ephemeral);
-                if ephemeral && subscribers.count(topic) == 0 {
-                    match db.accept_dropped(topic).await {
-                        Ok(message_id) => {
-                            info!(topic, id = %message_id, "ephemeral message dropped: no live subscriber");
-                            if tx
-                                .send(Ok(AcceptMessageResponse {
-                                    message_id,
-                                    duplicate: false,
-                                }))
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        Err(error) => {
-                            error!(%error, "could not record dropped message");
-                            let _ = tx
-                                .send(Err(Status::internal("could not persist message")))
-                                .await;
+                match crate::delivery::ingest(
+                    &db,
+                    &subscribers,
+                    topic,
+                    &message.payload,
+                    message.attributes,
+                    Some(&message.idempotency_key),
+                )
+                .await
+                {
+                    Ok(Ingested::Dropped { message_id }) => {
+                        info!(topic, id = %message_id, "ephemeral message dropped: no live subscriber");
+                        if tx
+                            .send(Ok(AcceptMessageResponse {
+                                message_id,
+                                duplicate: false,
+                            }))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
-                    continue;
-                }
-                match db
-                    .enqueue(
-                        Some(&message.idempotency_key),
-                        topic,
-                        &message.payload,
-                        message.attributes,
-                    )
-                    .await
-                {
-                    Ok((message_id, duplicate)) => {
+                    Ok(Ingested::Queued {
+                        message_id,
+                        duplicate,
+                    }) => {
                         if tx
                             .send(Ok(AcceptMessageResponse { message_id, duplicate }))
                             .await
@@ -229,180 +208,18 @@ impl MessageQueue for QueueService {
             consumer_id.clone()
         };
         let (tx, rx) = mpsc::channel(16);
-        let db = self.db.clone();
-        let inflight = self.inflight.clone();
-        let subscribers = self.subscribers.clone();
-        let config = self.config.clone();
-        let shutdown = self.shutdown.clone();
-        tokio::spawn(async move {
-            let guard = SubscriptionGuard::new(
-                subscribers.clone(),
-                topic.clone(),
-                session.clone(),
-                tx.clone(),
-                peer,
-            );
-            info!(topic = %topic, consumer_id = %consumer_id, "subscriber connected");
-            let visibility = Duration::from_secs(config.ack_timeout_secs.max(1));
-            loop {
-                if shutdown.is_cancelled() || tx.is_closed() {
-                    break;
-                }
-                let claimed = match db.claim_next_for_topic(&topic, visibility).await {
-                    Ok(claimed) => claimed,
-                    Err(error) => {
-                        error!(%error, topic = %topic, "unable to claim queue message for subscriber");
-                        if !sleep_or_shutdown(&shutdown, config.worker_poll_ms).await {
-                            break;
-                        }
-                        continue;
-                    }
-                };
-                let Some(message) = claimed else {
-                    if !consumer_id.is_empty() {
-                        let _ = db.touch_consumer(&consumer_id).await;
-                    }
-                    if !sleep_or_shutdown(&shutdown, config.worker_poll_ms).await {
-                        break;
-                    }
-                    continue;
-                };
-                let settings = db.topic_config(&topic).await.ok();
-                let broadcast = settings
-                    .as_ref()
-                    .is_some_and(|config| config.delivery == DeliveryMode::Broadcast);
-                let ephemeral = settings
-                    .as_ref()
-                    .is_some_and(|config| config.persistence == PersistenceMode::Ephemeral);
-                let targets = if broadcast {
-                    let mut senders = subscribers.senders(&topic);
-                    if senders.is_empty() {
-                        senders.push((session.clone(), tx.clone()));
-                    }
-                    senders
-                } else {
-                    vec![(session.clone(), tx.clone())]
-                };
-                let mut waits = Vec::new();
-                let mut leases = Vec::new();
-                for (_id, sender) in targets {
-                    let lease = Uuid::new_v4().to_string();
-                    let ack = inflight.register(message.id.clone(), lease.clone());
-                    let outgoing = SatwayMessage {
-                        message_id: message.id.clone(),
-                        topic: message.topic.clone(),
-                        payload: message.payload.clone(),
-                        attributes: attrs_to_map(&message.attributes),
-                        created_at: message.created_at.clone(),
-                        lease: lease.clone(),
-                    };
-                    match tokio::time::timeout(Duration::from_secs(2), sender.send(Ok(outgoing))).await
-                    {
-                        Ok(Ok(())) => {
-                            leases.push(lease);
-                            waits.push(ack);
-                        }
-                        _ => {
-                            inflight.cancel(&lease);
-                        }
-                    }
-                }
-                if waits.is_empty() {
-                    if ephemeral {
-                        let _ = db
-                            .drop_claimed(
-                                &message.id,
-                                &message.lease,
-                                "no live subscriber accepted the message",
-                            )
-                            .await;
-                    } else {
-                        let _ = db
-                            .failed(
-                                &message.id,
-                                &message.lease,
-                                "no live subscriber accepted the message",
-                                config.max_delivery_attempts,
-                            )
-                            .await;
-                    }
-                    if tx.is_closed() {
-                        break;
-                    }
-                    continue;
-                }
-                let mut all_ok = true;
-                let mut last_error = "ack timeout or subscriber gone".to_string();
-                for ack in waits {
-                    tokio::select! {
-                        _ = shutdown.cancelled() => {
-                            all_ok = false;
-                            last_error = "broker shutting down".into();
-                        }
-                        timed = tokio::time::timeout(visibility, ack) => {
-                            match timed {
-                                Ok(Ok(decision)) if decision.success => {}
-                                Ok(Ok(decision)) => {
-                                    all_ok = false;
-                                    last_error = if decision.error.is_empty() {
-                                        "nack".into()
-                                    } else {
-                                        decision.error
-                                    };
-                                }
-                                Ok(Err(_)) | Err(_) => {
-                                    all_ok = false;
-                                }
-                            }
-                        }
-                    }
-                    if shutdown.is_cancelled() {
-                        break;
-                    }
-                }
-                for lease in &leases {
-                    inflight.cancel(lease);
-                }
-                if shutdown.is_cancelled() {
-                    break;
-                }
-                if all_ok {
-                    if let Err(error) = db.delivered(&message.id, &message.lease).await {
-                        error!(%error, "could not mark delivery");
-                    } else {
-                        info!(id = %message.id, topic = %topic, "message delivered");
-                    }
-                } else {
-                    let _ = db
-                        .failed(
-                            &message.id,
-                            &message.lease,
-                            &last_error,
-                            config.max_delivery_attempts,
-                        )
-                        .await;
-                }
-            }
-            drop(guard);
-            if subscribers.count(&topic) == 0 {
-                if db
-                    .topic_persistence(&topic)
-                    .await
-                    .ok()
-                    .is_some_and(|mode| mode == PersistenceMode::Ephemeral)
-                {
-                    match db.drop_pending(&topic).await {
-                        Ok(0) => {}
-                        Ok(dropped) => info!(
-                            topic = %topic,
-                            dropped,
-                            "dropped ephemeral messages after last subscriber left"
-                        ),
-                        Err(error) => error!(%error, topic = %topic, "could not drop ephemeral messages"),
-                    }
-                }
-            }
-            info!(topic = %topic, "subscriber disconnected");
+        crate::delivery::spawn_subscribe_loop(crate::delivery::SubscribeLoop {
+            db: self.db.clone(),
+            config: self.config.clone(),
+            subscribers: self.subscribers.clone(),
+            inflight: self.inflight.clone(),
+            shutdown: self.shutdown.clone(),
+            topic,
+            session,
+            consumer_id,
+            tx,
+            peer,
+            protocol: PROTOCOL_GRPC,
         });
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
@@ -501,12 +318,38 @@ async fn main() -> anyhow::Result<()> {
     let status_addr = config.status_listen_addr();
     let status_listener = tokio::net::TcpListener::bind(status_addr).await?;
     info!(address = %status_addr, "HTTP status listening");
+    let mqtt_ctx = mqtt::MqttCtx {
+        db: db.clone(),
+        config: config.clone(),
+        subscribers: subscribers.clone(),
+        inflight: inflight.clone(),
+        shutdown: shutdown.clone(),
+        registry: mqtt::ClientRegistry::default(),
+    };
+    let mqtt_on_status = config.mqtt_enabled && config.mqtt_ws_port == 0;
+    let mqtt_tcp = if config.mqtt_enabled && config.mqtt_port != 0 {
+        let address = config.mqtt_listen_addr();
+        let listener = tokio::net::TcpListener::bind(address).await?;
+        info!(%address, "MQTT TCP listening (MQTT 3.1.1, QoS 0/1)");
+        Some(tokio::spawn(mqtt::serve_tcp(listener, mqtt_ctx.clone())))
+    } else {
+        None
+    };
+    let mqtt_ws = if config.mqtt_enabled && config.mqtt_ws_port != 0 {
+        let address = config.mqtt_ws_listen_addr();
+        let listener = tokio::net::TcpListener::bind(address).await?;
+        info!(%address, "MQTT WebSocket listening (/mqtt)");
+        Some(tokio::spawn(mqtt::serve_ws(listener, mqtt_ctx.clone())))
+    } else {
+        None
+    };
     let status = tokio::spawn(status::serve(
         status_listener,
         db.clone(),
         config.clone(),
         subscribers.clone(),
         shutdown.clone(),
+        mqtt_on_status.then_some(mqtt_ctx),
     ));
     let worker = tokio::spawn(dispatch_loop(
         db.clone(),
@@ -547,6 +390,12 @@ async fn main() -> anyhow::Result<()> {
     status.await??;
     worker.await?;
     cleaner.await?;
+    if let Some(handle) = mqtt_tcp {
+        handle.await??;
+    }
+    if let Some(handle) = mqtt_ws {
+        handle.await??;
+    }
     db_for_shutdown.close().await;
     info!("broker stopped");
     Ok(())
@@ -567,13 +416,6 @@ async fn wait_for_shutdown() {
     #[cfg(not(unix))]
     {
         let _ = ctrl_c.await;
-    }
-}
-
-async fn sleep_or_shutdown(shutdown: &CancellationToken, poll_ms: u64) -> bool {
-    tokio::select! {
-        _ = shutdown.cancelled() => false,
-        _ = tokio::time::sleep(Duration::from_millis(poll_ms)) => true,
     }
 }
 
@@ -622,6 +464,10 @@ async fn dispatch_loop(
         }) else {
             continue;
         };
+        if subscribers.covers(&message.topic) {
+            let _ = db.release(&message.id, &message.lease).await;
+            continue;
+        }
         let response = tokio::select! {
             _ = shutdown.cancelled() => break,
             response = client.post(&fallback).json(&message.to_downstream()).send() => response,
@@ -659,7 +505,7 @@ async fn retention_loop(
         match db.ephemeral_topics().await {
             Ok(topics) => {
                 for topic in topics {
-                    if subscribers.count(&topic) > 0 {
+                    if subscribers.covers(&topic) {
                         continue;
                     }
                     match db.drop_pending(&topic).await {

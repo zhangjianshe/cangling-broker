@@ -13,6 +13,19 @@ pub struct Config {
     #[arg(long, env = "CL_BROKER_WEBPORT", default_value_t = 7501)]
     pub web_port: u16,
 
+    /// Accept MQTT 3.1.1 clients over TCP and WebSocket.
+    #[arg(long, env = "CL_BROKER_MQTT_ENABLED", default_value_t = true, action = clap::ArgAction::Set)]
+    pub mqtt_enabled: bool,
+
+    /// MQTT TCP port (`0.0.0.0:<port>`). 0 disables the TCP listener.
+    /// Default is 7883 so an unprivileged process can bind (map 1883:7883 in Docker).
+    #[arg(long, env = "CL_BROKER_MQTT_PORT", default_value_t = 7883)]
+    pub mqtt_port: u16,
+
+    /// MQTT WebSocket port (`0.0.0.0:<port>`). 0 attaches `GET /mqtt` to the status server.
+    #[arg(long, env = "CL_BROKER_MQTT_WSPORT", default_value_t = 8083)]
+    pub mqtt_ws_port: u16,
+
     /// Shared secret. When set, every gRPC call must send it
     /// (`authorization: Bearer <token>` or `x-auth-token`). Empty disables auth.
     #[arg(long, env = "CL_BROKER_AUTH_TOKEN")]
@@ -62,6 +75,14 @@ impl Config {
         SocketAddr::from(([0, 0, 0, 0], self.web_port))
     }
 
+    pub fn mqtt_listen_addr(&self) -> SocketAddr {
+        SocketAddr::from(([0, 0, 0, 0], self.mqtt_port))
+    }
+
+    pub fn mqtt_ws_listen_addr(&self) -> SocketAddr {
+        SocketAddr::from(([0, 0, 0, 0], self.mqtt_ws_port))
+    }
+
     pub fn database_url(&self) -> String {
         match self.data_dir.as_ref() {
             Some(dir) => sqlite_url(&dir.to_string_lossy()),
@@ -80,5 +101,28 @@ fn sqlite_url(dir: &str) -> String {
         format!("sqlite://{dir}/queue.db")
     } else {
         format!("sqlite:{dir}/queue.db")
+    }
+}
+
+#[cfg(test)]
+impl Config {
+    pub fn test_default() -> Self {
+        Self {
+            port: 7500,
+            web_port: 7501,
+            mqtt_enabled: true,
+            mqtt_port: 7883,
+            mqtt_ws_port: 8083,
+            auth_token: None,
+            data_dir: None,
+            downstream_url: None,
+            worker_poll_ms: 20,
+            max_delivery_attempts: 10,
+            message_retention_days: 0,
+            ack_timeout_secs: 3,
+            consumer_ttl_secs: 0,
+            log_max_bytes: 1024,
+            log_keep_files: 1,
+        }
     }
 }

@@ -8,6 +8,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -55,6 +56,7 @@ struct BrokerStatus {
 #[derive(Debug, Serialize)]
 struct ClientInfo {
     peer: String,
+    protocol: &'static str,
     streams: usize,
     connected_at: String,
     last_seen_at: String,
@@ -66,6 +68,7 @@ struct ClientSubscription {
     id: String,
     name: String,
     topic: String,
+    protocol: &'static str,
     attributes: HashMap<String, String>,
     connected_at: String,
     last_seen_at: String,
@@ -85,6 +88,7 @@ pub async fn serve(
     config: std::sync::Arc<Config>,
     subscribers: TopicSubscribers,
     shutdown: CancellationToken,
+    mqtt: Option<crate::mqtt::MqttCtx>,
 ) -> anyhow::Result<()> {
     let state = StatusState {
         db,
@@ -100,7 +104,14 @@ pub async fn serve(
         .route("/topics", get(list_topics).post(configure_topics))
         .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state);
-    axum::serve(listener, app)
+    let app = match mqtt {
+        Some(ctx) => app.merge(crate::mqtt::ws_router(ctx)),
+        None => app,
+    };
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
         .with_graceful_shutdown(async move {
             shutdown.cancelled().await;
         })
@@ -219,7 +230,7 @@ async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, 
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let live_sessions = state.subscribers.sessions();
     for topic in &mut topics_detail {
-        topic.streams = state.subscribers.count(&topic.name);
+        topic.streams = state.subscribers.matching_count(&topic.name);
         for consumer in &mut topic.consumers {
             if state.subscribers.is_live(&topic.name, &consumer.id) {
                 consumer.live = true;
@@ -267,6 +278,7 @@ fn connected_clients(sessions: &[SessionInfo], topics: &[TopicSnapshot]) -> Vec<
                 id: session.id.clone(),
                 name: meta.map(|consumer| consumer.name.clone()).unwrap_or_default(),
                 topic: session.topic.clone(),
+                protocol: session.protocol,
                 attributes: meta
                     .map(|consumer| consumer.attributes.clone())
                     .unwrap_or_default(),
@@ -297,8 +309,13 @@ fn connected_clients(sessions: &[SessionInfo], topics: &[TopicSnapshot]) -> Vec<
                 .max()
                 .unwrap_or("")
                 .to_string();
+            let protocol = subscriptions
+                .first()
+                .map(|item| item.protocol)
+                .unwrap_or("grpc");
             ClientInfo {
                 peer,
+                protocol,
                 streams: subscriptions.len(),
                 connected_at,
                 last_seen_at,
@@ -322,18 +339,21 @@ mod tests {
                 topic: "jobs".into(),
                 peer: "127.0.0.1:9".into(),
                 connected_at: "2026-08-16T00:00:02Z".into(),
+                protocol: "grpc",
             },
             SessionInfo {
                 id: "c2".into(),
                 topic: "logs".into(),
                 peer: "127.0.0.1:9".into(),
                 connected_at: "2026-08-16T00:00:01Z".into(),
+                protocol: "grpc",
             },
             SessionInfo {
                 id: "c3".into(),
                 topic: "alerts".into(),
                 peer: "10.0.0.2:8".into(),
                 connected_at: "2026-08-16T00:00:03Z".into(),
+                protocol: "mqtt",
             },
         ];
         let topics = vec![TopicSnapshot {
@@ -350,6 +370,7 @@ mod tests {
         let clients = connected_clients(&sessions, &topics);
         assert_eq!(clients.len(), 2);
         assert_eq!(clients[0].peer, "10.0.0.2:8");
+        assert_eq!(clients[0].protocol, "mqtt");
         assert_eq!(clients[0].streams, 1);
         assert_eq!(clients[1].peer, "127.0.0.1:9");
         assert_eq!(clients[1].streams, 2);

@@ -74,6 +74,8 @@
       border-radius: 999px;
       font-size: 11px;
       font-weight: 600;
+      background: #243040;
+      color: var(--muted);
     }
     .live { background: #143d2c; color: var(--live); }
     .stale { background: #3d3114; color: var(--stale); }
@@ -203,8 +205,10 @@
           "<td>" + escapeHtml(fmtTs(sub.connected_at)) + "</td>" +
           "<td>" + escapeHtml(fmtTs(sub.last_seen_at)) + "</td></tr>"
         ).join("");
+        const protocol = (client.protocol || "grpc").toUpperCase();
         return '<div class="client"><div class="client-head">' +
           '<span class="pill live">在线</span>' +
+          '<span class="pill">' + escapeHtml(protocol) + "</span>" +
           '<span class="mono url">' + escapeHtml(peer) + "</span>" +
           '<span class="meta">' + streams + " 个订阅 · 连接 " +
           escapeHtml(fmtTs(client.connected_at)) +
