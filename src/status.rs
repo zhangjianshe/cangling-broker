@@ -287,7 +287,7 @@ fn merge_live_sessions(topics: &mut Vec<TopicSnapshot>, sessions: &[SessionInfo]
             topics.push(TopicSnapshot {
                 name: session.topic.clone(),
                 delivery: "broadcast".into(),
-                persistence: "ephemeral".into(),
+                persistence: "persistent".into(),
                 ..TopicSnapshot::default()
             });
         }
@@ -520,7 +520,7 @@ mod tests {
         assert_eq!(topics.len(), 2);
         let live = topics.iter().find(|topic| topic.name == "building/#").unwrap();
         assert_eq!(live.delivery, "broadcast");
-        assert_eq!(live.persistence, "ephemeral");
+        assert_eq!(live.persistence, "persistent");
         assert_eq!(live.consumers.len(), 1);
         assert!(live.consumers[0].live);
         assert_eq!(live.consumers[0].name, "browser-1");

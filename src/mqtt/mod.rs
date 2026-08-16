@@ -579,6 +579,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mqtt_subscribe_keeps_topic_persistent() {
+        let (ctx, dir) = temp_ctx().await;
+        let addr = start_broker(ctx.clone()).await;
+
+        let mut sub = TcpStream::connect(addr).await.unwrap();
+        connect_ok(&mut sub, "keep-sub", None).await;
+        write_packet(
+            &mut sub,
+            &Packet::Subscribe(Subscribe {
+                packet_id: 1,
+                filters: vec![SubscribeFilter {
+                    topic: "keep/#".into(),
+                    qos: 1,
+                }],
+            }),
+        )
+        .await;
+        assert!(matches!(read_packet(&mut sub).await, Packet::SubAck(_)));
+        drop(sub);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let config = ctx.db.topic_config("keep/#").await.unwrap();
+        assert_eq!(config.persistence, crate::model::PersistenceMode::Persistent);
+        assert_eq!(
+            ctx.db.topic_config("keep/child").await.unwrap().persistence,
+            crate::model::PersistenceMode::Ephemeral
+        );
+
+        let mut publisher = TcpStream::connect(addr).await.unwrap();
+        connect_ok(&mut publisher, "keep-pub", None).await;
+        write_packet(
+            &mut publisher,
+            &Packet::Publish(Publish {
+                dup: false,
+                qos: 1,
+                retain: false,
+                topic: "keep/child".into(),
+                packet_id: Some(7),
+                payload: b"gone".to_vec(),
+            }),
+        )
+        .await;
+        assert!(matches!(
+            read_packet(&mut publisher).await,
+            Packet::PubAck { packet_id: 7 }
+        ));
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(
+            ctx.db.topic_config("keep/child").await.unwrap().persistence,
+            crate::model::PersistenceMode::Ephemeral
+        );
+        assert_eq!(
+            ctx.db.topic_config("keep/#").await.unwrap().persistence,
+            crate::model::PersistenceMode::Persistent
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn unconfigured_topic_drops_when_nobody_is_listening() {
         let (ctx, dir) = temp_ctx().await;
         let addr = start_broker(ctx.clone()).await;

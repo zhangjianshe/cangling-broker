@@ -51,8 +51,12 @@ pub struct Config {
 
     /// Delete unconfigured ephemeral topic rows that have not received a
     /// message for this many hours. 0 disables. Explicit ConfigureTopics stay.
-    #[arg(long, env = "CL_BROKER_EPHEMERAL_IDLE_HOURS", default_value_t = 6)]
+    #[arg(long, env = "CL_BROKER_EPHEMERAL_IDLE_HOURS", default_value_t = 1)]
     pub ephemeral_idle_hours: u64,
+
+    /// How often to run idle-topic purge, in hours. Default 1. 0 runs it on every sweep.
+    #[arg(long, env = "CL_BROKER_PURGE_INTERVAL_HOURS", default_value_t = 1)]
+    pub purge_interval_hours: u64,
 
     /// How long a worker may hold a claimed message before it is retried.
     #[arg(long, env = "ACK_TIMEOUT_SECS", default_value_t = 30)]
@@ -125,6 +129,7 @@ impl Config {
             max_delivery_attempts: 10,
             message_retention_days: 0,
             ephemeral_idle_hours: 0,
+            purge_interval_hours: 1,
             ack_timeout_secs: 3,
             consumer_ttl_secs: 0,
             log_max_bytes: 1024,

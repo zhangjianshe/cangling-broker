@@ -508,6 +508,9 @@ async fn retention_loop(
     shutdown: CancellationToken,
 ) {
     const SWEEP_SECS: u64 = 60;
+    let purge_every = (config.purge_interval_hours > 0)
+        .then(|| Duration::from_secs(config.purge_interval_hours.saturating_mul(3600)));
+    let mut last_idle_purge: Option<tokio::time::Instant> = None;
     loop {
         match db.ephemeral_topics().await {
             Ok(topics) => {
@@ -542,7 +545,15 @@ async fn retention_loop(
                 Err(error) => error!(%error, "unable to purge expired messages"),
             }
         }
-        if config.ephemeral_idle_hours > 0 {
+        let due_idle_purge = config.ephemeral_idle_hours > 0
+            && last_idle_purge
+                .map(|started| {
+                    purge_every
+                        .map(|every| started.elapsed() >= every)
+                        .unwrap_or(true)
+                })
+                .unwrap_or(true);
+        if due_idle_purge {
             let cutoff = chrono::Utc::now()
                 - chrono::Duration::hours(config.ephemeral_idle_hours as i64);
             let keep = subscribers.topics();
@@ -555,6 +566,7 @@ async fn retention_loop(
                 ),
                 Err(error) => error!(%error, "unable to purge idle ephemeral topics"),
             }
+            last_idle_purge = Some(tokio::time::Instant::now());
         }
         if config.consumer_ttl_secs > 0 {
             if let Some(cutoff) = consumer_cutoff(config.consumer_ttl_secs) {

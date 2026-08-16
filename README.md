@@ -268,7 +268,8 @@ Call `AckMessage` with that `message_id` and `lease`. `success = true` marks the
 | `WORKER_POLL_MS` | `500` | queue polling interval |
 | `MAX_DELIVERY_ATTEMPTS` | `10` | attempts before a message is marked failed |
 | `MESSAGE_RETENTION_DAYS` | `10` | delete messages older than this; `0` keeps them forever |
-| `CL_BROKER_EPHEMERAL_IDLE_HOURS` | `6` | delete unconfigured ephemeral topic rows with no new message for this many hours; `0` disables. `ConfigureTopics` rows are kept |
+| `CL_BROKER_EPHEMERAL_IDLE_HOURS` | `1` | delete unconfigured ephemeral topic rows with no new message for this many hours; `0` disables. `ConfigureTopics` rows are kept |
+| `CL_BROKER_PURGE_INTERVAL_HOURS` | `1` | how often idle-topic purge runs; `0` runs it on every 60s sweep |
 | `ACK_TIMEOUT_SECS` | `30` | how long a subscriber may take to `AckMessage` before the message is retried |
 | `CONSUMER_TTL_SECS` | `60` | drop registered consumer metadata that is not seen again; `0` keeps it until `Unregister` |
 | `LOG_MAX_BYTES` | `104857600` | rotate after this many bytes (100 MiB) |
@@ -312,7 +313,9 @@ A gRPC `AcceptMessages` publish is delivered to MQTT subscribers on that topic, 
 
 ## 数据库 ER
 
-三张表都落在同一个 SQLite 文件里。没有声明 `FOREIGN KEY`，关联键是 `topic`：一个主题对应多条消息、多个消费者；`topic_stats` 是主题的聚合行。
+三张表落在同一个 SQLite 文件（`<data>/queue.db`）。没有声明 `FOREIGN KEY`，逻辑外键是 `topic`。
+
+`topic_stats.topic` 可以是精确名，也可以是 MQTT 订约 filter（`building/#`、`sensor/+/temp`）。`messages.topic` 永远是精确发布名。通配符订约会单独占一行 `topic_stats`（`persistence=persistent`，`configured=0`），这样 idle purge 不会删掉已订约的 filter；发布出来的子主题（如 `building/floor1/temp`）仍按 ephemeral 处理，空闲后可被回收。
 
 ```mermaid
 erDiagram
@@ -320,36 +323,36 @@ erDiagram
     topic_stats ||--o{ consumers : "topic"
 
     topic_stats {
-        TEXT topic PK "主题名"
+        TEXT topic PK "精确主题或 MQTT filter"
         INTEGER accepted "累计接收"
         INTEGER duplicates "重复提交"
         INTEGER delivered "累计投递成功"
         INTEGER failed "累计投递失败"
-        TEXT delivery "single 或 broadcast"
-        TEXT persistence "persistent 或 ephemeral"
+        TEXT delivery "single 或 broadcast 默认 broadcast"
+        TEXT persistence "persistent 或 ephemeral 默认 ephemeral"
         INTEGER dropped "无在线流时丢弃"
-        TEXT last_seen_at "最近收消息时间"
-        INTEGER configured "1=ConfigureTopics 显式配置"
+        TEXT last_seen_at "最近收消息或订约时间"
+        INTEGER configured "1=ConfigureTopics 0=隐式或 MQTT 订约"
     }
 
     messages {
         TEXT id PK "消息 UUID"
-        TEXT idempotency_key UK "可选幂等键"
-        TEXT topic FK "所属主题"
+        TEXT idempotency_key UK "可选幂等键 全局唯一"
+        TEXT topic FK "精确发布主题"
         BLOB payload "消息体"
         TEXT attributes "JSON 属性"
-        TEXT status "pending processing delivered failed"
+        TEXT status "pending processing delivered failed dropped"
         INTEGER attempts "投递次数"
         TEXT next_attempt_at "下次可投递时间"
-        TEXT last_error "最近失败原因"
+        TEXT last_error "最近失败或丢弃原因"
         TEXT created_at "入队时间"
         TEXT delivered_at "投递成功时间"
         TEXT lease "当前认领租约"
     }
 
     consumers {
-        TEXT id PK "consumer_id"
-        TEXT topic FK "订阅主题"
+        TEXT id PK "Register 返回的 consumer_id"
+        TEXT topic FK "Register 时的主题"
         TEXT name "显示名"
         TEXT attributes "JSON 属性"
         TEXT last_seen_at "最近心跳"
@@ -357,4 +360,6 @@ erDiagram
     }
 ```
 
-`consumers` 存的是 `Register` 元数据，投递走的是内存里的 `Subscribe` 流。`messages.idempotency_key` 全局唯一，用于 `AcceptMessages` 去重。
+索引：`messages(status, next_attempt_at, created_at)`、`messages(created_at)`、`messages(topic, status, next_attempt_at, created_at)`、`consumers(topic, last_seen_at)`。
+
+`consumers` 只存 gRPC `Register` 元数据。投递走内存里的 `Subscribe` / MQTT 会话；MQTT 订约本身写入 `topic_stats`，不写 `consumers`。`messages.idempotency_key` 全局唯一，用于 `AcceptMessages` 去重。隐式 ephemeral 且空闲超过 `CL_BROKER_EPHEMERAL_IDLE_HOURS` 的行会被 purge 删掉；`configured=1` 和 MQTT 订约的 persistent filter 会留下。

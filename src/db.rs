@@ -166,10 +166,12 @@ impl Database {
     }
 
     pub async fn topic_config(&self, topic: &str) -> anyhow::Result<TopicConfig> {
-        let row = sqlx::query("SELECT delivery, persistence FROM topic_stats WHERE topic = ?")
-            .bind(topic)
-            .fetch_optional(&self.0)
-            .await?;
+        let row = sqlx::query(
+            "SELECT delivery, persistence FROM topic_stats WHERE topic = ?",
+        )
+        .bind(topic)
+        .fetch_optional(&self.0)
+        .await?;
         Ok(row
             .map(|row| TopicConfig {
                 topic: topic.to_string(),
@@ -177,6 +179,26 @@ impl Database {
                 persistence: PersistenceMode::from_stored(&row.get::<String, _>("persistence")),
             })
             .unwrap_or_else(|| TopicConfig::implicit(topic)))
+    }
+
+    /// Record an MQTT subscribe filter so idle purge will not delete it.
+    /// Child publish topics stay implicit/ephemeral. Explicit ConfigureTopics wins.
+    pub async fn note_subscribed_topic(&self, topic: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO topic_stats (topic, delivery, persistence, configured, last_seen_at)
+             VALUES (?, 'broadcast', 'persistent', 0, ?)
+             ON CONFLICT(topic) DO UPDATE SET
+                last_seen_at = excluded.last_seen_at,
+                persistence = CASE
+                    WHEN IFNULL(topic_stats.configured, 0) = 0 THEN 'persistent'
+                    ELSE topic_stats.persistence
+                END",
+        )
+        .bind(topic)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.0)
+        .await?;
+        Ok(())
     }
 
     pub async fn ephemeral_topics(&self) -> anyhow::Result<Vec<String>> {
@@ -817,7 +839,8 @@ impl Database {
     }
 
     /// Remove implicit ephemeral topics that have been idle since `cutoff`.
-    /// Live subscriber topics in `keep` and ConfigureTopics rows are kept.
+    /// Caller passes `now - ephemeral_idle_hours` and schedules on `purge_interval_hours`
+    /// (both default to 1 hour). Live subscriber topics in `keep` and ConfigureTopics stay.
     pub async fn purge_idle_ephemeral(
         &self,
         cutoff: &str,
@@ -1047,6 +1070,76 @@ mod tests {
             .await
             .unwrap();
         assert!(skipped.is_none());
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn mqtt_subscribed_topic_is_not_ephemeral() {
+        let (db, dir) = temp_db().await;
+        db.enqueue(None, "jobs", b"early", HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            db.topic_config("jobs").await.unwrap().persistence,
+            PersistenceMode::Ephemeral
+        );
+
+        db.note_subscribed_topic("jobs").await.unwrap();
+        assert_eq!(
+            db.topic_config("jobs").await.unwrap().persistence,
+            PersistenceMode::Persistent
+        );
+
+        db.note_subscribed_topic("building/#").await.unwrap();
+        assert_eq!(
+            db.topic_config("building/#").await.unwrap().persistence,
+            PersistenceMode::Persistent
+        );
+        assert_eq!(
+            db.topic_config("building/floor1/temp")
+                .await
+                .unwrap()
+                .persistence,
+            PersistenceMode::Ephemeral
+        );
+
+        db.enqueue(None, "building/floor1/temp", b"23", HashMap::new())
+            .await
+            .unwrap();
+        let snapshot = db.status_snapshot(None).await.unwrap();
+        let child = snapshot
+            .iter()
+            .find(|item| item.name == "building/floor1/temp")
+            .unwrap();
+        assert_eq!(child.persistence, "ephemeral");
+        let filter = snapshot
+            .iter()
+            .find(|item| item.name == "building/#")
+            .unwrap();
+        assert_eq!(filter.persistence, "persistent");
+
+        let future = (Utc::now() + chrono::Duration::hours(8)).to_rfc3339();
+        db.purge_idle_ephemeral(&future, &[]).await.unwrap();
+        let listed = db.list_topic_configs().await.unwrap();
+        let names: Vec<_> = listed.iter().map(|item| item.topic.as_str()).collect();
+        assert!(names.contains(&"building/#"));
+        assert!(!names.contains(&"building/floor1/temp"));
+        assert!(names.contains(&"jobs"));
+
+        db.configure_topics(&[TopicConfig {
+            topic: "jobs".into(),
+            delivery: DeliveryMode::Broadcast,
+            persistence: PersistenceMode::Ephemeral,
+        }])
+        .await
+        .unwrap();
+        db.note_subscribed_topic("jobs").await.unwrap();
+        assert_eq!(
+            db.topic_config("jobs").await.unwrap().persistence,
+            PersistenceMode::Ephemeral
+        );
 
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);

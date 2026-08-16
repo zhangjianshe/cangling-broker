@@ -467,6 +467,15 @@ async fn subscribe_topic(
     if !crate::topic::is_valid_subscribe_filter(topic) {
         return SUBACK_FAILURE;
     }
+    if let Err(error) = ctx.db.note_subscribed_topic(topic).await {
+        warn!(
+            client_id = %state.client_id,
+            topic,
+            %error,
+            "could not persist mqtt subscription topic"
+        );
+        return SUBACK_FAILURE;
+    }
     let granted = filter.qos.min(1);
     if let Some(previous) = state.subscriptions.remove(topic) {
         previous.cancel();
