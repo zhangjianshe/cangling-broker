@@ -628,13 +628,8 @@ mod tests {
     #[tokio::test]
     async fn ingest_queues_for_live_mqtt_topic() {
         let (ctx, dir) = temp_ctx().await;
-        ctx.subscribers.add(
-            "jobs",
-            "mqtt:c1",
-            delivery_channel().0,
-            "127.0.0.1:1",
-            "mqtt",
-        );
+        let (tx, _rx) = delivery_channel();
+        ctx.subscribers.add("jobs", "mqtt:c1", tx, "127.0.0.1:1", "mqtt");
         let ingested = crate::delivery::ingest(
             &ctx.db,
             &ctx.subscribers,

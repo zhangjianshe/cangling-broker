@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use chrono::Utc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -28,14 +29,13 @@ pub async fn ingest(
     attributes: HashMap<String, String>,
     idempotency_key: Option<&str>,
 ) -> anyhow::Result<Ingested> {
-    let ephemeral = db
-        .topic_persistence(topic)
+    let settings = db
+        .topic_config(topic)
         .await
-        .ok()
-        .is_some_and(|mode| mode == PersistenceMode::Ephemeral);
-    if ephemeral && !subscribers.covers(topic) {
-        let message_id = db.accept_dropped(topic).await?;
-        return Ok(Ingested::Dropped { message_id });
+        .unwrap_or_else(|_| crate::model::TopicConfig::implicit(topic));
+    if settings.persistence == PersistenceMode::Ephemeral {
+        return fanout_ephemeral(db, subscribers, topic, payload, attributes, settings.delivery)
+            .await;
     }
     let (message_id, duplicate) = db
         .enqueue(idempotency_key, topic, payload, attributes)
@@ -43,6 +43,51 @@ pub async fn ingest(
     Ok(Ingested::Queued {
         message_id,
         duplicate,
+    })
+}
+
+async fn fanout_ephemeral(
+    db: &Database,
+    subscribers: &TopicSubscribers,
+    topic: &str,
+    payload: &[u8],
+    attributes: HashMap<String, String>,
+    delivery: DeliveryMode,
+) -> anyhow::Result<Ingested> {
+    let mut senders = subscribers.matching_senders(topic);
+    if delivery == DeliveryMode::Single {
+        senders.truncate(1);
+    }
+    if senders.is_empty() {
+        let message_id = db.accept_dropped(topic).await?;
+        return Ok(Ingested::Dropped { message_id });
+    }
+    let message_id = Uuid::new_v4().to_string();
+    let outgoing = SatwayMessage {
+        message_id: message_id.clone(),
+        topic: topic.to_string(),
+        payload: payload.to_vec(),
+        attributes,
+        created_at: Utc::now().to_rfc3339(),
+        lease: String::new(),
+    };
+    let mut sent = 0usize;
+    for (_, sender) in senders {
+        match tokio::time::timeout(Duration::from_millis(200), sender.send(Ok(outgoing.clone())))
+            .await
+        {
+            Ok(Ok(())) => sent += 1,
+            _ => {}
+        }
+    }
+    if sent == 0 {
+        let message_id = db.accept_dropped(topic).await?;
+        return Ok(Ingested::Dropped { message_id });
+    }
+    db.record_live_fanout(topic).await?;
+    Ok(Ingested::Queued {
+        message_id,
+        duplicate: false,
     })
 }
 
@@ -154,6 +199,15 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
                     inflight.cancel(&lease);
                 }
             }
+        }
+        if ephemeral && !waits.is_empty() {
+            for lease in &leases {
+                inflight.cancel(lease);
+            }
+            if let Err(error) = db.delivered(&message.id, &message.lease).await {
+                error!(%error, "could not mark delivery");
+            }
+            continue;
         }
         if waits.is_empty() {
             if ephemeral {
@@ -274,5 +328,59 @@ pub fn attrs_to_map(value: &serde_json::Value) -> HashMap<String, String> {
 
 /// Keep the outgoing channel open for the life of an MQTT connection.
 pub fn outgoing_channel() -> (StreamSender, tokio::sync::mpsc::Receiver<Result<SatwayMessage, tonic::Status>>) {
-    mpsc::channel(256)
+    mpsc::channel(1024)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn ephemeral_hash_fanout_does_not_queue() {
+        let dir = std::env::temp_dir().join(format!("cangling-fanout-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::connect(&format!("sqlite:{}/queue.db", dir.display()))
+            .await
+            .unwrap();
+        let subscribers = TopicSubscribers::default();
+        let (tx, mut rx) = outgoing_channel();
+        subscribers.add(
+            "/ibuser/1/#",
+            "mqtt:web-1",
+            tx,
+            "127.0.0.1:1",
+            "mqtt-ws",
+        );
+
+        let ingested = ingest(
+            &db,
+            &subscribers,
+            "/ibuser/1/dRueErAe",
+            b"hello",
+            HashMap::new(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(ingested, Ingested::Queued { duplicate: false, .. }));
+
+        let message = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.topic, "/ibuser/1/dRueErAe");
+        assert_eq!(message.payload, b"hello");
+
+        let leftover = db
+            .claim_next_for_topic("/ibuser/1/dRueErAe", Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(leftover.is_none(), "ephemeral live fanout must not persist");
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

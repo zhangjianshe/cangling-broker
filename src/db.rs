@@ -804,6 +804,10 @@ impl Database {
         Ok(true)
     }
 
+    pub async fn record_live_fanout(&self, topic: &str) -> anyhow::Result<()> {
+        self.bump_topic_stat(topic, 1, 0, 1, 0).await
+    }
+
     pub async fn purge_older_than(&self, cutoff: &str) -> anyhow::Result<u64> {
         let result = sqlx::query("DELETE FROM messages WHERE created_at < ?")
             .bind(cutoff)

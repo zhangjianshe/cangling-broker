@@ -281,40 +281,42 @@ fn merge_live_sessions(topics: &mut Vec<TopicSnapshot>, sessions: &[SessionInfo]
         .map(|(i, topic)| (topic.name.clone(), i))
         .collect();
     for session in sessions {
-        let idx = match index.get(&session.topic) {
-            Some(idx) => *idx,
-            None => {
-                let idx = topics.len();
-                index.insert(session.topic.clone(), idx);
-                topics.push(TopicSnapshot {
-                    name: session.topic.clone(),
-                    delivery: "broadcast".into(),
-                    persistence: "ephemeral".into(),
-                    ..TopicSnapshot::default()
-                });
-                idx
-            }
-        };
-        let topic = &mut topics[idx];
-        if let Some(consumer) = topic
-            .consumers
-            .iter_mut()
-            .find(|consumer| consumer.id == session.id)
-        {
-            consumer.live = true;
-            continue;
+        if !index.contains_key(&session.topic) {
+            let idx = topics.len();
+            index.insert(session.topic.clone(), idx);
+            topics.push(TopicSnapshot {
+                name: session.topic.clone(),
+                delivery: "broadcast".into(),
+                persistence: "ephemeral".into(),
+                ..TopicSnapshot::default()
+            });
         }
-        topic.consumers.push(ConsumerSnapshot {
-            id: session.id.clone(),
-            name: session
-                .id
-                .strip_prefix("mqtt:")
-                .unwrap_or(session.id.as_str())
-                .to_string(),
-            last_seen_at: session.connected_at.clone(),
-            live: true,
-            attributes: HashMap::from([("protocol".into(), session.protocol.to_string())]),
-        });
+    }
+    for topic in topics.iter_mut() {
+        for session in sessions {
+            if !crate::topic::filter_matches(&session.topic, &topic.name) {
+                continue;
+            }
+            if let Some(consumer) = topic
+                .consumers
+                .iter_mut()
+                .find(|consumer| consumer.id == session.id)
+            {
+                consumer.live = true;
+                continue;
+            }
+            topic.consumers.push(ConsumerSnapshot {
+                id: session.id.clone(),
+                name: session
+                    .id
+                    .strip_prefix("mqtt:")
+                    .unwrap_or(session.id.as_str())
+                    .to_string(),
+                last_seen_at: session.connected_at.clone(),
+                live: true,
+                attributes: HashMap::from([("protocol".into(), session.protocol.to_string())]),
+            });
+        }
     }
 }
 
@@ -527,6 +529,26 @@ mod tests {
             Some("mqtt-ws")
         );
         assert_eq!(topics.iter().find(|topic| topic.name == "jobs").unwrap().accepted, 3);
+
+        let mut published = vec![TopicSnapshot {
+            name: "/ibuser/1/dRueErAe".into(),
+            accepted: 10,
+            ..TopicSnapshot::default()
+        }];
+        let hash_sessions = vec![SessionInfo {
+            id: "mqtt:browser-1".into(),
+            topic: "/ibuser/1/#".into(),
+            peer: "10.0.0.8:1".into(),
+            connected_at: "2026-08-16T00:00:04Z".into(),
+            protocol: "mqtt-ws",
+        }];
+        merge_live_sessions(&mut published, &hash_sessions);
+        let row = published
+            .iter()
+            .find(|topic| topic.name == "/ibuser/1/dRueErAe")
+            .unwrap();
+        assert_eq!(row.consumers.len(), 1);
+        assert_eq!(row.consumers[0].name, "browser-1");
     }
 
     #[test]

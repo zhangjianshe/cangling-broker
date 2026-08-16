@@ -78,6 +78,9 @@ mod tests {
         assert!(filter_matches("sensor/#", "sensor/a/b"));
         assert!(!filter_matches("sensor/#", "sensors"));
         assert!(!filter_matches("sensor/#", "other/temp"));
+        assert!(filter_matches("/ibuser/1/#", "/ibuser/1/dRueErAe"));
+        assert!(filter_matches("/ibuser/1/#", "/ibuser/1"));
+        assert!(!filter_matches("/ibuser/1/#", "/ibuser/2/dRueErAe"));
         assert!(filter_matches("#", "a"));
         assert!(filter_matches("#", "a/b/c"));
     }

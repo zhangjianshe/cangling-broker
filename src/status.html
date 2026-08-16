@@ -93,14 +93,19 @@
       color: var(--muted);
       font-size: 11px;
     }
-    .client {
+    .client-list { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .client-list table { border-radius: 0; }
+    .client-list tr { cursor: pointer; }
+    .client-list tr:hover td { background: #222b35; }
+    .client-list tr.selected td { background: #1c3348; }
+    .client-detail {
+      margin-top: 10px;
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
-      margin-bottom: 12px;
       overflow: hidden;
     }
-    .client-head {
+    .client-detail .head {
       display: flex;
       flex-wrap: wrap;
       align-items: baseline;
@@ -108,8 +113,7 @@
       padding: 10px 12px;
       border-bottom: 1px solid var(--line);
     }
-    .client-head .meta { color: var(--muted); font-size: 12px; }
-    .client table { border-radius: 0; }
+    .client-detail .head .meta { color: var(--muted); font-size: 12px; }
     .section-head {
       display: flex;
       align-items: baseline;
@@ -164,7 +168,9 @@
   <div id="error"></div>
   <div class="cards" id="cards"></div>
   <section>
-    <h2 id="clients-title">已连接客户端</h2>
+    <div class="section-head">
+      <h2 id="clients-title">已连接客户端</h2>
+    </div>
     <div id="clients"></div>
   </section>
   <section>
@@ -176,8 +182,12 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const TOPIC_PAGE_SIZE = 30;
+    const CLIENT_PAGE_SIZE = 10;
     let topicPage = 0;
+    let clientPage = 0;
     let lastTopics = [];
+    let lastClients = [];
+    let selectedClientKey = "";
 
     function fmtUptime(secs) {
       const s = Number(secs) || 0;
@@ -225,36 +235,84 @@
       return date.toLocaleString();
     }
 
-    function clientsHtml(list) {
-      if (!list || !list.length) return '<div class="empty">暂无已连接客户端</div>';
-      return list.map((client) => {
-        const peer = client.peer || "未知来源";
-        const streams = client.streams || (client.subscriptions || []).length;
-        const rows = (client.subscriptions || []).map((sub) =>
-          "<tr><td>" + escapeHtml(sub.name || "(未命名)") + "</td>" +
-          "<td>" + escapeHtml(sub.topic || "") + "</td>" +
-          '<td class="mono">' + escapeHtml(sub.id) + "</td>" +
-          "<td>" + attrsHtml(sub.attributes) + "</td>" +
-          "<td>" + escapeHtml(fmtTs(sub.connected_at)) + "</td>" +
-          "<td>" + escapeHtml(fmtTs(sub.last_seen_at)) + "</td></tr>"
-        ).join("");
-        const protocol = (client.protocol || "grpc").toUpperCase();
-        const clientId = client.client_id ? '<span class="mono url">' + escapeHtml(client.client_id) + "</span>" : "";
-        const body = rows
-          ? "<table><thead><tr>" +
-            "<th>名称</th><th>主题</th><th>编号</th><th>属性</th><th>订阅时间</th><th>最近心跳</th>" +
-            "</tr></thead><tbody>" + rows + "</tbody></table>"
-          : '<div class="empty">已连接，暂无订阅</div>';
-        return '<div class="client"><div class="client-head">' +
-          '<span class="pill live">在线</span>' +
-          '<span class="pill">' + escapeHtml(protocol) + "</span>" +
-          clientId +
-          '<span class="mono url">' + escapeHtml(peer) + "</span>" +
-          '<span class="meta">' + streams + " 个订阅 · 连接 " +
-          escapeHtml(fmtTs(client.connected_at)) +
-          " · 最近心跳 " + escapeHtml(fmtTs(client.last_seen_at)) +
-          "</span></div>" + body + "</div>";
+    function clientKey(client) {
+      return (client.protocol || "grpc") + "|" + (client.client_id || "") + "|" + (client.peer || "");
+    }
+
+    function clientType(protocol) {
+      if (protocol === "mqtt-ws") return "MQTT-WS";
+      if (protocol === "mqtt") return "MQTT";
+      return "gRPC";
+    }
+
+    function renderClients(clients) {
+      lastClients = clients;
+      $("clients-title").textContent = "已连接客户端" + (clients.length ? " · " + clients.length : "");
+      if (!clients.length) {
+        selectedClientKey = "";
+        $("clients").innerHTML = '<div class="empty">暂无已连接客户端</div>';
+        return;
+      }
+      if (selectedClientKey && !clients.some((item) => clientKey(item) === selectedClientKey)) {
+        selectedClientKey = "";
+      }
+      const pages = Math.max(1, Math.ceil(clients.length / CLIENT_PAGE_SIZE));
+      if (clientPage >= pages) clientPage = pages - 1;
+      if (clientPage < 0) clientPage = 0;
+      const start = clientPage * CLIENT_PAGE_SIZE;
+      const pageItems = clients.slice(start, start + CLIENT_PAGE_SIZE);
+      const from = start + 1;
+      const to = Math.min(clients.length, start + CLIENT_PAGE_SIZE);
+      const rows = pageItems.map((client) => {
+        const key = clientKey(client);
+        const selected = key === selectedClientKey ? " selected" : "";
+        return '<tr class="' + selected.trim() + '" data-client-key="' + escapeHtml(key) + '">' +
+          '<td class="mono">' + escapeHtml(client.peer || "未知来源") + "</td>" +
+          "<td><span class=\"pill\">" + escapeHtml(clientType(client.protocol)) + "</span></td>" +
+          '<td class="mono">' + escapeHtml(client.client_id || "—") + "</td>" +
+          "<td>" + (client.streams || (client.subscriptions || []).length) + "</td>" +
+          "<td>" + escapeHtml(fmtTs(client.connected_at)) + "</td></tr>";
       }).join("");
+      $("clients").innerHTML =
+        '<div class="client-list"><table><thead><tr>' +
+        "<th>地址</th><th>类型</th><th>客户端</th><th>订阅数</th><th>连接时间</th>" +
+        "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
+        pagerBar(from, to, clients.length, clientPage + 1, pages, "client-page") +
+        clientDetailHtml();
+    }
+
+    function clientDetailHtml() {
+      if (!selectedClientKey) {
+        return '<div class="empty">点击上表中的客户端查看订阅主题</div>';
+      }
+      const client = lastClients.find((item) => clientKey(item) === selectedClientKey);
+      if (!client) return "";
+      const subs = client.subscriptions || [];
+      const rows = subs.map((sub) =>
+        "<tr><td class=\"mono\">" + escapeHtml(sub.topic || "") + "</td>" +
+        "<td>" + escapeHtml(sub.name || "—") + "</td>" +
+        '<td class="mono">' + escapeHtml(sub.id) + "</td>" +
+        "<td>" + escapeHtml(fmtTs(sub.connected_at)) + "</td></tr>"
+      ).join("");
+      const body = rows
+        ? "<table><thead><tr><th>订阅主题</th><th>名称</th><th>编号</th><th>订阅时间</th></tr></thead><tbody>" +
+          rows + "</tbody></table>"
+        : '<div class="empty">已连接，暂无订阅</div>';
+      return '<div class="client-detail"><div class="head">' +
+        '<span class="pill live">在线</span>' +
+        '<span class="pill">' + escapeHtml(clientType(client.protocol)) + "</span>" +
+        '<span class="mono url">' + escapeHtml(client.peer || "未知来源") + "</span>" +
+        (client.client_id ? '<span class="mono url">' + escapeHtml(client.client_id) + "</span>" : "") +
+        '<span class="meta">' + (subs.length) + " 个订阅</span></div>" + body + "</div>";
+    }
+
+    function pagerBar(from, to, total, page, pages, kind) {
+      return '<div class="pager"><span>第 ' + from + "–" + to + " 条，共 " + total +
+        " 条 · 第 " + page + "/" + pages + " 页</span>" +
+        '<span class="btns">' +
+        '<button type="button" data-' + kind + '="prev"' + (page <= 1 ? " disabled" : "") + ">上一页</button>" +
+        '<button type="button" data-' + kind + '="next"' + (page >= pages ? " disabled" : "") + ">下一页</button>" +
+        "</span></div>";
     }
 
     function escapeHtml(value) {
@@ -302,10 +360,7 @@
         card("已丢弃", data.dropped || 0) +
         card("重复提交", data.duplicates);
 
-      const clients = data.clients || [];
-      $("clients-title").textContent = "已连接客户端" + (clients.length ? " · " + clients.length : "");
-      $("clients").innerHTML = clientsHtml(clients);
-
+      renderClients(data.clients || []);
       renderTopics(data.topics_detail || []);
     }
 
@@ -331,20 +386,6 @@
         "</tbody></table>";
     }
 
-    function pagerHtml(total) {
-      const pages = Math.max(1, Math.ceil(total / TOPIC_PAGE_SIZE));
-      if (topicPage >= pages) topicPage = pages - 1;
-      if (topicPage < 0) topicPage = 0;
-      const from = total === 0 ? 0 : topicPage * TOPIC_PAGE_SIZE + 1;
-      const to = Math.min(total, (topicPage + 1) * TOPIC_PAGE_SIZE);
-      return '<div class="pager"><span>第 ' + from + "–" + to + " 条，共 " + total +
-        " 条 · 第 " + (topicPage + 1) + "/" + pages + " 页</span>" +
-        '<span class="btns">' +
-        '<button type="button" data-topic-page="prev"' + (topicPage <= 0 ? " disabled" : "") + ">上一页</button>" +
-        '<button type="button" data-topic-page="next"' + (topicPage >= pages - 1 ? " disabled" : "") + ">下一页</button>" +
-        "</span></div>";
-    }
-
     function renderTopics(topics) {
       lastTopics = topics;
       $("topics-title").textContent = "主题" + (topics.length ? " · " + topics.length : "");
@@ -352,17 +393,37 @@
         $("topics").innerHTML = '<div class="empty">暂无主题</div>';
         return;
       }
+      const pages = Math.max(1, Math.ceil(topics.length / TOPIC_PAGE_SIZE));
+      if (topicPage >= pages) topicPage = pages - 1;
+      if (topicPage < 0) topicPage = 0;
       const start = topicPage * TOPIC_PAGE_SIZE;
+      const from = start + 1;
+      const to = Math.min(topics.length, start + TOPIC_PAGE_SIZE);
       $("topics").innerHTML = topicsTable(topics.slice(start, start + TOPIC_PAGE_SIZE)) +
-        pagerHtml(topics.length);
+        pagerBar(from, to, topics.length, topicPage + 1, pages, "topic-page");
     }
 
     document.addEventListener("click", (event) => {
-      const button = event.target.closest("[data-topic-page]");
-      if (!button || button.disabled) return;
-      if (button.getAttribute("data-topic-page") === "prev") topicPage -= 1;
-      else topicPage += 1;
-      renderTopics(lastTopics);
+      const row = event.target.closest("[data-client-key]");
+      if (row) {
+        const key = row.getAttribute("data-client-key") || "";
+        selectedClientKey = selectedClientKey === key ? "" : key;
+        renderClients(lastClients);
+        return;
+      }
+      const clientBtn = event.target.closest("[data-client-page]");
+      if (clientBtn && !clientBtn.disabled) {
+        if (clientBtn.getAttribute("data-client-page") === "prev") clientPage -= 1;
+        else clientPage += 1;
+        renderClients(lastClients);
+        return;
+      }
+      const topicBtn = event.target.closest("[data-topic-page]");
+      if (topicBtn && !topicBtn.disabled) {
+        if (topicBtn.getAttribute("data-topic-page") === "prev") topicPage -= 1;
+        else topicPage += 1;
+        renderTopics(lastTopics);
+      }
     });
 
     async function refresh() {
