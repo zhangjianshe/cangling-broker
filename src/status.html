@@ -110,6 +110,34 @@
     }
     .client-head .meta { color: var(--muted); font-size: 12px; }
     .client table { border-radius: 0; }
+    .section-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .section-head h2 { margin: 0; }
+    .pager {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .pager .btns { display: flex; gap: 8px; }
+    .pager button {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+    .pager button:disabled { opacity: 0.4; cursor: default; }
   </style>
 </head>
 <body>
@@ -140,11 +168,16 @@
     <div id="clients"></div>
   </section>
   <section>
-    <h2>主题</h2>
+    <div class="section-head">
+      <h2 id="topics-title">主题</h2>
+    </div>
     <div id="topics"></div>
   </section>
   <script>
     const $ = (id) => document.getElementById(id);
+    const TOPIC_PAGE_SIZE = 30;
+    let topicPage = 0;
+    let lastTopics = [];
 
     function fmtUptime(secs) {
       const s = Number(secs) || 0;
@@ -206,17 +239,21 @@
           "<td>" + escapeHtml(fmtTs(sub.last_seen_at)) + "</td></tr>"
         ).join("");
         const protocol = (client.protocol || "grpc").toUpperCase();
+        const clientId = client.client_id ? '<span class="mono url">' + escapeHtml(client.client_id) + "</span>" : "";
+        const body = rows
+          ? "<table><thead><tr>" +
+            "<th>名称</th><th>主题</th><th>编号</th><th>属性</th><th>订阅时间</th><th>最近心跳</th>" +
+            "</tr></thead><tbody>" + rows + "</tbody></table>"
+          : '<div class="empty">已连接，暂无订阅</div>';
         return '<div class="client"><div class="client-head">' +
           '<span class="pill live">在线</span>' +
           '<span class="pill">' + escapeHtml(protocol) + "</span>" +
+          clientId +
           '<span class="mono url">' + escapeHtml(peer) + "</span>" +
           '<span class="meta">' + streams + " 个订阅 · 连接 " +
           escapeHtml(fmtTs(client.connected_at)) +
           " · 最近心跳 " + escapeHtml(fmtTs(client.last_seen_at)) +
-          "</span></div>" +
-          "<table><thead><tr>" +
-          "<th>名称</th><th>主题</th><th>编号</th><th>属性</th><th>订阅时间</th><th>最近心跳</th>" +
-          "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+          "</span></div>" + body + "</div>";
       }).join("");
     }
 
@@ -269,17 +306,15 @@
       $("clients-title").textContent = "已连接客户端" + (clients.length ? " · " + clients.length : "");
       $("clients").innerHTML = clientsHtml(clients);
 
-      const topics = data.topics_detail || [];
-      if (!topics.length) {
-        $("topics").innerHTML = '<div class="empty">暂无主题</div>';
-        return;
-      }
-      $("topics").innerHTML =
-        "<table><thead><tr>" +
+      renderTopics(data.topics_detail || []);
+    }
+
+    function topicsTable(pageItems) {
+      return "<table><thead><tr>" +
         "<th>主题</th><th>投递</th><th>持久</th><th>已接收</th><th>待处理</th><th>投递中</th>" +
         "<th>已投递</th><th>失败</th><th>丢弃</th><th>重复</th><th>在线流</th><th>消费者</th>" +
         "</tr></thead><tbody>" +
-        topics.map((t) =>
+        pageItems.map((t) =>
           "<tr><td>" + escapeHtml(t.name) + "</td>" +
           "<td>" + escapeHtml(t.delivery === "broadcast" ? "广播" : "单投") + "</td>" +
           "<td>" + escapeHtml(t.persistence === "ephemeral" ? "即弃" : "持久") + "</td>" +
@@ -295,6 +330,40 @@
         ).join("") +
         "</tbody></table>";
     }
+
+    function pagerHtml(total) {
+      const pages = Math.max(1, Math.ceil(total / TOPIC_PAGE_SIZE));
+      if (topicPage >= pages) topicPage = pages - 1;
+      if (topicPage < 0) topicPage = 0;
+      const from = total === 0 ? 0 : topicPage * TOPIC_PAGE_SIZE + 1;
+      const to = Math.min(total, (topicPage + 1) * TOPIC_PAGE_SIZE);
+      return '<div class="pager"><span>第 ' + from + "–" + to + " 条，共 " + total +
+        " 条 · 第 " + (topicPage + 1) + "/" + pages + " 页</span>" +
+        '<span class="btns">' +
+        '<button type="button" data-topic-page="prev"' + (topicPage <= 0 ? " disabled" : "") + ">上一页</button>" +
+        '<button type="button" data-topic-page="next"' + (topicPage >= pages - 1 ? " disabled" : "") + ">下一页</button>" +
+        "</span></div>";
+    }
+
+    function renderTopics(topics) {
+      lastTopics = topics;
+      $("topics-title").textContent = "主题" + (topics.length ? " · " + topics.length : "");
+      if (!topics.length) {
+        $("topics").innerHTML = '<div class="empty">暂无主题</div>';
+        return;
+      }
+      const start = topicPage * TOPIC_PAGE_SIZE;
+      $("topics").innerHTML = topicsTable(topics.slice(start, start + TOPIC_PAGE_SIZE)) +
+        pagerHtml(topics.length);
+    }
+
+    document.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-topic-page]");
+      if (!button || button.disabled) return;
+      if (button.getAttribute("data-topic-page") === "prev") topicPage -= 1;
+      else topicPage += 1;
+      renderTopics(lastTopics);
+    });
 
     async function refresh() {
       try {

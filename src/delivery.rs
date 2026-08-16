@@ -14,7 +14,6 @@ use crate::{
 };
 
 pub const PROTOCOL_GRPC: &str = "grpc";
-pub const PROTOCOL_MQTT: &str = "mqtt";
 
 pub enum Ingested {
     Queued { message_id: String, duplicate: bool },
@@ -275,5 +274,5 @@ pub fn attrs_to_map(value: &serde_json::Value) -> HashMap<String, String> {
 
 /// Keep the outgoing channel open for the life of an MQTT connection.
 pub fn outgoing_channel() -> (StreamSender, tokio::sync::mpsc::Receiver<Result<SatwayMessage, tonic::Status>>) {
-    mpsc::channel(16)
+    mpsc::channel(256)
 }

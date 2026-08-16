@@ -49,6 +49,11 @@ pub struct Config {
     #[arg(long, env = "MESSAGE_RETENTION_DAYS", default_value_t = 10)]
     pub message_retention_days: i64,
 
+    /// Delete unconfigured ephemeral topic rows that have not received a
+    /// message for this many hours. 0 disables. Explicit ConfigureTopics stay.
+    #[arg(long, env = "CL_BROKER_EPHEMERAL_IDLE_HOURS", default_value_t = 6)]
+    pub ephemeral_idle_hours: u64,
+
     /// How long a worker may hold a claimed message before it is retried.
     #[arg(long, env = "ACK_TIMEOUT_SECS", default_value_t = 30)]
     pub ack_timeout_secs: u64,
@@ -119,6 +124,7 @@ impl Config {
             worker_poll_ms: 20,
             max_delivery_attempts: 10,
             message_retention_days: 0,
+            ephemeral_idle_hours: 0,
             ack_timeout_secs: 3,
             consumer_ttl_secs: 0,
             log_max_bytes: 1024,

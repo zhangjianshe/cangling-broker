@@ -24,9 +24,10 @@ service MessageQueue {
   rpc AckMessage(AckMessageRequest) returns (AckMessageResponse);
 
   // Create or replace delivery and persistence for many topics at once.
-  // delivery is "single" (competing consumers, default) or "broadcast" (every live stream).
-  // persistence is "persistent" (store and deliver later, default) or "ephemeral"
+  // delivery is "single" (competing consumers) or "broadcast" (every live stream).
+  // persistence is "persistent" (store and deliver later) or "ephemeral"
   // (deliver only to live Subscribe streams; drop if nobody is connected).
+  // Topics never passed to ConfigureTopics default to broadcast + ephemeral.
   rpc ConfigureTopics(ConfigureTopicsRequest) returns (ConfigureTopicsResponse);
 
   // List stored topic delivery and persistence configs.
@@ -95,7 +96,7 @@ message TopicConfig {
   string topic = 1;
   // "single" or "broadcast". Empty on configure is rejected.
   string delivery = 2;
-  // "persistent" (default) or "ephemeral". Empty on configure means persistent.
+  // "persistent" or "ephemeral". Empty on configure means persistent.
   string persistence = 3;
 }
 

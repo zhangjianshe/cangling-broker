@@ -8,7 +8,7 @@ use tokio::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpStream,
     },
-    sync::mpsc,
+    sync::mpsc::{self, error::TrySendError},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use super::{
     codec::{
-        self, Packet, Publish, SubAck, SubscribeFilter, CONNACK_ACCEPT, CONNACK_BAD_AUTH,
+        self, Packet, SubAck, SubscribeFilter, CONNACK_ACCEPT, CONNACK_BAD_AUTH,
         CONNACK_IDENTIFIER, CONNACK_NOT_AUTHORIZED, CONNACK_PROTOCOL, MAX_PACKET_SIZE,
         SUBACK_FAILURE,
     },
@@ -24,9 +24,21 @@ use super::{
 };
 use crate::{
     auth,
-    delivery::{self, Ingested, SubscribeLoop, PROTOCOL_MQTT},
+    delivery::{self, SubscribeLoop},
     proto::SatwayMessage,
 };
+
+const PACKET_CHAN: usize = 512;
+const WRITE_CHAN: usize = 512;
+const INGEST_CHAN: usize = 1024;
+
+enum WriteJob {
+    Packet(Packet),
+    Deliver {
+        packet: Packet,
+        ack: Option<(String, String)>,
+    },
+}
 
 enum Outgoing {
     Tcp(OwnedWriteHalf),
@@ -54,16 +66,16 @@ impl Outgoing {
 pub async fn run_tcp(stream: TcpStream, peer: String, ctx: MqttCtx) -> anyhow::Result<()> {
     let _ = stream.set_nodelay(true);
     let (reader, writer) = stream.into_split();
-    let (tx, rx) = mpsc::channel(32);
+    let (tx, rx) = mpsc::channel(PACKET_CHAN);
     tokio::spawn(tcp_read_loop(reader, tx));
-    run_session(Outgoing::Tcp(writer), rx, peer, ctx).await
+    run_session(Outgoing::Tcp(writer), rx, peer, "mqtt", ctx).await
 }
 
 pub async fn run_ws(socket: axum::extract::ws::WebSocket, peer: String, ctx: MqttCtx) -> anyhow::Result<()> {
     let (sink, stream) = socket.split();
-    let (tx, rx) = mpsc::channel(32);
+    let (tx, rx) = mpsc::channel(PACKET_CHAN);
     tokio::spawn(ws_read_loop(stream, tx));
-    run_session(Outgoing::Ws(sink), rx, peer, ctx).await
+    run_session(Outgoing::Ws(sink), rx, peer, "mqtt-ws", ctx).await
 }
 
 async fn tcp_read_loop(mut reader: OwnedReadHalf, tx: mpsc::Sender<Packet>) {
@@ -122,6 +134,7 @@ async fn run_session(
     mut out: Outgoing,
     mut packets: mpsc::Receiver<Packet>,
     peer: String,
+    transport: &'static str,
     ctx: MqttCtx,
 ) -> anyhow::Result<()> {
     let first = tokio::time::timeout(Duration::from_secs(15), packets.recv())
@@ -180,18 +193,39 @@ async fn run_session(
     .await?;
 
     let session_cancel = ctx.shutdown.child_token();
-    let previous = ctx.registry.insert(client_id.clone(), session_cancel.clone());
+    let previous = ctx.registry.connect(
+        client_id.clone(),
+        session_cancel.clone(),
+        peer.clone(),
+        transport,
+    );
     if let Some(old) = previous {
         old.cancel();
     }
 
-    info!(client_id = %client_id, %peer, "mqtt connected");
+    info!(client_id = %client_id, %peer, transport, "mqtt connected");
+    let (write_tx, write_rx) = mpsc::channel(WRITE_CHAN);
+    let (ingest_tx, ingest_rx) = mpsc::channel(INGEST_CHAN);
+    let writer_cancel = session_cancel.clone();
+    let writer_inflight = ctx.inflight.clone();
+    tokio::spawn(async move {
+        write_loop(out, write_rx, writer_inflight, writer_cancel).await;
+    });
+    let ingest_cancel = session_cancel.clone();
+    let ingest_ctx = ctx.clone();
+    let ingest_client = client_id.clone();
+    let ingest_write = write_tx.clone();
+    tokio::spawn(async move {
+        ingest_loop(ingest_rx, ingest_write, ingest_ctx, ingest_client, ingest_cancel).await;
+    });
     let result = session_loop(
-        &mut out,
-        &mut packets,
+        packets,
+        write_tx,
+        ingest_tx,
         SessionState {
             client_id: client_id.clone(),
             peer: peer.clone(),
+            transport,
             keep_alive: connect.keep_alive,
             qos_by_topic: HashMap::new(),
             inflight_pub: HashMap::new(),
@@ -211,6 +245,7 @@ async fn run_session(
 struct SessionState {
     client_id: String,
     peer: String,
+    transport: &'static str,
     keep_alive: u16,
     qos_by_topic: HashMap<String, u8>,
     inflight_pub: HashMap<u16, (String, String)>,
@@ -218,9 +253,57 @@ struct SessionState {
     subscriptions: HashMap<String, CancellationToken>,
 }
 
+async fn write_loop(
+    mut out: Outgoing,
+    mut jobs: mpsc::Receiver<WriteJob>,
+    inflight: crate::subscribers::InflightAcks,
+    cancel: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            job = jobs.recv() => {
+                let Some(job) = job else { break };
+                let (packet, ack) = match job {
+                    WriteJob::Packet(packet) => (packet, None),
+                    WriteJob::Deliver { packet, ack } => (packet, ack),
+                };
+                if out.send(&packet).await.is_err() {
+                    cancel.cancel();
+                    break;
+                }
+                if let Some((message_id, lease)) = ack {
+                    let _ = inflight.complete(&message_id, &lease, true, String::new());
+                }
+            }
+        }
+    }
+}
+
+async fn ingest_loop(
+    mut jobs: mpsc::Receiver<codec::Publish>,
+    write_tx: mpsc::Sender<WriteJob>,
+    ctx: MqttCtx,
+    client_id: String,
+    cancel: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            job = jobs.recv() => {
+                let Some(publish) = job else { break };
+                if let Err(error) = ingest_and_ack(&write_tx, &ctx, &client_id, publish).await {
+                    warn!(client_id, %error, "mqtt ingest failed");
+                }
+            }
+        }
+    }
+}
+
 async fn session_loop(
-    out: &mut Outgoing,
-    packets: &mut mpsc::Receiver<Packet>,
+    mut packets: mpsc::Receiver<Packet>,
+    write_tx: mpsc::Sender<WriteJob>,
+    ingest_tx: mpsc::Sender<codec::Publish>,
     mut state: SessionState,
     ctx: MqttCtx,
     session_cancel: CancellationToken,
@@ -233,15 +316,6 @@ async fn session_loop(
         tokio::select! {
             _ = ctx.shutdown.cancelled() => break,
             _ = session_cancel.cancelled() => break,
-            incoming = packets.recv() => {
-                idle = Box::pin(sleep_or_pending(idle_after));
-                let Some(packet) = incoming else {
-                    break;
-                };
-                if handle_packet(out, packet, &mut state, &ctx, &session_cancel, &out_tx).await? {
-                    break;
-                }
-            }
             outgoing = out_rx.recv() => {
                 let Some(Ok(message)) = outgoing else {
                     if outgoing.is_none() {
@@ -249,7 +323,26 @@ async fn session_loop(
                     }
                     continue;
                 };
-                send_outgoing(out, &mut state, &ctx, message).await?;
+                queue_outgoing(&write_tx, &mut state, message).await?;
+            }
+            incoming = packets.recv() => {
+                idle = Box::pin(sleep_or_pending(idle_after));
+                let Some(packet) = incoming else {
+                    break;
+                };
+                if handle_packet(
+                    packet,
+                    &mut state,
+                    &ctx,
+                    &session_cancel,
+                    &out_tx,
+                    &write_tx,
+                    &ingest_tx,
+                )
+                .await?
+                {
+                    break;
+                }
             }
             _ = &mut idle => {
                 warn!(client_id = %state.client_id, "mqtt keepalive timeout");
@@ -264,34 +357,42 @@ async fn session_loop(
 }
 
 async fn handle_packet(
-    out: &mut Outgoing,
     packet: Packet,
     state: &mut SessionState,
     ctx: &MqttCtx,
     session_cancel: &CancellationToken,
     out_tx: &tokio::sync::mpsc::Sender<Result<SatwayMessage, tonic::Status>>,
+    write_tx: &mpsc::Sender<WriteJob>,
+    ingest_tx: &mpsc::Sender<codec::Publish>,
 ) -> anyhow::Result<bool> {
     match packet {
-        Packet::Publish(publish) => {
-            accept_publish(out, state, ctx, publish).await?;
-        }
+        Packet::Publish(publish) => match ingest_tx.try_send(publish) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                warn!(client_id = %state.client_id, "mqtt ingest backlog, publish not accepted");
+            }
+            Err(TrySendError::Closed(_)) => anyhow::bail!("mqtt ingest worker closed"),
+        },
         Packet::PubAck { packet_id } => {
             if let Some((message_id, lease)) = state.inflight_pub.remove(&packet_id) {
                 let _ = ctx.inflight.complete(&message_id, &lease, true, String::new());
             }
         }
         Packet::PubRel { packet_id } => {
-            out.send(&Packet::PubComp { packet_id }).await?;
+            queue_packet(write_tx, Packet::PubComp { packet_id }).await?;
         }
         Packet::Subscribe(subscribe) => {
             let mut codes = Vec::with_capacity(subscribe.filters.len());
             for filter in subscribe.filters {
                 codes.push(subscribe_topic(state, ctx, session_cancel, out_tx, filter).await);
             }
-            out.send(&Packet::SubAck(SubAck {
-                packet_id: subscribe.packet_id,
-                codes,
-            }))
+            queue_packet(
+                write_tx,
+                Packet::SubAck(SubAck {
+                    packet_id: subscribe.packet_id,
+                    codes,
+                }),
+            )
             .await?;
         }
         Packet::Unsubscribe(unsubscribe) => {
@@ -301,13 +402,16 @@ async fn handle_packet(
                 }
                 state.qos_by_topic.remove(&topic);
             }
-            out.send(&Packet::UnsubAck {
-                packet_id: unsubscribe.packet_id,
-            })
+            queue_packet(
+                write_tx,
+                Packet::UnsubAck {
+                    packet_id: unsubscribe.packet_id,
+                },
+            )
             .await?;
         }
         Packet::PingReq => {
-            out.send(&Packet::PingResp).await?;
+            queue_packet(write_tx, Packet::PingResp).await?;
         }
         Packet::Disconnect => return Ok(true),
         Packet::Connect(_) => anyhow::bail!("duplicate CONNECT"),
@@ -317,11 +421,11 @@ async fn handle_packet(
     Ok(false)
 }
 
-async fn accept_publish(
-    out: &mut Outgoing,
-    state: &SessionState,
+async fn ingest_and_ack(
+    write_tx: &mpsc::Sender<WriteJob>,
     ctx: &MqttCtx,
-    publish: Publish,
+    client_id: &str,
+    publish: codec::Publish,
 ) -> anyhow::Result<()> {
     let topic = publish.topic.trim();
     if !crate::topic::is_valid_publish_topic(topic) {
@@ -330,8 +434,8 @@ async fn accept_publish(
     let qos = publish.qos.min(2);
     let packet_id = publish.packet_id;
     let mut attributes = HashMap::new();
-    attributes.insert("mqtt_client_id".into(), state.client_id.clone());
-    match delivery::ingest(
+    attributes.insert("mqtt_client_id".into(), client_id.to_string());
+    delivery::ingest(
         &ctx.db,
         &ctx.subscribers,
         topic,
@@ -339,28 +443,14 @@ async fn accept_publish(
         attributes,
         None,
     )
-    .await
-    {
-        Ok(Ingested::Dropped { message_id }) => {
-            info!(
-                topic,
-                id = %message_id,
-                "ephemeral message dropped: no live subscriber"
-            );
-        }
-        Ok(Ingested::Queued { .. }) => {}
-        Err(error) => {
-            warn!(%error, topic, "mqtt publish enqueue failed");
-            anyhow::bail!(error);
-        }
-    }
+    .await?;
     if qos == 2 {
         if let Some(packet_id) = packet_id {
-            out.send(&Packet::PubRec { packet_id }).await?;
+            queue_packet(write_tx, Packet::PubRec { packet_id }).await?;
         }
     } else if qos == 1 {
         if let Some(packet_id) = packet_id {
-            out.send(&Packet::PubAck { packet_id }).await?;
+            queue_packet(write_tx, Packet::PubAck { packet_id }).await?;
         }
     }
     Ok(())
@@ -397,47 +487,65 @@ async fn subscribe_topic(
         consumer_id: String::new(),
         tx: out_tx.clone(),
         peer: state.peer.clone(),
-        protocol: PROTOCOL_MQTT,
+        protocol: state.transport,
     });
     info!(client_id = %state.client_id, topic, qos = granted, "mqtt subscribed");
     granted
 }
 
-async fn send_outgoing(
-    out: &mut Outgoing,
+async fn queue_outgoing(
+    write_tx: &mpsc::Sender<WriteJob>,
     state: &mut SessionState,
-    ctx: &MqttCtx,
     message: SatwayMessage,
 ) -> anyhow::Result<()> {
     let qos = granted_qos(&state.qos_by_topic, &message.topic);
     if qos == 0 {
-        out.send(&Packet::Publish(Publish {
-            dup: false,
-            qos: 0,
-            retain: false,
-            topic: message.topic,
-            packet_id: None,
-            payload: message.payload,
-        }))
-        .await?;
-        let _ = ctx
-            .inflight
-            .complete(&message.message_id, &message.lease, true, String::new());
-        return Ok(());
+        return queue_job(
+            write_tx,
+            WriteJob::Deliver {
+                packet: Packet::Publish(codec::Publish {
+                    dup: false,
+                    qos: 0,
+                    retain: false,
+                    topic: message.topic,
+                    packet_id: None,
+                    payload: message.payload,
+                }),
+                ack: Some((message.message_id, message.lease)),
+            },
+        )
+        .await;
     }
     let packet_id = alloc_packet_id(&mut state.next_packet_id, &state.inflight_pub);
     state
         .inflight_pub
-        .insert(packet_id, (message.message_id.clone(), message.lease.clone()));
-    out.send(&Packet::Publish(Publish {
-        dup: false,
-        qos: 1,
-        retain: false,
-        topic: message.topic,
-        packet_id: Some(packet_id),
-        payload: message.payload,
-    }))
+        .insert(packet_id, (message.message_id, message.lease));
+    queue_job(
+        write_tx,
+        WriteJob::Deliver {
+            packet: Packet::Publish(codec::Publish {
+                dup: false,
+                qos: 1,
+                retain: false,
+                topic: message.topic,
+                packet_id: Some(packet_id),
+                payload: message.payload,
+            }),
+            ack: None,
+        },
+    )
     .await
+}
+
+async fn queue_packet(write_tx: &mpsc::Sender<WriteJob>, packet: Packet) -> anyhow::Result<()> {
+    queue_job(write_tx, WriteJob::Packet(packet)).await
+}
+
+async fn queue_job(write_tx: &mpsc::Sender<WriteJob>, job: WriteJob) -> anyhow::Result<()> {
+    write_tx
+        .send(job)
+        .await
+        .map_err(|_| anyhow::anyhow!("mqtt writer closed"))
 }
 
 fn granted_qos(qos_by_topic: &HashMap<String, u8>, published_topic: &str) -> u8 {

@@ -2,7 +2,7 @@
 
 A small, Kafka-like building block. Producers and consumers use **gRPC streams**, and the same queue also speaks **MQTT 3.1.1** over TCP and WebSocket. The service commits each publish to SQLite first, then delivers it according to the topic mode.
 
-Topics default to **single** (competing consumers: one live stream gets each message). Set a topic to **broadcast** and every live `Subscribe` stream on that topic gets a copy. Persistence defaults to **persistent** (queue and deliver later). Set a topic to **ephemeral** and a publish with no live `Subscribe` stream is dropped. `Register` only stores extra consumer metadata. `DOWNSTREAM_URL` is an optional HTTP fallback when a **persistent** topic has no live stream.
+Unconfigured topics default to **broadcast** + **ephemeral** (MQTT-style: every live stream gets a copy; a publish with nobody listening is dropped). Set a topic to **single** for competing consumers (one live stream gets each message). Set a topic to **persistent** to queue and deliver later. `Register` only stores extra consumer metadata. `DOWNSTREAM_URL` is an optional HTTP fallback when a **persistent** topic has no live stream.
 
 Set `CL_BROKER_AUTH_TOKEN` on the broker for production. Clients must send the same value as `authorization: Bearer <token>` (or `--token` / `CL_BROKER_AUTH_TOKEN`). Unset keeps the broker open.
 
@@ -213,7 +213,7 @@ On a **single** topic, each message is claimed by one live stream. On a **broadc
 
 ### Topic delivery mode
 
-Default is `single`. Configure many topics at once:
+Unconfigured topics are `broadcast` + `ephemeral`. Configure many topics at once:
 
 ```bash
 curl -s -H 'authorization: Bearer change-me' \
@@ -232,7 +232,7 @@ gRPC: `ConfigureTopics` / `ListTopics`. Java: `client.configureTopics(List.of(To
 
 ### Topic persistence
 
-Default is `persistent`. On a **persistent** topic the broker stores the message and delivers it later, including via `DOWNSTREAM_URL` when nobody is subscribed.
+On a **persistent** topic the broker stores the message and delivers it later, including via `DOWNSTREAM_URL` when nobody is subscribed. Configure `persistence` to opt into this; unconfigured topics stay ephemeral.
 
 On an **ephemeral** topic the broker delivers only to live `Subscribe` streams. If nobody is connected at publish time, the message is dropped (not queued, no HTTP fallback). A later subscriber does not receive those dropped messages. `delivery` still applies among whoever is connected: `single` sends to one live stream, `broadcast` sends a copy to every live stream.
 
@@ -268,6 +268,7 @@ Call `AckMessage` with that `message_id` and `lease`. `success = true` marks the
 | `WORKER_POLL_MS` | `500` | queue polling interval |
 | `MAX_DELIVERY_ATTEMPTS` | `10` | attempts before a message is marked failed |
 | `MESSAGE_RETENTION_DAYS` | `10` | delete messages older than this; `0` keeps them forever |
+| `CL_BROKER_EPHEMERAL_IDLE_HOURS` | `6` | delete unconfigured ephemeral topic rows with no new message for this many hours; `0` disables. `ConfigureTopics` rows are kept |
 | `ACK_TIMEOUT_SECS` | `30` | how long a subscriber may take to `AckMessage` before the message is retried |
 | `CONSUMER_TTL_SECS` | `60` | drop registered consumer metadata that is not seen again; `0` keeps it until `Unregister` |
 | `LOG_MAX_BYTES` | `104857600` | rotate after this many bytes (100 MiB) |
@@ -327,6 +328,8 @@ erDiagram
         TEXT delivery "single 或 broadcast"
         TEXT persistence "persistent 或 ephemeral"
         INTEGER dropped "无在线流时丢弃"
+        TEXT last_seen_at "最近收消息时间"
+        INTEGER configured "1=ConfigureTopics 显式配置"
     }
 
     messages {

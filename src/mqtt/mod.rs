@@ -29,19 +29,66 @@ pub struct MqttCtx {
     pub registry: ClientRegistry,
 }
 
+#[derive(Clone, Debug)]
+pub struct MqttClientInfo {
+    pub client_id: String,
+    pub peer: String,
+    pub transport: &'static str,
+    pub connected_at: String,
+}
+
+struct RegistryEntry {
+    token: CancellationToken,
+    info: MqttClientInfo,
+}
+
 #[derive(Clone, Default)]
-pub struct ClientRegistry(Arc<Mutex<HashMap<String, CancellationToken>>>);
+pub struct ClientRegistry(Arc<Mutex<HashMap<String, RegistryEntry>>>);
 
 impl ClientRegistry {
-    pub fn insert(&self, client_id: String, token: CancellationToken) -> Option<CancellationToken> {
-        self.0.lock().expect("mqtt registry").insert(client_id, token)
+    pub fn connect(
+        &self,
+        client_id: String,
+        token: CancellationToken,
+        peer: String,
+        transport: &'static str,
+    ) -> Option<CancellationToken> {
+        let previous = self.0.lock().expect("mqtt registry").insert(
+            client_id.clone(),
+            RegistryEntry {
+                token,
+                info: MqttClientInfo {
+                    client_id,
+                    peer,
+                    transport,
+                    connected_at: chrono::Utc::now().to_rfc3339(),
+                },
+            },
+        );
+        previous.map(|entry| entry.token)
     }
 
     pub fn remove_if(&self, client_id: &str, token: &CancellationToken) {
         let mut registry = self.0.lock().expect("mqtt registry");
-        if registry.get(client_id).is_some_and(|stored| stored == token) {
+        if registry.get(client_id).is_some_and(|stored| stored.token == *token) {
             registry.remove(client_id);
         }
+    }
+
+    pub fn clients(&self) -> Vec<MqttClientInfo> {
+        let mut clients: Vec<MqttClientInfo> = self
+            .0
+            .lock()
+            .expect("mqtt registry")
+            .values()
+            .map(|entry| entry.info.clone())
+            .collect();
+        clients.sort_by(|left, right| {
+            left.peer
+                .cmp(&right.peer)
+                .then(left.client_id.cmp(&right.client_id))
+        });
+        clients
     }
 }
 
@@ -68,6 +115,7 @@ pub async fn serve_tcp(listener: TcpListener, ctx: MqttCtx) -> anyhow::Result<()
 pub fn ws_router(ctx: MqttCtx) -> Router {
     Router::new()
         .route("/mqtt", get(ws_handler))
+        .route("/mqtt/", get(ws_handler))
         .route("/", get(ws_handler))
         .with_state(ctx)
 }
@@ -425,6 +473,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_without_subscribe_is_listed() {
+        let (ctx, dir) = temp_ctx().await;
+        let addr = start_broker(ctx.clone()).await;
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        connect_ok(&mut stream, "listed", None).await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let clients = ctx.registry.clients();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].client_id, "listed");
+        assert_eq!(clients[0].transport, "mqtt");
+        assert!(!clients[0].peer.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn ping_gets_pong() {
         let (ctx, dir) = temp_ctx().await;
         let addr = start_broker(ctx).await;
@@ -432,6 +495,125 @@ mod tests {
         connect_ok(&mut stream, "pinger", None).await;
         write_packet(&mut stream, &Packet::PingReq).await;
         assert!(matches!(read_packet(&mut stream).await, Packet::PingResp));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn unconfigured_topic_broadcasts_to_all_subscribers() {
+        let (ctx, dir) = temp_ctx().await;
+        let addr = start_broker(ctx).await;
+
+        let mut first = TcpStream::connect(addr).await.unwrap();
+        connect_ok(&mut first, "b0", None).await;
+        write_packet(
+            &mut first,
+            &Packet::Subscribe(Subscribe {
+                packet_id: 1,
+                filters: vec![SubscribeFilter {
+                    topic: "fanout".into(),
+                    qos: 1,
+                }],
+            }),
+        )
+        .await;
+        assert!(matches!(read_packet(&mut first).await, Packet::SubAck(_)));
+
+        let mut second = TcpStream::connect(addr).await.unwrap();
+        connect_ok(&mut second, "b1", None).await;
+        write_packet(
+            &mut second,
+            &Packet::Subscribe(Subscribe {
+                packet_id: 1,
+                filters: vec![SubscribeFilter {
+                    topic: "fanout".into(),
+                    qos: 1,
+                }],
+            }),
+        )
+        .await;
+        assert!(matches!(read_packet(&mut second).await, Packet::SubAck(_)));
+
+        let mut publisher = TcpStream::connect(addr).await.unwrap();
+        connect_ok(&mut publisher, "bp", None).await;
+        write_packet(
+            &mut publisher,
+            &Packet::Publish(Publish {
+                dup: false,
+                qos: 1,
+                retain: false,
+                topic: "fanout".into(),
+                packet_id: Some(3),
+                payload: b"all-of-you".to_vec(),
+            }),
+        )
+        .await;
+        assert!(matches!(
+            read_packet(&mut publisher).await,
+            Packet::PubAck { packet_id: 3 }
+        ));
+
+        for sub in [&mut first, &mut second] {
+            match read_packet(sub).await {
+                Packet::Publish(publish) => {
+                    assert_eq!(publish.payload, b"all-of-you");
+                    write_packet(
+                        sub,
+                        &Packet::PubAck {
+                            packet_id: publish.packet_id.expect("qos1"),
+                        },
+                    )
+                    .await;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn unconfigured_topic_drops_when_nobody_is_listening() {
+        let (ctx, dir) = temp_ctx().await;
+        let addr = start_broker(ctx.clone()).await;
+        let mut publisher = TcpStream::connect(addr).await.unwrap();
+        connect_ok(&mut publisher, "ghost-pub", None).await;
+        write_packet(
+            &mut publisher,
+            &Packet::Publish(Publish {
+                dup: false,
+                qos: 1,
+                retain: false,
+                topic: "ghost".into(),
+                packet_id: Some(4),
+                payload: b"gone".to_vec(),
+            }),
+        )
+        .await;
+        assert!(matches!(
+            read_packet(&mut publisher).await,
+            Packet::PubAck { packet_id: 4 }
+        ));
+
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let config = ctx.db.topic_config("ghost").await.unwrap();
+        assert_eq!(config.delivery, crate::model::DeliveryMode::Broadcast);
+        assert_eq!(config.persistence, crate::model::PersistenceMode::Ephemeral);
+
+        let mut late = TcpStream::connect(addr).await.unwrap();
+        connect_ok(&mut late, "ghost-sub", None).await;
+        write_packet(
+            &mut late,
+            &Packet::Subscribe(Subscribe {
+                packet_id: 1,
+                filters: vec![SubscribeFilter {
+                    topic: "ghost".into(),
+                    qos: 1,
+                }],
+            }),
+        )
+        .await;
+        assert!(matches!(read_packet(&mut late).await, Packet::SubAck(_)));
+        let late_msg = tokio::time::timeout(Duration::from_millis(150), read_packet(&mut late)).await;
+        assert!(late_msg.is_err(), "ephemeral publish must not wait for a later subscriber");
         let _ = std::fs::remove_dir_all(dir);
     }
 

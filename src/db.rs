@@ -101,9 +101,11 @@ impl Database {
                 duplicates INTEGER NOT NULL DEFAULT 0,
                 delivered INTEGER NOT NULL DEFAULT 0,
                 failed INTEGER NOT NULL DEFAULT 0,
-                delivery TEXT NOT NULL DEFAULT 'single',
-                persistence TEXT NOT NULL DEFAULT 'persistent',
-                dropped INTEGER NOT NULL DEFAULT 0
+                delivery TEXT NOT NULL DEFAULT 'broadcast',
+                persistence TEXT NOT NULL DEFAULT 'ephemeral',
+                dropped INTEGER NOT NULL DEFAULT 0,
+                last_seen_at TEXT,
+                configured INTEGER NOT NULL DEFAULT 0
             )",
         )
             .execute(&pool)
@@ -124,19 +126,35 @@ impl Database {
         )
         .execute(&pool)
         .await;
+        let _ = sqlx::query("ALTER TABLE topic_stats ADD COLUMN last_seen_at TEXT")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query(
+            "ALTER TABLE topic_stats ADD COLUMN configured INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&pool)
+        .await;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("UPDATE topic_stats SET last_seen_at = ? WHERE last_seen_at IS NULL")
+            .bind(&now)
+            .execute(&pool)
+            .await?;
         sqlx::query(
-            "INSERT OR IGNORE INTO topic_stats (topic, accepted, delivered, failed)
+            "INSERT OR IGNORE INTO topic_stats (topic, accepted, delivered, failed, delivery, persistence)
              SELECT topic,
                     COUNT(*),
                     SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
+                    'broadcast',
+                    'ephemeral'
              FROM messages
              GROUP BY topic",
         )
             .execute(&pool)
             .await?;
         sqlx::query(
-            "INSERT OR IGNORE INTO topic_stats (topic) SELECT DISTINCT topic FROM consumers",
+            "INSERT OR IGNORE INTO topic_stats (topic, delivery, persistence)
+             SELECT DISTINCT topic, 'broadcast', 'ephemeral' FROM consumers",
         )
             .execute(&pool)
             .await?;
@@ -155,16 +173,10 @@ impl Database {
         Ok(row
             .map(|row| TopicConfig {
                 topic: topic.to_string(),
-                delivery: DeliveryMode::parse(&row.get::<String, _>("delivery"))
-                    .unwrap_or(DeliveryMode::Single),
-                persistence: PersistenceMode::parse(&row.get::<String, _>("persistence"))
-                    .unwrap_or(PersistenceMode::Persistent),
+                delivery: DeliveryMode::from_stored(&row.get::<String, _>("delivery")),
+                persistence: PersistenceMode::from_stored(&row.get::<String, _>("persistence")),
             })
-            .unwrap_or_else(|| TopicConfig {
-                topic: topic.to_string(),
-                delivery: DeliveryMode::Single,
-                persistence: PersistenceMode::Persistent,
-            }))
+            .unwrap_or_else(|| TopicConfig::implicit(topic)))
     }
 
     pub async fn ephemeral_topics(&self) -> anyhow::Result<Vec<String>> {
@@ -177,15 +189,17 @@ impl Database {
     pub async fn configure_topics(&self, configs: &[TopicConfig]) -> anyhow::Result<Vec<TopicConfig>> {
         for config in configs {
             sqlx::query(
-                "INSERT INTO topic_stats (topic, delivery, persistence)
-                 VALUES (?, ?, ?)
+                "INSERT INTO topic_stats (topic, delivery, persistence, configured, last_seen_at)
+                 VALUES (?, ?, ?, 1, ?)
                  ON CONFLICT(topic) DO UPDATE SET
                     delivery = excluded.delivery,
-                    persistence = excluded.persistence",
+                    persistence = excluded.persistence,
+                    configured = 1",
             )
             .bind(&config.topic)
             .bind(config.delivery.as_str())
             .bind(config.persistence.as_str())
+            .bind(Utc::now().to_rfc3339())
             .execute(&self.0)
             .await?;
         }
@@ -200,10 +214,8 @@ impl Database {
             .into_iter()
             .map(|row| TopicConfig {
                 topic: row.get("topic"),
-                delivery: DeliveryMode::parse(&row.get::<String, _>("delivery"))
-                    .unwrap_or(DeliveryMode::Single),
-                persistence: PersistenceMode::parse(&row.get::<String, _>("persistence"))
-                    .unwrap_or(PersistenceMode::Persistent),
+                delivery: DeliveryMode::from_stored(&row.get::<String, _>("delivery")),
+                persistence: PersistenceMode::from_stored(&row.get::<String, _>("persistence")),
             })
             .collect())
     }
@@ -224,19 +236,21 @@ impl Database {
         failed: i64,
     ) -> anyhow::Result<()> {
         sqlx::query(
-            "INSERT INTO topic_stats (topic, accepted, duplicates, delivered, failed)
-             VALUES (?, ?, ?, ?, ?)
+            "INSERT INTO topic_stats (topic, accepted, duplicates, delivered, failed, delivery, persistence, last_seen_at)
+             VALUES (?, ?, ?, ?, ?, 'broadcast', 'ephemeral', ?)
              ON CONFLICT(topic) DO UPDATE SET
                 accepted = topic_stats.accepted + excluded.accepted,
                 duplicates = topic_stats.duplicates + excluded.duplicates,
                 delivered = topic_stats.delivered + excluded.delivered,
-                failed = topic_stats.failed + excluded.failed",
+                failed = topic_stats.failed + excluded.failed,
+                last_seen_at = excluded.last_seen_at",
         )
             .bind(topic)
             .bind(accepted)
             .bind(duplicates)
             .bind(delivered)
             .bind(failed)
+            .bind(Utc::now().to_rfc3339())
             .execute(&self.0)
             .await?;
         Ok(())
@@ -263,13 +277,9 @@ impl Database {
             topic.failed = row.get("failed");
             topic.dropped = row.get("dropped");
             let delivery: String = row.get("delivery");
-            topic.delivery = DeliveryMode::parse(&delivery)
-                .unwrap_or(DeliveryMode::Single)
-                .as_str()
-                .to_string();
+            topic.delivery = DeliveryMode::from_stored(&delivery).as_str().to_string();
             let persistence: String = row.get("persistence");
-            topic.persistence = PersistenceMode::parse(&persistence)
-                .unwrap_or(PersistenceMode::Persistent)
+            topic.persistence = PersistenceMode::from_stored(&persistence)
                 .as_str()
                 .to_string();
         }
@@ -502,12 +512,15 @@ impl Database {
 
     async fn bump_dropped(&self, topic: &str, dropped: i64) -> anyhow::Result<()> {
         sqlx::query(
-            "INSERT INTO topic_stats (topic, dropped)
-             VALUES (?, ?)
-             ON CONFLICT(topic) DO UPDATE SET dropped = topic_stats.dropped + excluded.dropped",
+            "INSERT INTO topic_stats (topic, dropped, delivery, persistence, last_seen_at)
+             VALUES (?, ?, 'broadcast', 'ephemeral', ?)
+             ON CONFLICT(topic) DO UPDATE SET
+                dropped = topic_stats.dropped + excluded.dropped,
+                last_seen_at = excluded.last_seen_at",
         )
         .bind(topic)
         .bind(dropped)
+        .bind(Utc::now().to_rfc3339())
         .execute(&self.0)
         .await?;
         Ok(())
@@ -798,6 +811,52 @@ impl Database {
             .await?;
         Ok(result.rows_affected())
     }
+
+    /// Remove implicit ephemeral topics that have been idle since `cutoff`.
+    /// Live subscriber topics in `keep` and ConfigureTopics rows are kept.
+    pub async fn purge_idle_ephemeral(
+        &self,
+        cutoff: &str,
+        keep: &[String],
+    ) -> anyhow::Result<u64> {
+        let rows = sqlx::query(
+            "SELECT topic FROM topic_stats
+             WHERE persistence = 'ephemeral'
+               AND IFNULL(configured, 0) = 0
+               AND last_seen_at IS NOT NULL
+               AND last_seen_at < ?
+               AND topic NOT IN (SELECT DISTINCT topic FROM consumers)",
+        )
+        .bind(cutoff)
+        .fetch_all(&self.0)
+        .await?;
+        let stale: Vec<String> = rows
+            .into_iter()
+            .map(|row| row.get::<String, _>("topic"))
+            .filter(|topic| !keep.iter().any(|live| live == topic))
+            .collect();
+        if stale.is_empty() {
+            return Ok(0);
+        }
+        let mut tx = self.0.begin().await?;
+        let mut deleted = 0u64;
+        for topic in &stale {
+            sqlx::query("DELETE FROM messages WHERE topic = ?")
+                .bind(topic)
+                .execute(&mut *tx)
+                .await?;
+            let result = sqlx::query(
+                "DELETE FROM topic_stats
+                 WHERE topic = ? AND persistence = 'ephemeral' AND IFNULL(configured, 0) = 0",
+            )
+            .bind(topic)
+            .execute(&mut *tx)
+            .await?;
+            deleted += result.rows_affected();
+        }
+        tx.commit().await?;
+        Ok(deleted)
+    }
 }
 
 async fn migrate_consumers(pool: &SqlitePool) -> anyhow::Result<()> {
@@ -984,6 +1043,74 @@ mod tests {
             .await
             .unwrap();
         assert!(skipped.is_none());
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn unconfigured_topic_defaults_to_broadcast_ephemeral() {
+        let (db, dir) = temp_db().await;
+        let missing = db.topic_config("fresh").await.unwrap();
+        assert_eq!(missing.delivery, DeliveryMode::Broadcast);
+        assert_eq!(missing.persistence, PersistenceMode::Ephemeral);
+
+        db.enqueue(None, "fresh", b"x", HashMap::new())
+            .await
+            .unwrap();
+        let stored = db.topic_config("fresh").await.unwrap();
+        assert_eq!(stored.delivery, DeliveryMode::Broadcast);
+        assert_eq!(stored.persistence, PersistenceMode::Ephemeral);
+
+        db.configure_topics(&[TopicConfig {
+            topic: "fresh".into(),
+            delivery: DeliveryMode::Single,
+            persistence: PersistenceMode::Persistent,
+        }])
+        .await
+        .unwrap();
+        db.enqueue(None, "fresh", b"y", HashMap::new())
+            .await
+            .unwrap();
+        let configured = db.topic_config("fresh").await.unwrap();
+        assert_eq!(configured.delivery, DeliveryMode::Single);
+        assert_eq!(configured.persistence, PersistenceMode::Persistent);
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn purge_idle_ephemeral_keeps_configured_and_live() {
+        let (db, dir) = temp_db().await;
+        db.enqueue(None, "stale", b"old", HashMap::new())
+            .await
+            .unwrap();
+        db.enqueue(None, "live", b"now", HashMap::new())
+            .await
+            .unwrap();
+        db.configure_topics(&[TopicConfig {
+            topic: "kept".into(),
+            delivery: DeliveryMode::Broadcast,
+            persistence: PersistenceMode::Ephemeral,
+        }])
+        .await
+        .unwrap();
+        db.enqueue(None, "kept", b"cfg", HashMap::new())
+            .await
+            .unwrap();
+
+        let future = (Utc::now() + chrono::Duration::hours(8)).to_rfc3339();
+        let deleted = db
+            .purge_idle_ephemeral(&future, &["live".into()])
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1);
+        let listed = db.list_topic_configs().await.unwrap();
+        let names: Vec<_> = listed.iter().map(|item| item.topic.as_str()).collect();
+        assert!(!names.contains(&"stale"));
+        assert!(names.contains(&"live"));
+        assert!(names.contains(&"kept"));
 
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);

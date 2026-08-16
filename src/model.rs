@@ -43,11 +43,15 @@ impl DeliveryMode {
             _ => None,
         }
     }
+
+    pub fn from_stored(value: &str) -> Self {
+        Self::parse(value).unwrap_or(Self::Broadcast)
+    }
 }
 
 impl Default for DeliveryMode {
     fn default() -> Self {
-        Self::Single
+        Self::Broadcast
     }
 }
 
@@ -72,11 +76,19 @@ impl PersistenceMode {
             _ => None,
         }
     }
+
+    pub fn from_stored(value: &str) -> Self {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Self::Ephemeral;
+        }
+        Self::parse(trimmed).unwrap_or(Self::Ephemeral)
+    }
 }
 
 impl Default for PersistenceMode {
     fn default() -> Self {
-        Self::Persistent
+        Self::Ephemeral
     }
 }
 
@@ -85,6 +97,16 @@ pub struct TopicConfig {
     pub topic: String,
     pub delivery: DeliveryMode,
     pub persistence: PersistenceMode,
+}
+
+impl TopicConfig {
+    pub fn implicit(topic: impl Into<String>) -> Self {
+        Self {
+            topic: topic.into(),
+            delivery: DeliveryMode::Broadcast,
+            persistence: PersistenceMode::Ephemeral,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Clone, Default)]
@@ -123,6 +145,15 @@ mod tests {
             Some(PersistenceMode::Ephemeral)
         );
         assert_eq!(PersistenceMode::parse("maybe"), None);
+    }
+
+    #[test]
+    fn implicit_topic_is_broadcast_ephemeral() {
+        let config = TopicConfig::implicit("demo");
+        assert_eq!(config.delivery, DeliveryMode::Broadcast);
+        assert_eq!(config.persistence, PersistenceMode::Ephemeral);
+        assert_eq!(DeliveryMode::from_stored(""), DeliveryMode::Broadcast);
+        assert_eq!(PersistenceMode::from_stored(""), PersistenceMode::Ephemeral);
     }
 }
 

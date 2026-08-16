@@ -349,7 +349,8 @@ async fn main() -> anyhow::Result<()> {
         config.clone(),
         subscribers.clone(),
         shutdown.clone(),
-        mqtt_on_status.then_some(mqtt_ctx),
+        mqtt_on_status.then(|| mqtt_ctx.clone()),
+        mqtt_ctx.registry.clone(),
     ));
     let worker = tokio::spawn(dispatch_loop(
         db.clone(),
@@ -533,6 +534,20 @@ async fn retention_loop(
                     "purged messages older than retention"
                 ),
                 Err(error) => error!(%error, "unable to purge expired messages"),
+            }
+        }
+        if config.ephemeral_idle_hours > 0 {
+            let cutoff = chrono::Utc::now()
+                - chrono::Duration::hours(config.ephemeral_idle_hours as i64);
+            let keep = subscribers.topics();
+            match db.purge_idle_ephemeral(&cutoff.to_rfc3339(), &keep).await {
+                Ok(0) => {}
+                Ok(deleted) => info!(
+                    deleted,
+                    hours = config.ephemeral_idle_hours,
+                    "removed idle ephemeral topics"
+                ),
+                Err(error) => error!(%error, "unable to purge idle ephemeral topics"),
             }
         }
         if config.consumer_ttl_secs > 0 {
