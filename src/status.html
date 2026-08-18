@@ -282,6 +282,35 @@
     }
     .pager button:hover { background: var(--btn-hover); }
     .pager button:disabled { opacity: 0.4; cursor: default; }
+    .table-tools {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 16px;
+      margin-bottom: 10px;
+    }
+    .table-tools label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .table-tools select,
+    .table-tools input {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 5px 8px;
+      font: 13px/1.3 system-ui, sans-serif;
+    }
+    .table-tools input { min-width: min(280px, 100%); }
+    .table-tools select:focus,
+    .table-tools input:focus {
+      outline: 1px solid var(--pending);
+      border-color: var(--pending);
+    }
   </style>
 </head>
 <body>
@@ -316,9 +345,24 @@
       <button type="button" role="tab" id="tab-topics" data-tab="topics" aria-controls="panel-topics" aria-selected="false">主题</button>
     </div>
     <section id="panel-clients" role="tabpanel" aria-labelledby="tab-clients">
+      <div class="table-tools">
+        <label>连接类型
+          <select id="client-type-filter" aria-label="按连接类型筛选">
+            <option value="">全部</option>
+            <option value="grpc">gRPC</option>
+            <option value="mqtt">MQTT</option>
+            <option value="mqtt-ws">MQTT-WS</option>
+          </select>
+        </label>
+      </div>
       <div id="clients"></div>
     </section>
     <section id="panel-topics" role="tabpanel" aria-labelledby="tab-topics" hidden>
+      <div class="table-tools">
+        <label>主题名
+          <input id="topic-name-filter" type="search" placeholder="模糊搜索，空格分隔多个词" aria-label="模糊搜索主题名">
+        </label>
+      </div>
       <div id="topics"></div>
     </section>
   </div>
@@ -409,6 +453,8 @@
     let lastClients = [];
     let selectedClientKey = "";
     let selectedTopicName = "";
+    let clientTypeFilter = "";
+    let topicNameQuery = "";
 
     function fmtBytes(n) {
       const bytes = Number(n) || 0;
@@ -537,24 +583,47 @@
       return "gRPC";
     }
 
+    function fuzzyMatch(text, query) {
+      const raw = String(query || "").trim().toLowerCase();
+      if (!raw) return true;
+      const hay = String(text || "").toLowerCase();
+      if (hay.includes(raw)) return true;
+      return raw.split(/\s+/).every((token) => token && hay.includes(token));
+    }
+
+    function filteredClients(clients) {
+      if (!clientTypeFilter) return clients;
+      return clients.filter((item) => (item.protocol || "grpc") === clientTypeFilter);
+    }
+
+    function filteredTopics(topics) {
+      if (!topicNameQuery.trim()) return topics;
+      return topics.filter((item) => fuzzyMatch(item.name, topicNameQuery));
+    }
+
     function renderClients(clients) {
       lastClients = clients;
       $("tab-clients").textContent = "已连接客户端" + (clients.length ? " · " + clients.length : "");
+      const shown = filteredClients(clients);
       if (!clients.length) {
         selectedClientKey = "";
         $("clients").innerHTML = '<div class="empty">暂无已连接客户端</div>';
         return;
       }
-      if (selectedClientKey && !clients.some((item) => clientKey(item) === selectedClientKey)) {
+      if (!shown.length) {
+        $("clients").innerHTML = '<div class="empty">无匹配该连接类型的客户端</div>';
+        return;
+      }
+      if (selectedClientKey && !shown.some((item) => clientKey(item) === selectedClientKey)) {
         selectedClientKey = "";
       }
-      const pages = Math.max(1, Math.ceil(clients.length / CLIENT_PAGE_SIZE));
+      const pages = Math.max(1, Math.ceil(shown.length / CLIENT_PAGE_SIZE));
       if (clientPage >= pages) clientPage = pages - 1;
       if (clientPage < 0) clientPage = 0;
       const start = clientPage * CLIENT_PAGE_SIZE;
-      const pageItems = clients.slice(start, start + CLIENT_PAGE_SIZE);
+      const pageItems = shown.slice(start, start + CLIENT_PAGE_SIZE);
       const from = start + 1;
-      const to = Math.min(clients.length, start + CLIENT_PAGE_SIZE);
+      const to = Math.min(shown.length, start + CLIENT_PAGE_SIZE);
       const rows = pageItems.map((client, i) => {
         const key = clientKey(client);
         const selected = key === selectedClientKey ? " selected" : "";
@@ -573,7 +642,7 @@
         "<th class=\"seq\">序号</th><th>主机</th><th>地址</th><th>类型</th><th>客户端</th><th>版本</th><th>订阅数</th><th>连接时间</th>" +
         "</tr></thead><tbody>" + rows + "</tbody></table></div>";
       $("clients").innerHTML =
-        withPagers(table, from, to, clients.length, clientPage + 1, pages, "client-page") +
+        withPagers(table, from, to, shown.length, clientPage + 1, pages, "client-page") +
         clientDetailHtml();
     }
 
@@ -684,20 +753,26 @@
     function renderTopics(topics) {
       lastTopics = topics;
       $("tab-topics").textContent = "主题" + (topics.length ? " · " + topics.length : "");
+      const shown = filteredTopics(topics);
       if (!topics.length) {
         $("topics").innerHTML = '<div class="empty">暂无主题</div>';
         fillTopicModal();
         return;
       }
-      const pages = Math.max(1, Math.ceil(topics.length / TOPIC_PAGE_SIZE));
+      if (!shown.length) {
+        $("topics").innerHTML = '<div class="empty">无匹配主题</div>';
+        fillTopicModal();
+        return;
+      }
+      const pages = Math.max(1, Math.ceil(shown.length / TOPIC_PAGE_SIZE));
       if (topicPage >= pages) topicPage = pages - 1;
       if (topicPage < 0) topicPage = 0;
       const start = topicPage * TOPIC_PAGE_SIZE;
       const from = start + 1;
-      const to = Math.min(topics.length, start + TOPIC_PAGE_SIZE);
+      const to = Math.min(shown.length, start + TOPIC_PAGE_SIZE);
       $("topics").innerHTML = withPagers(
-        topicsTable(topics.slice(start, start + TOPIC_PAGE_SIZE), start),
-        from, to, topics.length, topicPage + 1, pages, "topic-page"
+        topicsTable(shown.slice(start, start + TOPIC_PAGE_SIZE), start),
+        from, to, shown.length, topicPage + 1, pages, "topic-page"
       );
       fillTopicModal();
     }
@@ -748,6 +823,17 @@
         closeTopicModal();
         renderTopics(lastTopics);
       }
+    });
+
+    $("client-type-filter").addEventListener("change", (event) => {
+      clientTypeFilter = event.target.value || "";
+      clientPage = 0;
+      renderClients(lastClients);
+    });
+    $("topic-name-filter").addEventListener("input", (event) => {
+      topicNameQuery = event.target.value || "";
+      topicPage = 0;
+      renderTopics(lastTopics);
     });
 
     function apiUrl(name) {
