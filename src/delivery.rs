@@ -104,6 +104,7 @@ pub struct SubscribeLoop {
     pub peer: String,
     pub protocol: &'static str,
     pub version: String,
+    pub host: String,
 }
 
 pub fn spawn_subscribe_loop(loop_args: SubscribeLoop) {
@@ -124,6 +125,7 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
         peer,
         protocol,
         version,
+        host,
     } = args;
     let guard = SubscriptionGuard::new(
         subscribers.clone(),
@@ -133,6 +135,7 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
         peer,
         protocol,
         version,
+        host,
     );
     info!(
         topic = %topic,
@@ -356,6 +359,7 @@ mod tests {
             "127.0.0.1:1",
             "mqtt-ws",
             "3.1.1",
+            "",
         );
 
         let ingested = ingest(

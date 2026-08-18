@@ -142,17 +142,12 @@ impl MessageQueue for QueueService {
         &self,
         request: Request<RegisterRequest>,
     ) -> Result<Response<RegisterResponse>, Status> {
-        let version = auth::metadata_client_version(request.metadata());
+        let metadata = request.metadata().clone();
         let mut request = request.into_inner();
         if request.topic.trim().is_empty() {
             return Err(Status::invalid_argument("topic is required"));
         }
-        if !version.is_empty() {
-            request
-                .attributes
-                .entry("version".into())
-                .or_insert(version);
-        }
+        auth::apply_client_metadata(&metadata, &mut request.attributes);
         let consumer_id = self
             .db
             .register_consumer(
@@ -201,6 +196,7 @@ impl MessageQueue for QueueService {
             .map(|addr| addr.to_string())
             .unwrap_or_default();
         let mut version = auth::metadata_client_version(request.metadata());
+        let mut host = auth::metadata_client_host(request.metadata());
         let request = request.into_inner();
         if request.topic.trim().is_empty() {
             return Err(Status::invalid_argument("topic is required"));
@@ -210,8 +206,13 @@ impl MessageQueue for QueueService {
         if !consumer_id.is_empty() {
             let _ = self.db.touch_consumer(&consumer_id).await;
             if version.is_empty() {
-                if let Ok(Some(stored)) = self.db.consumer_version(&consumer_id).await {
+                if let Ok(Some(stored)) = self.db.consumer_attribute(&consumer_id, "version").await {
                     version = stored;
+                }
+            }
+            if host.is_empty() {
+                if let Ok(Some(stored)) = self.db.consumer_attribute(&consumer_id, "host").await {
+                    host = stored;
                 }
             }
         }
@@ -234,6 +235,7 @@ impl MessageQueue for QueueService {
             peer,
             protocol: PROTOCOL_GRPC,
             version,
+            host,
         });
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }

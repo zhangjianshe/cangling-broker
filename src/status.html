@@ -395,7 +395,8 @@
     }
 
     function clientKey(client) {
-      return (client.protocol || "grpc") + "|" + (client.client_id || "") + "|" + (client.peer || "");
+      return (client.protocol || "grpc") + "|" + (client.host || "") + "|" +
+        (client.client_id || "") + "|" + (client.peer || "");
     }
 
     function clientType(protocol) {
@@ -426,6 +427,7 @@
         const key = clientKey(client);
         const selected = key === selectedClientKey ? " selected" : "";
         return '<tr class="' + selected.trim() + '" data-client-key="' + escapeHtml(key) + '">' +
+          '<td class="mono">' + escapeHtml(client.host || "—") + "</td>" +
           '<td class="mono">' + escapeHtml(client.peer || "未知来源") + "</td>" +
           "<td><span class=\"pill\">" + escapeHtml(clientType(client.protocol)) + "</span></td>" +
           '<td class="mono">' + escapeHtml(client.client_id || "—") + "</td>" +
@@ -435,7 +437,7 @@
       }).join("");
       const table =
         '<div class="client-list"><table><thead><tr>' +
-        "<th>地址</th><th>类型</th><th>客户端</th><th>版本</th><th>订阅数</th><th>连接时间</th>" +
+        "<th>主机</th><th>地址</th><th>类型</th><th>客户端</th><th>版本</th><th>订阅数</th><th>连接时间</th>" +
         "</tr></thead><tbody>" + rows + "</tbody></table></div>";
       $("clients").innerHTML =
         withPagers(table, from, to, clients.length, clientPage + 1, pages, "client-page") +
@@ -462,6 +464,7 @@
       return '<div class="client-detail"><div class="head">' +
         '<span class="pill live">在线</span>' +
         '<span class="pill">' + escapeHtml(clientType(client.protocol)) + "</span>" +
+        (client.host ? '<span class="mono url">' + escapeHtml(client.host) + "</span>" : "") +
         '<span class="mono url">' + escapeHtml(client.peer || "未知来源") + "</span>" +
         (client.client_id ? '<span class="mono url">' + escapeHtml(client.client_id) + "</span>" : "") +
         (client.version ? '<span class="pill">' + escapeHtml(client.version) + "</span>" : "") +

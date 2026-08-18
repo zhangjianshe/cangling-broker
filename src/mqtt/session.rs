@@ -502,6 +502,7 @@ async fn subscribe_topic(
         peer: state.peer.clone(),
         protocol: state.transport,
         version: state.version.clone(),
+        host: String::new(),
     });
     info!(client_id = %state.client_id, topic, qos = granted, "mqtt subscribed");
     granted

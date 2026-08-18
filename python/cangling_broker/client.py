@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import logging
+import os
+import socket
 import threading
 import time
 import uuid
@@ -44,8 +46,22 @@ def _broker_target(broker: str) -> str:
     return broker
 
 
+def _ascii_header(value: str) -> str:
+    return "".join(ch for ch in value if 32 <= ord(ch) < 127).strip()
+
+
+def _sdk_host() -> str:
+    override = _ascii_header(os.environ.get("CL_BROKER_CLIENT_HOST") or "")
+    if override:
+        return override
+    return _ascii_header(socket.gethostname())
+
+
 def _auth_metadata(token: str | None) -> list[tuple[str, str]]:
     metadata = [("x-client-version", _sdk_version())]
+    host = _sdk_host()
+    if host:
+        metadata.append(("x-client-host", host))
     token = (token or "").strip()
     if not token:
         return metadata
@@ -55,9 +71,12 @@ def _auth_metadata(token: str | None) -> list[tuple[str, str]]:
     return metadata
 
 
-def _with_client_version(attributes: dict[str, str] | None) -> dict[str, str]:
+def _with_client_identity(attributes: dict[str, str] | None) -> dict[str, str]:
     attrs = dict(attributes or {})
     attrs.setdefault("version", _sdk_version())
+    host = _sdk_host()
+    if host:
+        attrs.setdefault("host", host)
     return attrs
 
 
@@ -129,7 +148,7 @@ class SatwayClient:
                     topic=topic,
                     consumer_id=consumer_id or "",
                     name=name or "",
-                    attributes=_with_client_version(attributes),
+                    attributes=_with_client_identity(attributes),
                 ),
                 timeout=RPC_DEADLINE_SECS,
                 metadata=self._metadata,
@@ -223,7 +242,7 @@ class SatwayClient:
             cid = self.register(
                 options.topic,
                 name=options.name,
-                attributes=_with_client_version(dict(options.attributes)),
+                attributes=_with_client_identity(dict(options.attributes)),
                 consumer_id=options.consumer_id,
             )
         consumer = Consumer(self, options, cid, handler)
@@ -271,7 +290,7 @@ class SatwayClient:
         self.register(
             options.topic,
             name=options.name,
-            attributes=_with_client_version(dict(options.attributes)),
+            attributes=_with_client_identity(dict(options.attributes)),
             consumer_id=consumer_id,
         )
 

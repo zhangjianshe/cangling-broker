@@ -64,6 +64,8 @@ struct ClientInfo {
     client_id: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     version: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    host: String,
     streams: usize,
     connected_at: String,
     last_seen_at: String,
@@ -78,6 +80,8 @@ struct ClientSubscription {
     protocol: &'static str,
     #[serde(skip_serializing_if = "String::is_empty")]
     version: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    host: String,
     attributes: HashMap<String, String>,
     connected_at: String,
     last_seen_at: String,
@@ -400,24 +404,28 @@ fn connected_clients(
             peer: mqtt.peer.clone(),
             protocol: mqtt.transport,
             client_id: mqtt.client_id.clone(),
-            version: first_version(&mqtt.version, &subscriptions),
+            version: first_value(&mqtt.version, &subscriptions, |item| item.version.as_str()),
+            host: first_value("", &subscriptions, |item| item.host.as_str()),
             streams: subscriptions.len(),
             connected_at: mqtt.connected_at.clone(),
             last_seen_at,
             subscriptions,
         });
     }
-    let mut by_peer: HashMap<String, Vec<ClientSubscription>> = HashMap::new();
+    let mut by_identity: HashMap<String, (String, Vec<ClientSubscription>)> = HashMap::new();
     for session in sessions {
         if claimed.contains(&(session.id.as_str(), session.topic.as_str())) {
             continue;
         }
-        by_peer
-            .entry(session.peer.clone())
-            .or_default()
-            .push(to_subscription(session, &registered));
+        let subscription = to_subscription(session, &registered);
+        let key = grpc_group_key(session);
+        by_identity
+            .entry(key)
+            .or_insert_with(|| (session.peer.clone(), Vec::new()))
+            .1
+            .push(subscription);
     }
-    clients.extend(by_peer.into_iter().map(|(peer, mut subscriptions)| {
+    clients.extend(by_identity.into_iter().map(|(_, (peer, mut subscriptions))| {
             subscriptions.sort_by(|left, right| {
                 left.topic
                     .cmp(&right.topic)
@@ -444,7 +452,8 @@ fn connected_clients(
                 peer,
                 protocol,
                 client_id: String::new(),
-                version: first_version("", &subscriptions),
+                version: first_value("", &subscriptions, |item| item.version.as_str()),
+                host: first_value("", &subscriptions, |item| item.host.as_str()),
                 streams: subscriptions.len(),
                 connected_at,
                 last_seen_at,
@@ -452,11 +461,20 @@ fn connected_clients(
             }
         }));
     clients.sort_by(|left, right| {
-        left.peer
-            .cmp(&right.peer)
+        left.host
+            .cmp(&right.host)
+            .then(left.peer.cmp(&right.peer))
             .then(left.client_id.cmp(&right.client_id))
     });
     clients
+}
+
+fn grpc_group_key(session: &SessionInfo) -> String {
+    if !session.host.is_empty() {
+        format!("h:{}", session.host)
+    } else {
+        format!("p:{}", session.peer)
+    }
 }
 
 fn to_subscription(
@@ -475,6 +493,11 @@ fn to_subscription(
             .cloned()
             .unwrap_or_default()
     };
+    let host = if !session.host.is_empty() {
+        session.host.clone()
+    } else {
+        attributes.get("host").cloned().unwrap_or_default()
+    };
     ClientSubscription {
         id: session.id.clone(),
         name: meta
@@ -485,6 +508,7 @@ fn to_subscription(
         topic: session.topic.clone(),
         protocol: session.protocol,
         version,
+        host,
         attributes,
         connected_at: session.connected_at.clone(),
         last_seen_at: meta
@@ -493,13 +517,17 @@ fn to_subscription(
     }
 }
 
-fn first_version(primary: &str, subscriptions: &[ClientSubscription]) -> String {
+fn first_value(
+    primary: &str,
+    subscriptions: &[ClientSubscription],
+    pick: impl Fn(&ClientSubscription) -> &str,
+) -> String {
     if !primary.is_empty() {
         return primary.to_string();
     }
     subscriptions
         .iter()
-        .map(|item| item.version.as_str())
+        .map(pick)
         .find(|value| !value.is_empty())
         .unwrap_or("")
         .to_string()
@@ -519,6 +547,7 @@ mod tests {
                 connected_at: "2026-08-16T00:00:02Z".into(),
                 protocol: "grpc",
                 version: "java/0.1.29".into(),
+                host: String::new(),
             },
             SessionInfo {
                 id: "c2".into(),
@@ -527,6 +556,7 @@ mod tests {
                 connected_at: "2026-08-16T00:00:01Z".into(),
                 protocol: "grpc",
                 version: "java/0.1.29".into(),
+                host: String::new(),
             },
             SessionInfo {
                 id: "c3".into(),
@@ -535,6 +565,7 @@ mod tests {
                 connected_at: "2026-08-16T00:00:03Z".into(),
                 protocol: "mqtt",
                 version: "3.1.1".into(),
+                host: String::new(),
             },
         ];
         let topics = vec![TopicSnapshot {
@@ -568,6 +599,46 @@ mod tests {
         assert_eq!(clients[1].subscriptions[1].topic, "logs");
         assert_eq!(clients[0].version, "3.1.1");
         assert_eq!(clients[1].version, "java/0.1.29");
+        assert_eq!(clients[1].host, "worker-1");
+    }
+
+    #[test]
+    fn docker_nat_peers_split_by_host() {
+        let sessions = vec![
+            SessionInfo {
+                id: "c1".into(),
+                topic: "jobs".into(),
+                peer: "172.21.0.1:41001".into(),
+                connected_at: "2026-08-16T00:00:02Z".into(),
+                protocol: "grpc",
+                version: "java/0.1.29".into(),
+                host: "api".into(),
+            },
+            SessionInfo {
+                id: "c2".into(),
+                topic: "jobs".into(),
+                peer: "172.21.0.1:41002".into(),
+                connected_at: "2026-08-16T00:00:01Z".into(),
+                protocol: "grpc",
+                version: "java/0.1.29".into(),
+                host: "worker".into(),
+            },
+            SessionInfo {
+                id: "c3".into(),
+                topic: "logs".into(),
+                peer: "172.21.0.1:41003".into(),
+                connected_at: "2026-08-16T00:00:03Z".into(),
+                protocol: "grpc",
+                version: "java/0.1.29".into(),
+                host: "worker".into(),
+            },
+        ];
+        let clients = connected_clients(&sessions, &[], &[]);
+        assert_eq!(clients.len(), 2);
+        assert_eq!(clients[0].host, "api");
+        assert_eq!(clients[0].streams, 1);
+        assert_eq!(clients[1].host, "worker");
+        assert_eq!(clients[1].streams, 2);
     }
 
     #[test]
@@ -579,6 +650,7 @@ mod tests {
             connected_at: "2026-08-16T00:00:02Z".into(),
             protocol: "grpc",
             version: String::new(),
+            host: String::new(),
         }];
         let topics = vec![TopicSnapshot {
             name: "jobs".into(),
@@ -611,6 +683,7 @@ mod tests {
             connected_at: "2026-08-16T00:00:04Z".into(),
             protocol: "mqtt-ws",
             version: "3.1.1".into(),
+            host: String::new(),
         }];
         merge_live_sessions(&mut topics, &sessions);
         assert_eq!(topics.len(), 2);
@@ -638,6 +711,7 @@ mod tests {
             connected_at: "2026-08-16T00:00:04Z".into(),
             protocol: "mqtt-ws",
             version: "3.1.1".into(),
+            host: String::new(),
         }];
         merge_live_sessions(&mut published, &hash_sessions);
         let row = published
@@ -677,6 +751,7 @@ mod tests {
         assert!(html.contains("data-tab=\"topics\""), "{html}");
         assert!(html.contains("withPagers("), "{html}");
         assert!(html.contains("client.version"), "{html}");
+        assert!(html.contains("client.host"), "{html}");
     }
 
     #[test]

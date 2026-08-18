@@ -33,6 +33,7 @@ struct Args {
 struct ClientInterceptor {
     token: Option<MetadataValue<tonic::metadata::Ascii>>,
     version: MetadataValue<tonic::metadata::Ascii>,
+    host: Option<MetadataValue<tonic::metadata::Ascii>>,
 }
 
 impl Interceptor for ClientInterceptor {
@@ -40,11 +41,35 @@ impl Interceptor for ClientInterceptor {
         request
             .metadata_mut()
             .insert("x-client-version", self.version.clone());
+        if let Some(host) = &self.host {
+            request.metadata_mut().insert("x-client-host", host.clone());
+        }
         if let Some(token) = &self.token {
             request.metadata_mut().insert("authorization", token.clone());
         }
         Ok(request)
     }
+}
+
+fn client_host() -> Option<MetadataValue<tonic::metadata::Ascii>> {
+    for key in ["CL_BROKER_CLIENT_HOST", "HOSTNAME"] {
+        if let Ok(value) = std::env::var(key) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return value.parse().ok();
+            }
+        }
+    }
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .and_then(|value| {
+            let value = value.trim();
+            if value.is_empty() {
+                None
+            } else {
+                value.parse().ok()
+            }
+        })
 }
 
 #[tokio::main]
@@ -76,6 +101,7 @@ async fn main() {
         ClientInterceptor {
             token: header,
             version,
+            host: client_host(),
         },
     );
     let registered = client

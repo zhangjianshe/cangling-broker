@@ -410,7 +410,11 @@ impl Database {
         Ok(id)
     }
 
-    pub async fn consumer_version(&self, consumer_id: &str) -> anyhow::Result<Option<String>> {
+    pub async fn consumer_attribute(
+        &self,
+        consumer_id: &str,
+        key: &str,
+    ) -> anyhow::Result<Option<String>> {
         let Some(row) = sqlx::query("SELECT attributes FROM consumers WHERE id = ?")
             .bind(consumer_id)
             .fetch_optional(&self.0)
@@ -419,7 +423,7 @@ impl Database {
             return Ok(None);
         };
         Ok(parse_consumer_attributes(row.get("attributes"))
-            .get("version")
+            .get(key)
             .cloned()
             .filter(|value| !value.is_empty()))
     }
@@ -1070,7 +1074,10 @@ mod tests {
             Some("worker-1")
         );
         assert_eq!(
-            db.consumer_version(&consumer_id).await.unwrap().as_deref(),
+            db.consumer_attribute(&consumer_id, "version")
+                .await
+                .unwrap()
+                .as_deref(),
             Some("java/0.1.29")
         );
 

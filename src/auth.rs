@@ -3,6 +3,7 @@ use tonic::{metadata::MetadataMap, Request, Status};
 pub const METADATA_AUTHORIZATION: &str = "authorization";
 pub const METADATA_X_AUTH_TOKEN: &str = "x-auth-token";
 pub const METADATA_X_CLIENT_VERSION: &str = "x-client-version";
+pub const METADATA_X_CLIENT_HOST: &str = "x-client-host";
 
 #[derive(Clone)]
 pub struct AuthInterceptor {
@@ -66,14 +67,36 @@ pub fn bearer_or_raw(value: &str) -> &str {
         .trim()
 }
 
-pub fn metadata_client_version(metadata: &MetadataMap) -> String {
+fn metadata_ascii(metadata: &MetadataMap, key: &str) -> String {
     metadata
-        .get(METADATA_X_CLIENT_VERSION)
+        .get(key)
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or_default()
+}
+
+pub fn metadata_client_version(metadata: &MetadataMap) -> String {
+    metadata_ascii(metadata, METADATA_X_CLIENT_VERSION)
+}
+
+pub fn metadata_client_host(metadata: &MetadataMap) -> String {
+    metadata_ascii(metadata, METADATA_X_CLIENT_HOST)
+}
+
+pub fn apply_client_metadata(
+    metadata: &MetadataMap,
+    attributes: &mut std::collections::HashMap<String, String>,
+) {
+    let version = metadata_client_version(metadata);
+    if !version.is_empty() {
+        attributes.entry("version".into()).or_insert(version);
+    }
+    let host = metadata_client_host(metadata);
+    if !host.is_empty() {
+        attributes.entry("host".into()).or_insert(host);
+    }
 }
 
 pub fn metadata_token(metadata: &MetadataMap) -> Option<String> {
@@ -140,6 +163,8 @@ mod tests {
             METADATA_X_CLIENT_VERSION,
             "java/0.1.29".parse().unwrap(),
         );
+        metadata.insert(METADATA_X_CLIENT_HOST, "worker-a".parse().unwrap());
         assert_eq!(metadata_client_version(&metadata), "java/0.1.29");
+        assert_eq!(metadata_client_host(&metadata), "worker-a");
     }
 }

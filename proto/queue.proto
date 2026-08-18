@@ -52,8 +52,9 @@ message RegisterRequest {
   // Optional. Pass the id from a previous Register to refresh the same consumer.
   string consumer_id = 2;
   // Display name and extra attributes. Not used for delivery.
-  // Official SDKs also send `x-client-version` metadata; the broker stores
-  // it as attributes["version"] when the client does not set that key.
+  // Official SDKs also send `x-client-version` and `x-client-host` metadata;
+  // the broker stores them as attributes["version"] / attributes["host"]
+  // when the client does not set those keys.
   string name = 3;
   map<string, string> attributes = 4;
 }

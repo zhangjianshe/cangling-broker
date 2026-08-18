@@ -18,6 +18,7 @@ pub struct SessionInfo {
     pub connected_at: String,
     pub protocol: &'static str,
     pub version: String,
+    pub host: String,
 }
 
 struct LiveEntry {
@@ -37,6 +38,7 @@ impl TopicSubscribers {
         peer: &str,
         protocol: &'static str,
         version: &str,
+        host: &str,
     ) {
         self.0
             .lock()
@@ -53,6 +55,7 @@ impl TopicSubscribers {
                         connected_at: chrono::Utc::now().to_rfc3339(),
                         protocol,
                         version: version.to_string(),
+                        host: host.to_string(),
                     },
                     tx,
                 },
@@ -195,8 +198,9 @@ impl SubscriptionGuard {
         peer: String,
         protocol: &'static str,
         version: String,
+        host: String,
     ) -> Self {
-        subscribers.add(&topic, &session, tx, &peer, protocol, &version);
+        subscribers.add(&topic, &session, tx, &peer, protocol, &version, &host);
         Self {
             subscribers,
             topic,
@@ -219,7 +223,15 @@ mod tests {
     fn tracks_live_session_metadata() {
         let subscribers = TopicSubscribers::default();
         let (tx, _rx) = mpsc::channel(1);
-        subscribers.add("jobs", "c1", tx, "127.0.0.1:4321", "grpc", "java/0.1.29");
+        subscribers.add(
+            "jobs",
+            "c1",
+            tx,
+            "127.0.0.1:4321",
+            "grpc",
+            "java/0.1.29",
+            "worker-a",
+        );
         assert_eq!(subscribers.count("jobs"), 1);
         assert!(subscribers.is_live("jobs", "c1"));
         let sessions = subscribers.sessions();
@@ -229,6 +241,7 @@ mod tests {
         assert_eq!(sessions[0].peer, "127.0.0.1:4321");
         assert_eq!(sessions[0].protocol, "grpc");
         assert_eq!(sessions[0].version, "java/0.1.29");
+        assert_eq!(sessions[0].host, "worker-a");
         assert!(!sessions[0].connected_at.is_empty());
         subscribers.remove("jobs", "c1");
         assert!(subscribers.sessions().is_empty());
@@ -238,7 +251,7 @@ mod tests {
     fn hash_filter_covers_child_topics() {
         let subscribers = TopicSubscribers::default();
         let (tx, _rx) = mpsc::channel(1);
-        subscribers.add("sensor/#", "mqtt:c1", tx, "127.0.0.1:1", "mqtt", "3.1.1");
+        subscribers.add("sensor/#", "mqtt:c1", tx, "127.0.0.1:1", "mqtt", "3.1.1", "");
         assert!(subscribers.covers("sensor"));
         assert!(subscribers.covers("sensor/temp"));
         assert!(subscribers.covers("sensor/a/b"));

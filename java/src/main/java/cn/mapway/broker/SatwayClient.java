@@ -25,6 +25,7 @@ import io.grpc.stub.StreamObserver;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetAddress;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -249,7 +250,7 @@ public final class SatwayClient implements AutoCloseable {
     }
 
     String register(String topic, String consumerId, String name, Map<String, String> attributes) {
-        Map<String, String> attrs = withClientVersion(attributes);
+        Map<String, String> attrs = withClientIdentity(attributes);
         return callWithReconnect("register", () -> blockingStub()
                 .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
                 .register(RegisterRequest.newBuilder()
@@ -425,13 +426,52 @@ public final class SatwayClient implements AutoCloseable {
         return version == null || version.isBlank() ? "java" : "java/" + version;
     }
 
-    private static Map<String, String> withClientVersion(Map<String, String> attributes) {
+    public static String clientHost() {
+        String override = envOrEmpty("CL_BROKER_CLIENT_HOST");
+        if (!override.isEmpty()) {
+            return override;
+        }
+        String hostname = envOrEmpty("HOSTNAME");
+        if (!hostname.isEmpty()) {
+            return hostname;
+        }
+        try {
+            return asciiHeader(InetAddress.getLocalHost().getHostName());
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static Map<String, String> withClientIdentity(Map<String, String> attributes) {
         Map<String, String> attrs = new HashMap<>();
         if (attributes != null) {
             attrs.putAll(attributes);
         }
         attrs.putIfAbsent("version", clientVersion());
+        String host = clientHost();
+        if (!host.isEmpty()) {
+            attrs.putIfAbsent("host", host);
+        }
         return attrs;
+    }
+
+    private static String envOrEmpty(String name) {
+        String value = System.getenv(name);
+        return value == null ? "" : asciiHeader(value);
+    }
+
+    private static String asciiHeader(String value) {
+        if (value == null) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c >= 32 && c < 127) {
+                out.append(c);
+            }
+        }
+        return out.toString().trim();
     }
 
     private static String packagedVersion() {
@@ -460,9 +500,12 @@ public final class SatwayClient implements AutoCloseable {
     private static ClientInterceptor clientHeadersInterceptor(String token) {
         Metadata.Key<String> versionKey =
                 Metadata.Key.of("x-client-version", Metadata.ASCII_STRING_MARSHALLER);
+        Metadata.Key<String> hostKey =
+                Metadata.Key.of("x-client-host", Metadata.ASCII_STRING_MARSHALLER);
         Metadata.Key<String> authKey =
                 Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
         String version = clientVersion();
+        String host = clientHost();
         String header = token == null || token.isBlank()
                 ? null
                 : (token.regionMatches(true, 0, "Bearer ", 0, 7) ? token : "Bearer " + token);
@@ -474,6 +517,9 @@ public final class SatwayClient implements AutoCloseable {
                     @Override
                     public void start(Listener<RespT> responseListener, Metadata headers) {
                         headers.put(versionKey, version);
+                        if (!host.isEmpty()) {
+                            headers.put(hostKey, host);
+                        }
                         if (header != null) {
                             headers.put(authKey, header);
                         }
