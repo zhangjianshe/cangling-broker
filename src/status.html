@@ -235,6 +235,17 @@
       flex-shrink: 0;
     }
     .modal-close:hover { background: var(--btn-hover); }
+    .row-btn {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      border-radius: 6px;
+      padding: 2px 8px;
+      cursor: pointer;
+      font: 12px/1.2 system-ui, sans-serif;
+      white-space: nowrap;
+    }
+    .row-btn:hover { background: var(--btn-hover); color: var(--fail); border-color: var(--fail); }
     .modal-body { overflow: auto; }
     .msg-view {
       padding: 12px 14px;
@@ -916,11 +927,13 @@
           numCell(t.dropped) +
           numCell(t.duplicates) +
           numCell(t.streams) +
-          "<td>" + consumerSummary(t.consumers) + "</td></tr>";
+          "<td>" + consumerSummary(t.consumers) + "</td>" +
+          '<td><button type="button" class="row-btn" data-clear-topic="' +
+          escapeHtml(t.name) + '">清空</button></td></tr>';
       }).join("");
       return '<div class="topic-list"><table><thead><tr>' +
         "<th class=\"seq\">序号</th><th>主题</th><th>投递</th><th>持久</th><th>已接收</th><th>待处理</th><th>投递中</th>" +
-        "<th>已投递</th><th>失败</th><th>丢弃</th><th>重复</th><th>在线流</th><th>消费者</th>" +
+        "<th>已投递</th><th>失败</th><th>丢弃</th><th>重复</th><th>在线流</th><th>消费者</th><th>操作</th>" +
         "</tr></thead><tbody>" + rows + "</tbody></table></div>";
     }
 
@@ -951,7 +964,40 @@
       fillTopicModal();
     }
 
+    async function clearTopicMessages(topic) {
+      const token = new URLSearchParams(location.search).get("token") || "";
+      const url = new URL(apiUrl("messages"));
+      url.searchParams.set("topic", topic);
+      if (token) url.searchParams.set("token", token);
+      const headers = {};
+      if (token) headers.Authorization = "Bearer " + token;
+      const response = await fetch(url.toString(), { method: "DELETE", cache: "no-store", headers });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      return response.json();
+    }
+
     document.addEventListener("click", (event) => {
+      const clearBtn = event.target.closest("[data-clear-topic]");
+      if (clearBtn) {
+        event.stopPropagation();
+        const topic = clearBtn.getAttribute("data-clear-topic") || "";
+        if (!topic) return;
+        if (!confirm("清空主题 “" + topic + "” 的全部消息？此操作不可恢复。")) return;
+        clearTopicMessages(topic).then((result) => {
+          if (selectedTopicName === topic) {
+            messageTopic = "";
+            messageOffset = 0;
+          }
+          refresh();
+          if (result && result.deleted != null) {
+            $("meta").textContent = "已清空 " + topic + " · " + result.deleted + " 条";
+          }
+        }).catch((error) => {
+          $("error").style.display = "block";
+          $("error").textContent = "清空失败：" + error.message;
+        });
+        return;
+      }
       const nav = event.target.closest("[data-msg-nav]");
       if (nav && !nav.disabled && selectedTopicName) {
         if (nav.getAttribute("data-msg-nav") === "older") messageOffset += 1;

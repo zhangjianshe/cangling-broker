@@ -653,6 +653,76 @@ impl Database {
         Ok((total, id))
     }
 
+    pub async fn clear_topic_messages(&self, filter: &str) -> anyhow::Result<u64> {
+        let deleted = if !crate::topic::is_wildcard_filter(filter) {
+            sqlx::query("DELETE FROM messages WHERE topic = ?")
+                .bind(filter)
+                .execute(&self.0)
+                .await?
+                .rows_affected()
+        } else if let Some(prefix) = crate::topic::multi_level_prefix(filter) {
+            if prefix.is_empty() {
+                sqlx::query("DELETE FROM messages WHERE topic NOT LIKE '$%'")
+                    .execute(&self.0)
+                    .await?
+                    .rows_affected()
+            } else {
+                let like = format!("{}/%", escape_like(prefix));
+                sqlx::query(
+                    "DELETE FROM messages WHERE topic = ? OR topic LIKE ? ESCAPE '\\'",
+                )
+                .bind(prefix)
+                .bind(&like)
+                .execute(&self.0)
+                .await?
+                .rows_affected()
+            }
+        } else {
+            let rows = sqlx::query("SELECT id, topic FROM messages")
+                .fetch_all(&self.0)
+                .await?;
+            let ids: Vec<String> = rows
+                .into_iter()
+                .filter_map(|row| {
+                    let topic: String = row.get("topic");
+                    crate::topic::filter_matches(filter, &topic).then(|| row.get("id"))
+                })
+                .collect();
+            let mut deleted = 0u64;
+            for id in ids {
+                deleted += sqlx::query("DELETE FROM messages WHERE id = ?")
+                    .bind(id)
+                    .execute(&self.0)
+                    .await?
+                    .rows_affected();
+            }
+            deleted
+        };
+        self.reset_topic_stats(filter).await?;
+        Ok(deleted)
+    }
+
+    async fn reset_topic_stats(&self, filter: &str) -> anyhow::Result<()> {
+        let names: Vec<String> = sqlx::query_scalar("SELECT topic FROM topic_stats")
+            .fetch_all(&self.0)
+            .await?;
+        for name in names {
+            let hit = name == filter || crate::topic::filter_matches(filter, &name);
+            if !hit {
+                continue;
+            }
+            sqlx::query(
+                "UPDATE topic_stats
+                 SET accepted = 0, duplicates = 0, delivered = 0, failed = 0, dropped = 0
+                 WHERE topic = ?",
+            )
+            .bind(name)
+            .execute(&self.0)
+            .await?;
+        }
+        Ok(())
+    }
+
     pub async fn accept_dropped(&self, topic: &str) -> anyhow::Result<String> {
         let id = Uuid::new_v4().to_string();
         self.bump_topic_stat(topic, 1, 0, 0, 0).await?;
@@ -1237,6 +1307,23 @@ mod tests {
         let page = db.topic_message_page("building/#", 0).await.unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.message.as_ref().unwrap().topic, "building/a");
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn clear_topic_messages_deletes_only_that_topic() {
+        let (db, dir) = temp_db().await;
+        db.enqueue(None, "jobs", b"a", HashMap::new()).await.unwrap();
+        db.enqueue(None, "jobs", b"b", HashMap::new()).await.unwrap();
+        db.enqueue(None, "other", b"c", HashMap::new()).await.unwrap();
+        assert_eq!(db.clear_topic_messages("jobs").await.unwrap(), 2);
+        assert!(db.topic_message_page("jobs", 0).await.unwrap().message.is_none());
+        assert_eq!(db.topic_message_page("other", 0).await.unwrap().total, 1);
+        let snapshot = db.status_snapshot(None).await.unwrap();
+        let jobs = snapshot.iter().find(|item| item.name == "jobs").unwrap();
+        assert_eq!(jobs.accepted, 0);
+        assert_eq!(jobs.pending, 0);
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }

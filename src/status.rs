@@ -147,7 +147,7 @@ fn status_routes(state: StatusState) -> Router {
         .route("/health", get(health))
         .route("/status", get(status))
         .route("/topics", get(list_topics).post(configure_topics))
-        .route("/messages", get(topic_message))
+        .route("/messages", get(topic_message).delete(clear_topic_messages))
         .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state)
 }
@@ -314,6 +314,31 @@ async fn topic_message(
         offset: page.offset,
         total: page.total,
         message: page.message.map(to_message_body),
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct ClearMessagesBody {
+    topic: String,
+    deleted: u64,
+}
+
+async fn clear_topic_messages(
+    State(state): State<StatusState>,
+    Query(query): Query<MessagesQuery>,
+) -> Result<Json<ClearMessagesBody>, StatusCode> {
+    let topic = query.topic.trim();
+    if topic.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let deleted = state
+        .db
+        .clear_topic_messages(topic)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(ClearMessagesBody {
+        topic: topic.to_string(),
+        deleted,
     }))
 }
 
@@ -937,6 +962,7 @@ mod tests {
         assert!(html.contains("data-msg-nav"), "{html}");
         assert!(html.contains("function numCell("), "{html}");
         assert!(html.contains("td.zero"), "{html}");
+        assert!(html.contains("data-clear-topic"), "{html}");
         assert!(!html.contains("连接时间"), "{html}");
         assert!(html.contains("pad2(date.getMonth() + 1)"), "{html}");
         assert!(!html.contains("toLocaleString"), "{html}");
