@@ -1,6 +1,6 @@
 [project]
 name = "cangling-broker"
-version = "0.1.34"
+version = "0.1.35"
 description = "Python producer and consumer for cangling-broker"
 readme = "README.md"
 requires-python = ">=3.10"
