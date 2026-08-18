@@ -471,13 +471,22 @@
     }
 
     function fmtUptime(secs) {
-      const s = Number(secs) || 0;
-      const h = Math.floor(s / 3600);
+      const s = Math.max(0, Math.floor(Number(secs) || 0));
+      const d = Math.floor(s / 86400);
+      const h = Math.floor((s % 86400) / 3600);
       const m = Math.floor((s % 3600) / 60);
       const r = s % 60;
+      if (d) return d + " 天 " + h + " 小时";
       if (h) return h + " 小时 " + m + " 分";
       if (m) return m + " 分 " + r + " 秒";
       return r + " 秒";
+    }
+
+    function fmtSince(value) {
+      if (value == null || value === "") return "—";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "—";
+      return fmtUptime((Date.now() - date.getTime()) / 1000);
     }
 
     function card(label, value, cls) {
@@ -635,11 +644,11 @@
           '<td class="mono">' + escapeHtml(client.client_id || "—") + "</td>" +
           '<td class="mono">' + escapeHtml(client.version || "—") + "</td>" +
           "<td>" + (client.streams || (client.subscriptions || []).length) + "</td>" +
-          "<td>" + escapeHtml(fmtTs(client.connected_at)) + "</td></tr>";
+          "<td>" + escapeHtml(fmtSince(client.connected_at)) + "</td></tr>";
       }).join("");
       const table =
         '<div class="client-list"><table><thead><tr>' +
-        "<th class=\"seq\">序号</th><th>主机</th><th>地址</th><th>类型</th><th>客户端</th><th>版本</th><th>订阅数</th><th>连接时间</th>" +
+        "<th class=\"seq\">序号</th><th>主机</th><th>地址</th><th>类型</th><th>客户端</th><th>版本</th><th>订阅数</th><th>连接时长</th>" +
         "</tr></thead><tbody>" + rows + "</tbody></table></div>";
       $("clients").innerHTML =
         withPagers(table, from, to, shown.length, clientPage + 1, pages, "client-page") +

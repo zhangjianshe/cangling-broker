@@ -759,6 +759,9 @@ mod tests {
         assert!(html.contains("id=\"client-type-filter\""), "{html}");
         assert!(html.contains("id=\"topic-name-filter\""), "{html}");
         assert!(html.contains("function fuzzyMatch("), "{html}");
+        assert!(html.contains("连接时长"), "{html}");
+        assert!(html.contains("fmtSince("), "{html}");
+        assert!(!html.contains("连接时间"), "{html}");
         assert!(html.contains("pad2(date.getMonth() + 1)"), "{html}");
         assert!(!html.contains("toLocaleString"), "{html}");
         assert!(!html.contains("toLocaleTimeString"), "{html}");
