@@ -16,6 +16,19 @@ use crate::{
 
 pub const PROTOCOL_GRPC: &str = "grpc";
 
+fn payload_preview(payload: &[u8]) -> String {
+    const MAX: usize = 4096;
+    let text = String::from_utf8_lossy(payload);
+    if text.len() <= MAX {
+        return text.into_owned();
+    }
+    let mut end = MAX;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}… ({} bytes)", &text[..end], payload.len())
+}
+
 pub enum Ingested {
     Queued { message_id: String, duplicate: bool },
     Dropped { message_id: String },
@@ -28,7 +41,11 @@ pub async fn ingest(
     payload: &[u8],
     attributes: HashMap<String, String>,
     idempotency_key: Option<&str>,
+    log_messages: bool,
 ) -> anyhow::Result<Ingested> {
+    if log_messages {
+        info!(topic, payload = %payload_preview(payload), bytes = payload.len(), "received message");
+    }
     let settings = db
         .topic_config(topic)
         .await
@@ -343,6 +360,20 @@ mod tests {
     use crate::db::Database;
     use std::time::Duration;
 
+    #[test]
+    fn payload_preview_keeps_short_text() {
+        assert_eq!(payload_preview(b"hello"), "hello");
+    }
+
+    #[test]
+    fn payload_preview_truncates_long_text() {
+        let body = "x".repeat(5000);
+        let preview = payload_preview(body.as_bytes());
+        assert!(preview.ends_with("… (5000 bytes)"));
+        assert!(preview.starts_with("xxxx"));
+        assert!(preview.len() < body.len());
+    }
+
     #[tokio::test]
     async fn ephemeral_hash_fanout_does_not_queue() {
         let dir = std::env::temp_dir().join(format!("cangling-fanout-{}", Uuid::new_v4()));
@@ -369,6 +400,7 @@ mod tests {
             b"hello",
             HashMap::new(),
             None,
+            false,
         )
         .await
         .unwrap();

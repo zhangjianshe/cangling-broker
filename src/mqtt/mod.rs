@@ -700,6 +700,7 @@ mod tests {
             b"x",
             HashMap::new(),
             None,
+            false,
         )
         .await
         .unwrap();

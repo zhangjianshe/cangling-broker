@@ -277,6 +277,7 @@ Call `AckMessage` with that `message_id` and `lease`. `success = true` marks the
 | `CONSUMER_TTL_SECS` | `60` | drop registered consumer metadata that is not seen again; `0` keeps it until `Unregister` |
 | `LOG_MAX_BYTES` | `104857600` | rotate after this many bytes (100 MiB) |
 | `LOG_KEEP_FILES` | `3` | keep this many files, including the current one |
+| `CL_BROKER_LOG_MESSAGES` | `false` | when `true`, print each received message's topic and payload to the console |
 
 ```bash
 docker run --rm --name cangling-broker \

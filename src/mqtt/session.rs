@@ -446,6 +446,7 @@ async fn ingest_and_ack(
         &publish.payload,
         attributes,
         None,
+        ctx.config.log_messages,
     )
     .await?;
     if qos == 2 {

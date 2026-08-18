@@ -88,6 +88,7 @@ impl MessageQueue for QueueService {
         let (tx, rx) = mpsc::channel(16);
         let db = self.db.clone();
         let subscribers = self.subscribers.clone();
+        let log_messages = self.config.log_messages;
         tokio::spawn(async move {
             while let Some(message) = inbound.next().await {
                 let message = match message {
@@ -117,6 +118,7 @@ impl MessageQueue for QueueService {
                     &message.payload,
                     message.attributes,
                     Some(&message.idempotency_key),
+                    log_messages,
                 )
                 .await
                 {

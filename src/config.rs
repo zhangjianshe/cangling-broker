@@ -78,6 +78,10 @@ pub struct Config {
     /// How many log files to keep, including the current one.
     #[arg(long, env = "LOG_KEEP_FILES", default_value_t = 3)]
     pub log_keep_files: usize,
+
+    /// Print each received message's topic and payload to the console.
+    #[arg(long, env = "CL_BROKER_LOG_MESSAGES", default_value_t = false, action = clap::ArgAction::Set)]
+    pub log_messages: bool,
 }
 
 impl Config {
@@ -154,6 +158,7 @@ impl Config {
             consumer_ttl_secs: 0,
             log_max_bytes: 1024,
             log_keep_files: 1,
+            log_messages: false,
         }
     }
 }
