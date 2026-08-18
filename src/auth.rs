@@ -2,6 +2,7 @@ use tonic::{metadata::MetadataMap, Request, Status};
 
 pub const METADATA_AUTHORIZATION: &str = "authorization";
 pub const METADATA_X_AUTH_TOKEN: &str = "x-auth-token";
+pub const METADATA_X_CLIENT_VERSION: &str = "x-client-version";
 
 #[derive(Clone)]
 pub struct AuthInterceptor {
@@ -65,6 +66,16 @@ pub fn bearer_or_raw(value: &str) -> &str {
         .trim()
 }
 
+pub fn metadata_client_version(metadata: &MetadataMap) -> String {
+    metadata
+        .get(METADATA_X_CLIENT_VERSION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_default()
+}
+
 pub fn metadata_token(metadata: &MetadataMap) -> Option<String> {
     if let Some(value) = metadata.get(METADATA_AUTHORIZATION).and_then(|v| v.to_str().ok()) {
         let token = bearer_or_raw(value);
@@ -106,6 +117,7 @@ fn query_token(query: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tonic::metadata::MetadataMap;
 
     #[test]
     fn accepts_bearer_and_raw() {
@@ -118,5 +130,16 @@ mod tests {
         assert!(!tokens_match("abc", Some("ab")));
         assert!(tokens_match("abc", Some("abc")));
         assert!(!tokens_match("abc", None));
+    }
+
+    #[test]
+    fn reads_client_version_header() {
+        let mut metadata = MetadataMap::new();
+        assert_eq!(metadata_client_version(&metadata), "");
+        metadata.insert(
+            METADATA_X_CLIENT_VERSION,
+            "java/0.1.29".parse().unwrap(),
+        );
+        assert_eq!(metadata_client_version(&metadata), "java/0.1.29");
     }
 }

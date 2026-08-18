@@ -115,6 +115,11 @@
                 <artifactId>maven-jar-plugin</artifactId>
                 <version>3.4.2</version>
                 <configuration>
+                    <archive>
+                        <manifest>
+                            <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+                        </manifest>
+                    </archive>
                     <excludes>
                         <exclude>cn/mapway/broker/example/**</exclude>
                     </excludes>

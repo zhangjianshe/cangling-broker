@@ -17,6 +17,7 @@ pub struct SessionInfo {
     pub peer: String,
     pub connected_at: String,
     pub protocol: &'static str,
+    pub version: String,
 }
 
 struct LiveEntry {
@@ -35,6 +36,7 @@ impl TopicSubscribers {
         tx: StreamSender,
         peer: &str,
         protocol: &'static str,
+        version: &str,
     ) {
         self.0
             .lock()
@@ -50,6 +52,7 @@ impl TopicSubscribers {
                         peer: peer.to_string(),
                         connected_at: chrono::Utc::now().to_rfc3339(),
                         protocol,
+                        version: version.to_string(),
                     },
                     tx,
                 },
@@ -191,8 +194,9 @@ impl SubscriptionGuard {
         tx: StreamSender,
         peer: String,
         protocol: &'static str,
+        version: String,
     ) -> Self {
-        subscribers.add(&topic, &session, tx, &peer, protocol);
+        subscribers.add(&topic, &session, tx, &peer, protocol, &version);
         Self {
             subscribers,
             topic,
@@ -215,7 +219,7 @@ mod tests {
     fn tracks_live_session_metadata() {
         let subscribers = TopicSubscribers::default();
         let (tx, _rx) = mpsc::channel(1);
-        subscribers.add("jobs", "c1", tx, "127.0.0.1:4321", "grpc");
+        subscribers.add("jobs", "c1", tx, "127.0.0.1:4321", "grpc", "java/0.1.29");
         assert_eq!(subscribers.count("jobs"), 1);
         assert!(subscribers.is_live("jobs", "c1"));
         let sessions = subscribers.sessions();
@@ -224,6 +228,7 @@ mod tests {
         assert_eq!(sessions[0].topic, "jobs");
         assert_eq!(sessions[0].peer, "127.0.0.1:4321");
         assert_eq!(sessions[0].protocol, "grpc");
+        assert_eq!(sessions[0].version, "java/0.1.29");
         assert!(!sessions[0].connected_at.is_empty());
         subscribers.remove("jobs", "c1");
         assert!(subscribers.sessions().is_empty());
@@ -233,7 +238,7 @@ mod tests {
     fn hash_filter_covers_child_topics() {
         let subscribers = TopicSubscribers::default();
         let (tx, _rx) = mpsc::channel(1);
-        subscribers.add("sensor/#", "mqtt:c1", tx, "127.0.0.1:1", "mqtt");
+        subscribers.add("sensor/#", "mqtt:c1", tx, "127.0.0.1:1", "mqtt", "3.1.1");
         assert!(subscribers.covers("sensor"));
         assert!(subscribers.covers("sensor/temp"));
         assert!(subscribers.covers("sensor/a/b"));

@@ -142,9 +142,16 @@ impl MessageQueue for QueueService {
         &self,
         request: Request<RegisterRequest>,
     ) -> Result<Response<RegisterResponse>, Status> {
-        let request = request.into_inner();
+        let version = auth::metadata_client_version(request.metadata());
+        let mut request = request.into_inner();
         if request.topic.trim().is_empty() {
             return Err(Status::invalid_argument("topic is required"));
+        }
+        if !version.is_empty() {
+            request
+                .attributes
+                .entry("version".into())
+                .or_insert(version);
         }
         let consumer_id = self
             .db
@@ -193,6 +200,7 @@ impl MessageQueue for QueueService {
             .remote_addr()
             .map(|addr| addr.to_string())
             .unwrap_or_default();
+        let mut version = auth::metadata_client_version(request.metadata());
         let request = request.into_inner();
         if request.topic.trim().is_empty() {
             return Err(Status::invalid_argument("topic is required"));
@@ -201,6 +209,11 @@ impl MessageQueue for QueueService {
         let consumer_id = request.consumer_id.trim().to_string();
         if !consumer_id.is_empty() {
             let _ = self.db.touch_consumer(&consumer_id).await;
+            if version.is_empty() {
+                if let Ok(Some(stored)) = self.db.consumer_version(&consumer_id).await {
+                    version = stored;
+                }
+            }
         }
         let session = if consumer_id.is_empty() {
             Uuid::new_v4().to_string()
@@ -220,6 +233,7 @@ impl MessageQueue for QueueService {
             tx,
             peer,
             protocol: PROTOCOL_GRPC,
+            version,
         });
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }

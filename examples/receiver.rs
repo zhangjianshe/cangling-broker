@@ -30,11 +30,17 @@ struct Args {
 }
 
 #[derive(Clone)]
-struct TokenInterceptor(Option<MetadataValue<tonic::metadata::Ascii>>);
+struct ClientInterceptor {
+    token: Option<MetadataValue<tonic::metadata::Ascii>>,
+    version: MetadataValue<tonic::metadata::Ascii>,
+}
 
-impl Interceptor for TokenInterceptor {
+impl Interceptor for ClientInterceptor {
     fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
-        if let Some(token) = &self.0 {
+        request
+            .metadata_mut()
+            .insert("x-client-version", self.version.clone());
+        if let Some(token) = &self.token {
             request.metadata_mut().insert("authorization", token.clone());
         }
         Ok(request)
@@ -62,7 +68,16 @@ async fn main() {
         .connect()
         .await
         .expect("broker");
-    let mut client = MessageQueueClient::with_interceptor(channel, TokenInterceptor(header));
+    let version = format!("rust/{}", env!("CARGO_PKG_VERSION"))
+        .parse()
+        .expect("crate version is ASCII");
+    let mut client = MessageQueueClient::with_interceptor(
+        channel,
+        ClientInterceptor {
+            token: header,
+            version,
+        },
+    );
     let registered = client
         .register(RegisterRequest {
             topic: args.topic.clone(),

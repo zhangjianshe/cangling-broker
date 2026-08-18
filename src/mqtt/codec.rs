@@ -36,6 +36,16 @@ pub struct Connect {
     pub password: Option<Vec<u8>>,
 }
 
+impl Connect {
+    pub fn protocol_version(&self) -> &'static str {
+        match self.protocol_level {
+            3 => "3.1",
+            4 => "3.1.1",
+            _ => "",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnAck {
     pub session_present: bool,
@@ -523,6 +533,7 @@ mod tests {
         match roundtrip(packet) {
             Packet::Connect(connect) => {
                 assert_eq!(connect.client_id, "dev-1");
+                assert_eq!(connect.protocol_version(), "3.1.1");
                 assert_eq!(connect.keep_alive, 30);
                 assert_eq!(connect.username.as_deref(), Some("user"));
                 assert_eq!(connect.password.as_deref(), Some(b"secret".as_slice()));

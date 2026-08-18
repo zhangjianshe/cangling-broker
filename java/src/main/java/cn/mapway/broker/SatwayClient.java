@@ -23,10 +23,14 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -105,9 +109,7 @@ public final class SatwayClient implements AutoCloseable {
                 .keepAliveTimeout(10, TimeUnit.SECONDS)
                 .keepAliveWithoutCalls(true)
                 .idleTimeout(365, TimeUnit.DAYS);
-        if (token != null && !token.isBlank()) {
-            builder.intercept(tokenInterceptor(token.trim()));
-        }
+        builder.intercept(clientHeadersInterceptor(token));
         return new SatwayClient(builder.build(), onConnected);
     }
 
@@ -247,13 +249,14 @@ public final class SatwayClient implements AutoCloseable {
     }
 
     String register(String topic, String consumerId, String name, Map<String, String> attributes) {
+        Map<String, String> attrs = withClientVersion(attributes);
         return callWithReconnect("register", () -> blockingStub()
                 .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
                 .register(RegisterRequest.newBuilder()
                         .setTopic(topic)
                         .setConsumerId(consumerId == null ? "" : consumerId)
                         .setName(name == null ? "" : name)
-                        .putAllAttributes(attributes == null ? Map.of() : attributes)
+                        .putAllAttributes(attrs)
                         .build())
                 .getConsumerId());
     }
@@ -417,9 +420,52 @@ public final class SatwayClient implements AutoCloseable {
                 || code == Status.Code.UNKNOWN;
     }
 
-    private static ClientInterceptor tokenInterceptor(String token) {
-        Metadata.Key<String> key = Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
-        String header = token.regionMatches(true, 0, "Bearer ", 0, 7) ? token : "Bearer " + token;
+    public static String clientVersion() {
+        String version = packagedVersion();
+        return version == null || version.isBlank() ? "java" : "java/" + version;
+    }
+
+    private static Map<String, String> withClientVersion(Map<String, String> attributes) {
+        Map<String, String> attrs = new HashMap<>();
+        if (attributes != null) {
+            attrs.putAll(attributes);
+        }
+        attrs.putIfAbsent("version", clientVersion());
+        return attrs;
+    }
+
+    private static String packagedVersion() {
+        Package pkg = SatwayClient.class.getPackage();
+        if (pkg != null) {
+            String fromManifest = pkg.getImplementationVersion();
+            if (fromManifest != null && !fromManifest.isBlank()) {
+                return fromManifest.trim();
+            }
+        }
+        try (InputStream in = SatwayClient.class.getResourceAsStream(
+                "/META-INF/maven/cn.mapway/cangling-broker/pom.properties")) {
+            if (in != null) {
+                Properties properties = new Properties();
+                properties.load(in);
+                String fromPom = properties.getProperty("version");
+                if (fromPom != null && !fromPom.isBlank()) {
+                    return fromPom.trim();
+                }
+            }
+        } catch (IOException ignored) {
+        }
+        return null;
+    }
+
+    private static ClientInterceptor clientHeadersInterceptor(String token) {
+        Metadata.Key<String> versionKey =
+                Metadata.Key.of("x-client-version", Metadata.ASCII_STRING_MARSHALLER);
+        Metadata.Key<String> authKey =
+                Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+        String version = clientVersion();
+        String header = token == null || token.isBlank()
+                ? null
+                : (token.regionMatches(true, 0, "Bearer ", 0, 7) ? token : "Bearer " + token);
         return new ClientInterceptor() {
             @Override
             public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
@@ -427,7 +473,10 @@ public final class SatwayClient implements AutoCloseable {
                 return new ForwardingClientCall.SimpleForwardingClientCall<>(next.newCall(method, callOptions)) {
                     @Override
                     public void start(Listener<RespT> responseListener, Metadata headers) {
-                        headers.put(key, header);
+                        headers.put(versionKey, version);
+                        if (header != null) {
+                            headers.put(authKey, header);
+                        }
                         super.start(responseListener, headers);
                     }
                 };

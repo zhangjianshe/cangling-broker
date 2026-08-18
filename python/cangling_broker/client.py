@@ -11,6 +11,15 @@ import grpc
 from .models import SatwayMessage, SendResult, SubscribeOptions, TopicConfig, auth_token_from_env
 from .proto import queue_pb2, queue_pb2_grpc
 
+
+def _sdk_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return "python/" + version("cangling-broker")
+    except Exception:
+        return "python"
+
 LOG = logging.getLogger("cangling_broker")
 
 INITIAL_BACKOFF_SECS = 0.2
@@ -35,13 +44,21 @@ def _broker_target(broker: str) -> str:
     return broker
 
 
-def _auth_metadata(token: str | None) -> list[tuple[str, str]] | None:
+def _auth_metadata(token: str | None) -> list[tuple[str, str]]:
+    metadata = [("x-client-version", _sdk_version())]
     token = (token or "").strip()
     if not token:
-        return None
+        return metadata
     if not token.lower().startswith("bearer "):
         token = "Bearer " + token
-    return [("authorization", token)]
+    metadata.append(("authorization", token))
+    return metadata
+
+
+def _with_client_version(attributes: dict[str, str] | None) -> dict[str, str]:
+    attrs = dict(attributes or {})
+    attrs.setdefault("version", _sdk_version())
+    return attrs
 
 
 class SatwayClient:
@@ -50,7 +67,7 @@ class SatwayClient:
     Each :meth:`subscribe` stream reopens on the same ``consumer_id`` after a drop.
     """
 
-    def __init__(self, channel: grpc.Channel, metadata: list[tuple[str, str]] | None):
+    def __init__(self, channel: grpc.Channel, metadata: list[tuple[str, str]]):
         self._channel = channel
         self._stub = queue_pb2_grpc.MessageQueueStub(channel)
         self._metadata = metadata
@@ -112,7 +129,7 @@ class SatwayClient:
                     topic=topic,
                     consumer_id=consumer_id or "",
                     name=name or "",
-                    attributes=attributes or {},
+                    attributes=_with_client_version(attributes),
                 ),
                 timeout=RPC_DEADLINE_SECS,
                 metadata=self._metadata,
@@ -206,7 +223,7 @@ class SatwayClient:
             cid = self.register(
                 options.topic,
                 name=options.name,
-                attributes=dict(options.attributes),
+                attributes=_with_client_version(dict(options.attributes)),
                 consumer_id=options.consumer_id,
             )
         consumer = Consumer(self, options, cid, handler)
@@ -254,7 +271,7 @@ class SatwayClient:
         self.register(
             options.topic,
             name=options.name,
-            attributes=dict(options.attributes),
+            attributes=_with_client_version(dict(options.attributes)),
             consumer_id=consumer_id,
         )
 

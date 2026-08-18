@@ -62,6 +62,8 @@ struct ClientInfo {
     protocol: &'static str,
     #[serde(skip_serializing_if = "String::is_empty")]
     client_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    version: String,
     streams: usize,
     connected_at: String,
     last_seen_at: String,
@@ -74,6 +76,8 @@ struct ClientSubscription {
     name: String,
     topic: String,
     protocol: &'static str,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    version: String,
     attributes: HashMap<String, String>,
     connected_at: String,
     last_seen_at: String,
@@ -396,6 +400,7 @@ fn connected_clients(
             peer: mqtt.peer.clone(),
             protocol: mqtt.transport,
             client_id: mqtt.client_id.clone(),
+            version: first_version(&mqtt.version, &subscriptions),
             streams: subscriptions.len(),
             connected_at: mqtt.connected_at.clone(),
             last_seen_at,
@@ -439,6 +444,7 @@ fn connected_clients(
                 peer,
                 protocol,
                 client_id: String::new(),
+                version: first_version("", &subscriptions),
                 streams: subscriptions.len(),
                 connected_at,
                 last_seen_at,
@@ -458,6 +464,17 @@ fn to_subscription(
     registered: &HashMap<(&str, &str), &ConsumerSnapshot>,
 ) -> ClientSubscription {
     let meta = registered.get(&(session.topic.as_str(), session.id.as_str()));
+    let attributes = meta
+        .map(|consumer| consumer.attributes.clone())
+        .unwrap_or_default();
+    let version = if !session.version.is_empty() {
+        session.version.clone()
+    } else {
+        attributes
+            .get("version")
+            .cloned()
+            .unwrap_or_default()
+    };
     ClientSubscription {
         id: session.id.clone(),
         name: meta
@@ -467,14 +484,25 @@ fn to_subscription(
             .unwrap_or_default(),
         topic: session.topic.clone(),
         protocol: session.protocol,
-        attributes: meta
-            .map(|consumer| consumer.attributes.clone())
-            .unwrap_or_default(),
+        version,
+        attributes,
         connected_at: session.connected_at.clone(),
         last_seen_at: meta
             .map(|consumer| consumer.last_seen_at.clone())
             .unwrap_or_else(|| session.connected_at.clone()),
     }
+}
+
+fn first_version(primary: &str, subscriptions: &[ClientSubscription]) -> String {
+    if !primary.is_empty() {
+        return primary.to_string();
+    }
+    subscriptions
+        .iter()
+        .map(|item| item.version.as_str())
+        .find(|value| !value.is_empty())
+        .unwrap_or("")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -490,6 +518,7 @@ mod tests {
                 peer: "127.0.0.1:9".into(),
                 connected_at: "2026-08-16T00:00:02Z".into(),
                 protocol: "grpc",
+                version: "java/0.1.29".into(),
             },
             SessionInfo {
                 id: "c2".into(),
@@ -497,6 +526,7 @@ mod tests {
                 peer: "127.0.0.1:9".into(),
                 connected_at: "2026-08-16T00:00:01Z".into(),
                 protocol: "grpc",
+                version: "java/0.1.29".into(),
             },
             SessionInfo {
                 id: "c3".into(),
@@ -504,6 +534,7 @@ mod tests {
                 peer: "10.0.0.2:8".into(),
                 connected_at: "2026-08-16T00:00:03Z".into(),
                 protocol: "mqtt",
+                version: "3.1.1".into(),
             },
         ];
         let topics = vec![TopicSnapshot {
@@ -535,6 +566,35 @@ mod tests {
             "worker-1"
         );
         assert_eq!(clients[1].subscriptions[1].topic, "logs");
+        assert_eq!(clients[0].version, "3.1.1");
+        assert_eq!(clients[1].version, "java/0.1.29");
+    }
+
+    #[test]
+    fn client_version_falls_back_to_register_attribute() {
+        let sessions = vec![SessionInfo {
+            id: "c1".into(),
+            topic: "jobs".into(),
+            peer: "127.0.0.1:9".into(),
+            connected_at: "2026-08-16T00:00:02Z".into(),
+            protocol: "grpc",
+            version: String::new(),
+        }];
+        let topics = vec![TopicSnapshot {
+            name: "jobs".into(),
+            consumers: vec![ConsumerSnapshot {
+                id: "c1".into(),
+                name: "java-s0".into(),
+                last_seen_at: "2026-08-16T00:01:00Z".into(),
+                live: true,
+                attributes: HashMap::from([("version".into(), "python/0.1.29".into())]),
+            }],
+            ..TopicSnapshot::default()
+        }];
+        let clients = connected_clients(&sessions, &[], &topics);
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].version, "python/0.1.29");
+        assert_eq!(clients[0].subscriptions[0].version, "python/0.1.29");
     }
 
     #[test]
@@ -550,6 +610,7 @@ mod tests {
             peer: "10.0.0.8:1".into(),
             connected_at: "2026-08-16T00:00:04Z".into(),
             protocol: "mqtt-ws",
+            version: "3.1.1".into(),
         }];
         merge_live_sessions(&mut topics, &sessions);
         assert_eq!(topics.len(), 2);
@@ -576,6 +637,7 @@ mod tests {
             peer: "10.0.0.8:1".into(),
             connected_at: "2026-08-16T00:00:04Z".into(),
             protocol: "mqtt-ws",
+            version: "3.1.1".into(),
         }];
         merge_live_sessions(&mut published, &hash_sessions);
         let row = published
@@ -593,12 +655,14 @@ mod tests {
             peer: "10.0.0.8:44321".into(),
             transport: "mqtt-ws",
             connected_at: "2026-08-16T00:00:04Z".into(),
+            version: "3.1.1".into(),
         }];
         let clients = connected_clients(&[], &mqtt_clients, &[]);
         assert_eq!(clients.len(), 1);
         assert_eq!(clients[0].protocol, "mqtt-ws");
         assert_eq!(clients[0].client_id, "browser-1");
         assert_eq!(clients[0].peer, "10.0.0.8:44321");
+        assert_eq!(clients[0].version, "3.1.1");
         assert_eq!(clients[0].streams, 0);
         assert!(clients[0].subscriptions.is_empty());
     }
@@ -612,6 +676,7 @@ mod tests {
         assert!(html.contains("data-tab=\"clients\""), "{html}");
         assert!(html.contains("data-tab=\"topics\""), "{html}");
         assert!(html.contains("withPagers("), "{html}");
+        assert!(html.contains("client.version"), "{html}");
     }
 
     #[test]

@@ -429,12 +429,13 @@
           '<td class="mono">' + escapeHtml(client.peer || "未知来源") + "</td>" +
           "<td><span class=\"pill\">" + escapeHtml(clientType(client.protocol)) + "</span></td>" +
           '<td class="mono">' + escapeHtml(client.client_id || "—") + "</td>" +
+          '<td class="mono">' + escapeHtml(client.version || "—") + "</td>" +
           "<td>" + (client.streams || (client.subscriptions || []).length) + "</td>" +
           "<td>" + escapeHtml(fmtTs(client.connected_at)) + "</td></tr>";
       }).join("");
       const table =
         '<div class="client-list"><table><thead><tr>' +
-        "<th>地址</th><th>类型</th><th>客户端</th><th>订阅数</th><th>连接时间</th>" +
+        "<th>地址</th><th>类型</th><th>客户端</th><th>版本</th><th>订阅数</th><th>连接时间</th>" +
         "</tr></thead><tbody>" + rows + "</tbody></table></div>";
       $("clients").innerHTML =
         withPagers(table, from, to, clients.length, clientPage + 1, pages, "client-page") +
@@ -463,6 +464,7 @@
         '<span class="pill">' + escapeHtml(clientType(client.protocol)) + "</span>" +
         '<span class="mono url">' + escapeHtml(client.peer || "未知来源") + "</span>" +
         (client.client_id ? '<span class="mono url">' + escapeHtml(client.client_id) + "</span>" : "") +
+        (client.version ? '<span class="pill">' + escapeHtml(client.version) + "</span>" : "") +
         '<span class="meta">' + (subs.length) + " 个订阅</span></div>" + body + "</div>";
     }
 

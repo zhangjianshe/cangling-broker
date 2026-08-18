@@ -410,6 +410,20 @@ impl Database {
         Ok(id)
     }
 
+    pub async fn consumer_version(&self, consumer_id: &str) -> anyhow::Result<Option<String>> {
+        let Some(row) = sqlx::query("SELECT attributes FROM consumers WHERE id = ?")
+            .bind(consumer_id)
+            .fetch_optional(&self.0)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(parse_consumer_attributes(row.get("attributes"))
+            .get("version")
+            .cloned()
+            .filter(|value| !value.is_empty()))
+    }
+
     pub async fn touch_consumer(&self, consumer_id: &str) -> anyhow::Result<bool> {
         let result = sqlx::query("UPDATE consumers SET last_seen_at = ? WHERE id = ?")
             .bind(Utc::now().to_rfc3339())
@@ -1042,7 +1056,9 @@ mod tests {
         let (db, dir) = temp_db().await;
         let mut attrs = HashMap::new();
         attrs.insert("host".into(), "worker-1".into());
-        db.register_consumer(None, "jobs", "java-s0", &attrs)
+        attrs.insert("version".into(), "java/0.1.29".into());
+        let consumer_id = db
+            .register_consumer(None, "jobs", "java-s0", &attrs)
             .await
             .unwrap();
         let snapshot = db.status_snapshot(None).await.unwrap();
@@ -1052,6 +1068,10 @@ mod tests {
         assert_eq!(
             topic.consumers[0].attributes.get("host").map(String::as_str),
             Some("worker-1")
+        );
+        assert_eq!(
+            db.consumer_version(&consumer_id).await.unwrap().as_deref(),
+            Some("java/0.1.29")
         );
 
         db.close().await;

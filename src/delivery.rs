@@ -103,6 +103,7 @@ pub struct SubscribeLoop {
     pub tx: StreamSender,
     pub peer: String,
     pub protocol: &'static str,
+    pub version: String,
 }
 
 pub fn spawn_subscribe_loop(loop_args: SubscribeLoop) {
@@ -122,6 +123,7 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
         tx,
         peer,
         protocol,
+        version,
     } = args;
     let guard = SubscriptionGuard::new(
         subscribers.clone(),
@@ -130,6 +132,7 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
         tx.clone(),
         peer,
         protocol,
+        version,
     );
     info!(
         topic = %topic,
@@ -352,6 +355,7 @@ mod tests {
             tx,
             "127.0.0.1:1",
             "mqtt-ws",
+            "3.1.1",
         );
 
         let ingested = ingest(

@@ -35,6 +35,7 @@ pub struct MqttClientInfo {
     pub peer: String,
     pub transport: &'static str,
     pub connected_at: String,
+    pub version: String,
 }
 
 struct RegistryEntry {
@@ -52,6 +53,7 @@ impl ClientRegistry {
         token: CancellationToken,
         peer: String,
         transport: &'static str,
+        version: &str,
     ) -> Option<CancellationToken> {
         let previous = self.0.lock().expect("mqtt registry").insert(
             client_id.clone(),
@@ -62,6 +64,7 @@ impl ClientRegistry {
                     peer,
                     transport,
                     connected_at: chrono::Utc::now().to_rfc3339(),
+                    version: version.to_string(),
                 },
             },
         );
@@ -491,6 +494,7 @@ mod tests {
         assert_eq!(clients.len(), 1);
         assert_eq!(clients[0].client_id, "listed");
         assert_eq!(clients[0].transport, "mqtt");
+        assert_eq!(clients[0].version, "3.1.1");
         assert!(!clients[0].peer.is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -688,7 +692,7 @@ mod tests {
     async fn ingest_queues_for_live_mqtt_topic() {
         let (ctx, dir) = temp_ctx().await;
         let (tx, _rx) = delivery_channel();
-        ctx.subscribers.add("jobs", "mqtt:c1", tx, "127.0.0.1:1", "mqtt");
+        ctx.subscribers.add("jobs", "mqtt:c1", tx, "127.0.0.1:1", "mqtt", "3.1.1");
         let ingested = crate::delivery::ingest(
             &ctx.db,
             &ctx.subscribers,

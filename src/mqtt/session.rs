@@ -193,11 +193,13 @@ async fn run_session(
     .await?;
 
     let session_cancel = ctx.shutdown.child_token();
+    let version = connect.protocol_version();
     let previous = ctx.registry.connect(
         client_id.clone(),
         session_cancel.clone(),
         peer.clone(),
         transport,
+        version,
     );
     if let Some(old) = previous {
         old.cancel();
@@ -226,6 +228,7 @@ async fn run_session(
             client_id: client_id.clone(),
             peer: peer.clone(),
             transport,
+            version: version.to_string(),
             keep_alive: connect.keep_alive,
             qos_by_topic: HashMap::new(),
             inflight_pub: HashMap::new(),
@@ -246,6 +249,7 @@ struct SessionState {
     client_id: String,
     peer: String,
     transport: &'static str,
+    version: String,
     keep_alive: u16,
     qos_by_topic: HashMap<String, u8>,
     inflight_pub: HashMap<u16, (String, String)>,
@@ -497,6 +501,7 @@ async fn subscribe_topic(
         tx: out_tx.clone(),
         peer: state.peer.clone(),
         protocol: state.transport,
+        version: state.version.clone(),
     });
     info!(client_id = %state.client_id, topic, qos = granted, "mqtt subscribed");
     granted
