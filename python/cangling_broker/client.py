@@ -27,6 +27,14 @@ LOG = logging.getLogger("cangling_broker")
 INITIAL_BACKOFF_SECS = 0.2
 MAX_BACKOFF_SECS = 5.0
 RPC_DEADLINE_SECS = 15
+CONNECT_TIMEOUT_SECS = 15
+_CHANNEL_OPTIONS = (
+    ("grpc.keepalive_time_ms", 30_000),
+    ("grpc.keepalive_timeout_ms", 10_000),
+    ("grpc.keepalive_permit_without_calls", 1),
+    ("grpc.http2.max_pings_without_data", 0),
+    ("grpc.http2.min_time_between_pings_ms", 10_000),
+)
 RETRYABLE = {
     grpc.StatusCode.UNAVAILABLE,
     grpc.StatusCode.DEADLINE_EXCEEDED,
@@ -80,6 +88,13 @@ def _with_client_identity(attributes: dict[str, str] | None) -> dict[str, str]:
     return attrs
 
 
+def _open_channel(channel: grpc.Channel) -> None:
+    try:
+        grpc.channel_ready_future(channel).result(timeout=CONNECT_TIMEOUT_SECS)
+    except Exception as error:
+        LOG.warning("broker not ready yet: %s", error)
+
+
 class SatwayClient:
     """Broker client. Owns the gRPC channel and retries unary RPCs.
 
@@ -100,7 +115,16 @@ class SatwayClient:
             raise ValueError("broker is required")
         if token is None:
             token = auth_token_from_env()
-        channel = grpc.insecure_channel(_broker_target(broker))
+        channel = grpc.insecure_channel(
+            _broker_target(broker),
+            options=list(_CHANNEL_OPTIONS),
+        )
+        threading.Thread(
+            target=_open_channel,
+            args=(channel,),
+            name="cangling-connect",
+            daemon=True,
+        ).start()
         return cls(channel, _auth_metadata(token))
 
     def send(

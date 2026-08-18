@@ -16,6 +16,7 @@ use crate::{
     auth,
     config::Config,
     db::Database,
+    grpc_conn::{GrpcClientInfo, GrpcClientRegistry},
     model::{ConsumerSnapshot, DeliveryMode, PersistenceMode, TopicConfig, TopicSnapshot},
     subscribers::{SessionInfo, TopicSubscribers},
 };
@@ -25,6 +26,7 @@ struct StatusState {
     db: Database,
     subscribers: TopicSubscribers,
     mqtt_clients: crate::mqtt::ClientRegistry,
+    grpc_clients: GrpcClientRegistry,
     consumer_ttl_secs: u64,
     started: Instant,
     auth_token: Option<String>,
@@ -103,11 +105,13 @@ pub async fn serve(
     shutdown: CancellationToken,
     mqtt: Option<crate::mqtt::MqttCtx>,
     mqtt_clients: crate::mqtt::ClientRegistry,
+    grpc_clients: GrpcClientRegistry,
 ) -> anyhow::Result<()> {
     let state = StatusState {
         db,
         subscribers,
         mqtt_clients,
+        grpc_clients,
         consumer_ttl_secs: config.consumer_ttl_secs,
         started: Instant::now(),
         auth_token: auth::normalize(config.auth_token.as_deref()),
@@ -293,6 +297,7 @@ async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, 
     let clients = connected_clients(
         &live_sessions,
         &state.mqtt_clients.clients(),
+        &state.grpc_clients.clients(),
         &topics_detail,
     );
     let consumers = topics_detail.iter().map(|topic| topic.streams).sum();
@@ -366,6 +371,7 @@ fn merge_live_sessions(topics: &mut Vec<TopicSnapshot>, sessions: &[SessionInfo]
 fn connected_clients(
     sessions: &[SessionInfo],
     mqtt_clients: &[crate::mqtt::MqttClientInfo],
+    grpc_clients: &[GrpcClientInfo],
     topics: &[TopicSnapshot],
 ) -> Vec<ClientInfo> {
     let registered: HashMap<(&str, &str), &ConsumerSnapshot> = topics
@@ -408,6 +414,38 @@ fn connected_clients(
             host: first_value("", &subscriptions, |item| item.host.as_str()),
             streams: subscriptions.len(),
             connected_at: mqtt.connected_at.clone(),
+            last_seen_at,
+            subscriptions,
+        });
+    }
+    for grpc in grpc_clients {
+        let mut subscriptions = Vec::new();
+        for session in sessions {
+            if session.peer != grpc.peer {
+                continue;
+            }
+            claimed.insert((session.id.as_str(), session.topic.as_str()));
+            subscriptions.push(to_subscription(session, &registered));
+        }
+        subscriptions.sort_by(|left, right| {
+            left.topic
+                .cmp(&right.topic)
+                .then(left.id.cmp(&right.id))
+        });
+        let last_seen_at = subscriptions
+            .iter()
+            .map(|item| item.last_seen_at.as_str())
+            .max()
+            .unwrap_or(grpc.connected_at.as_str())
+            .to_string();
+        clients.push(ClientInfo {
+            peer: grpc.peer.clone(),
+            protocol: "grpc",
+            client_id: String::new(),
+            version: first_value(&grpc.version, &subscriptions, |item| item.version.as_str()),
+            host: first_value(&grpc.host, &subscriptions, |item| item.host.as_str()),
+            streams: subscriptions.len(),
+            connected_at: grpc.connected_at.clone(),
             last_seen_at,
             subscriptions,
         });
@@ -579,7 +617,7 @@ mod tests {
             }],
             ..TopicSnapshot::default()
         }];
-        let clients = connected_clients(&sessions, &[], &topics);
+        let clients = connected_clients(&sessions, &[], &[], &topics);
         assert_eq!(clients.len(), 2);
         assert_eq!(clients[0].peer, "10.0.0.2:8");
         assert_eq!(clients[0].protocol, "mqtt");
@@ -633,7 +671,7 @@ mod tests {
                 host: "worker".into(),
             },
         ];
-        let clients = connected_clients(&sessions, &[], &[]);
+        let clients = connected_clients(&sessions, &[], &[], &[]);
         assert_eq!(clients.len(), 2);
         assert_eq!(clients[0].host, "api");
         assert_eq!(clients[0].streams, 1);
@@ -663,7 +701,7 @@ mod tests {
             }],
             ..TopicSnapshot::default()
         }];
-        let clients = connected_clients(&sessions, &[], &topics);
+        let clients = connected_clients(&sessions, &[], &[], &topics);
         assert_eq!(clients.len(), 1);
         assert_eq!(clients[0].version, "python/0.1.29");
         assert_eq!(clients[0].subscriptions[0].version, "python/0.1.29");
@@ -731,12 +769,30 @@ mod tests {
             connected_at: "2026-08-16T00:00:04Z".into(),
             version: "3.1.1".into(),
         }];
-        let clients = connected_clients(&[], &mqtt_clients, &[]);
+        let clients = connected_clients(&[], &mqtt_clients, &[], &[]);
         assert_eq!(clients.len(), 1);
         assert_eq!(clients[0].protocol, "mqtt-ws");
         assert_eq!(clients[0].client_id, "browser-1");
         assert_eq!(clients[0].peer, "10.0.0.8:44321");
         assert_eq!(clients[0].version, "3.1.1");
+        assert_eq!(clients[0].streams, 0);
+        assert!(clients[0].subscriptions.is_empty());
+    }
+
+    #[test]
+    fn grpc_tcp_connect_appears_without_subscribe() {
+        let grpc_clients = vec![GrpcClientInfo {
+            peer: "172.21.0.1:41001".into(),
+            connected_at: "2026-08-16T00:00:04Z".into(),
+            version: "python/0.1.34".into(),
+            host: "api".into(),
+        }];
+        let clients = connected_clients(&[], &[], &grpc_clients, &[]);
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].protocol, "grpc");
+        assert_eq!(clients[0].peer, "172.21.0.1:41001");
+        assert_eq!(clients[0].host, "api");
+        assert_eq!(clients[0].version, "python/0.1.34");
         assert_eq!(clients[0].streams, 0);
         assert!(clients[0].subscriptions.is_empty());
     }

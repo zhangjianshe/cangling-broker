@@ -2,6 +2,7 @@ mod auth;
 mod config;
 mod db;
 mod delivery;
+mod grpc_conn;
 mod logging;
 mod model;
 mod mqtt;
@@ -16,6 +17,7 @@ use auth::AuthInterceptor;
 use config::Config;
 use db::Database;
 use delivery::{Ingested, PROTOCOL_GRPC};
+use grpc_conn::{GrpcClientRegistry, TrackingIncoming};
 use subscribers::{InflightAcks, TopicSubscribers};
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
@@ -42,10 +44,22 @@ struct QueueService {
     config: Arc<Config>,
     subscribers: TopicSubscribers,
     inflight: InflightAcks,
+    grpc_clients: GrpcClientRegistry,
     shutdown: CancellationToken,
 }
 
 type ResponseStream<T> = Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Send>>;
+
+fn note_grpc_identity<T>(
+    registry: &GrpcClientRegistry,
+    request: &Request<T>,
+    version: &str,
+    host: &str,
+) {
+    if let Some(addr) = request.remote_addr() {
+        registry.touch(&addr.to_string(), version, host);
+    }
+}
 
 fn to_proto_topic(config: TopicConfig) -> ProtoTopicConfig {
     ProtoTopicConfig {
@@ -64,6 +78,12 @@ impl MessageQueue for QueueService {
         &self,
         request: Request<Streaming<AcceptMessageRequest>>,
     ) -> Result<Response<Self::AcceptMessagesStream>, Status> {
+        note_grpc_identity(
+            &self.grpc_clients,
+            &request,
+            &auth::metadata_client_version(request.metadata()),
+            &auth::metadata_client_host(request.metadata()),
+        );
         let mut inbound = request.into_inner();
         let (tx, rx) = mpsc::channel(16);
         let db = self.db.clone();
@@ -143,6 +163,12 @@ impl MessageQueue for QueueService {
         request: Request<RegisterRequest>,
     ) -> Result<Response<RegisterResponse>, Status> {
         let metadata = request.metadata().clone();
+        note_grpc_identity(
+            &self.grpc_clients,
+            &request,
+            &auth::metadata_client_version(&metadata),
+            &auth::metadata_client_host(&metadata),
+        );
         let mut request = request.into_inner();
         if request.topic.trim().is_empty() {
             return Err(Status::invalid_argument("topic is required"));
@@ -197,6 +223,7 @@ impl MessageQueue for QueueService {
             .unwrap_or_default();
         let mut version = auth::metadata_client_version(request.metadata());
         let mut host = auth::metadata_client_host(request.metadata());
+        note_grpc_identity(&self.grpc_clients, &request, &version, &host);
         let request = request.into_inner();
         if request.topic.trim().is_empty() {
             return Err(Status::invalid_argument("topic is required"));
@@ -331,6 +358,7 @@ async fn main() -> anyhow::Result<()> {
     let shutdown = CancellationToken::new();
     let subscribers = TopicSubscribers::default();
     let inflight = InflightAcks::default();
+    let grpc_clients = GrpcClientRegistry::default();
     let status_addr = config.status_listen_addr();
     let status_listener = tokio::net::TcpListener::bind(status_addr).await?;
     info!(address = %status_addr, "HTTP status listening");
@@ -373,6 +401,7 @@ async fn main() -> anyhow::Result<()> {
         shutdown.clone(),
         mqtt_on_status.then(|| mqtt_ctx.clone()),
         mqtt_ctx.registry.clone(),
+        grpc_clients.clone(),
     ));
     let worker = tokio::spawn(dispatch_loop(
         db.clone(),
@@ -393,6 +422,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         info!(%address, "gRPC intake service listening (CL_BROKER_AUTH_TOKEN unset, open)");
     }
+    let grpc_listener = tokio::net::TcpListener::bind(address).await?;
     Server::builder()
         .add_service(MessageQueueServer::with_interceptor(
             QueueService {
@@ -400,15 +430,19 @@ async fn main() -> anyhow::Result<()> {
                 config,
                 subscribers,
                 inflight,
+                grpc_clients: grpc_clients.clone(),
                 shutdown: shutdown.clone(),
             },
             interceptor,
         ))
-        .serve_with_shutdown(address, async move {
-            wait_for_shutdown().await;
-            info!("shutdown signal received");
-            shutdown.cancel();
-        })
+        .serve_with_incoming_shutdown(
+            TrackingIncoming::new(grpc_listener, grpc_clients),
+            async move {
+                wait_for_shutdown().await;
+                info!("shutdown signal received");
+                shutdown.cancel();
+            },
+        )
         .await?;
     status.await??;
     worker.await?;
