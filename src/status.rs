@@ -963,6 +963,8 @@ mod tests {
         assert!(html.contains("function numCell("), "{html}");
         assert!(html.contains("td.zero"), "{html}");
         assert!(html.contains("data-clear-topic"), "{html}");
+        assert!(html.contains("id=\"client-page-size\""), "{html}");
+        assert!(html.contains("id=\"topic-page-size\""), "{html}");
         assert!(!html.contains("连接时间"), "{html}");
         assert!(html.contains("pad2(date.getMonth() + 1)"), "{html}");
         assert!(!html.contains("toLocaleString"), "{html}");

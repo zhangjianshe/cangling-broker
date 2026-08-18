@@ -364,6 +364,14 @@
       flex: 0 0 auto;
       white-space: nowrap;
     }
+    .table-tools label.compact {
+      flex: 0 0 auto;
+    }
+    .table-tools input[type="number"] {
+      width: 4.5em;
+      min-width: 4.5em;
+      flex: 0 0 auto;
+    }
     .table-tools select,
     .table-tools input {
       background: var(--panel);
@@ -427,6 +435,9 @@
             <option value="mqtt-ws">MQTT-WS</option>
           </select>
         </label>
+        <label class="compact"><span>每页</span>
+          <input id="client-page-size" type="number" min="1" max="200" value="10" aria-label="每页条数">
+        </label>
       </div>
       <div id="clients"></div>
     </section>
@@ -434,6 +445,9 @@
       <div class="table-tools">
         <label><span>主题名</span>
           <input id="topic-name-filter" type="search" placeholder="模糊搜索，空格分隔多个词" aria-label="模糊搜索主题名">
+        </label>
+        <label class="compact"><span>每页</span>
+          <input id="topic-page-size" type="number" min="1" max="200" value="10" aria-label="每页条数">
         </label>
       </div>
       <div id="topics"></div>
@@ -518,8 +532,8 @@
       setTab("clients");
     })();
 
-    const TOPIC_PAGE_SIZE = 30;
-    const CLIENT_PAGE_SIZE = 10;
+    let topicPageSize = 10;
+    let clientPageSize = 10;
     let topicPage = 0;
     let clientPage = 0;
     let lastTopics = [];
@@ -796,13 +810,13 @@
       if (selectedClientKey && !shown.some((item) => clientKey(item) === selectedClientKey)) {
         selectedClientKey = "";
       }
-      const pages = Math.max(1, Math.ceil(shown.length / CLIENT_PAGE_SIZE));
+      const pages = Math.max(1, Math.ceil(shown.length / clientPageSize));
       if (clientPage >= pages) clientPage = pages - 1;
       if (clientPage < 0) clientPage = 0;
-      const start = clientPage * CLIENT_PAGE_SIZE;
-      const pageItems = shown.slice(start, start + CLIENT_PAGE_SIZE);
+      const start = clientPage * clientPageSize;
+      const pageItems = shown.slice(start, start + clientPageSize);
       const from = start + 1;
-      const to = Math.min(shown.length, start + CLIENT_PAGE_SIZE);
+      const to = Math.min(shown.length, start + clientPageSize);
       const rows = pageItems.map((client, i) => {
         const key = clientKey(client);
         const selected = key === selectedClientKey ? " selected" : "";
@@ -854,12 +868,13 @@
     }
 
     function pagerBar(from, to, total, page, pages, kind, pos) {
-      return '<div class="pager ' + (pos || "") + '"><span>第 ' + from + "–" + to + " 条，共 " + total +
-        " 条 · 第 " + page + "/" + pages + " 页</span>" +
+      return '<div class="pager ' + (pos || "") + '">' +
         '<span class="btns">' +
         '<button type="button" data-' + kind + '="prev"' + (page <= 1 ? " disabled" : "") + ">上一页</button>" +
         '<button type="button" data-' + kind + '="next"' + (page >= pages ? " disabled" : "") + ">下一页</button>" +
-        "</span></div>";
+        "</span>" +
+        "<span>第 " + from + "–" + to + " 条，共 " + total +
+        " 条 · 第 " + page + "/" + pages + " 页</span></div>";
     }
 
     function withPagers(tableHtml, from, to, total, page, pages, kind) {
@@ -951,14 +966,14 @@
         fillTopicModal();
         return;
       }
-      const pages = Math.max(1, Math.ceil(shown.length / TOPIC_PAGE_SIZE));
+      const pages = Math.max(1, Math.ceil(shown.length / topicPageSize));
       if (topicPage >= pages) topicPage = pages - 1;
       if (topicPage < 0) topicPage = 0;
-      const start = topicPage * TOPIC_PAGE_SIZE;
+      const start = topicPage * topicPageSize;
       const from = start + 1;
-      const to = Math.min(shown.length, start + TOPIC_PAGE_SIZE);
+      const to = Math.min(shown.length, start + topicPageSize);
       $("topics").innerHTML = withPagers(
-        topicsTable(shown.slice(start, start + TOPIC_PAGE_SIZE), start),
+        topicsTable(shown.slice(start, start + topicPageSize), start),
         from, to, shown.length, topicPage + 1, pages, "topic-page"
       );
       fillTopicModal();
@@ -1072,6 +1087,25 @@
     });
     $("topic-name-filter").addEventListener("input", (event) => {
       topicNameQuery = event.target.value || "";
+      topicPage = 0;
+      renderTopics(lastTopics);
+    });
+
+    function parsePageSize(value) {
+      const n = parseInt(value, 10);
+      if (!Number.isFinite(n) || n < 1) return 10;
+      return Math.min(200, n);
+    }
+
+    $("client-page-size").addEventListener("change", (event) => {
+      clientPageSize = parsePageSize(event.target.value);
+      event.target.value = String(clientPageSize);
+      clientPage = 0;
+      renderClients(lastClients);
+    });
+    $("topic-page-size").addEventListener("change", (event) => {
+      topicPageSize = parsePageSize(event.target.value);
+      event.target.value = String(topicPageSize);
       topicPage = 0;
       renderTopics(lastTopics);
     });
