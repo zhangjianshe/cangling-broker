@@ -1,7 +1,7 @@
 use std::{collections::HashMap, time::Instant};
 
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::{header::AUTHORIZATION, Request, StatusCode},
     middleware::{self, Next},
     response::{Html, Response},
@@ -147,6 +147,7 @@ fn status_routes(state: StatusState) -> Router {
         .route("/health", get(health))
         .route("/status", get(status))
         .route("/topics", get(list_topics).post(configure_topics))
+        .route("/messages", get(topic_message))
         .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state)
 }
@@ -261,6 +262,121 @@ async fn configure_topics(
     Ok(Json(TopicsBody {
         topics: topics.into_iter().map(to_body).collect(),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct MessagesQuery {
+    topic: String,
+    #[serde(default)]
+    offset: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct MessagePageBody {
+    topic: String,
+    offset: i64,
+    total: i64,
+    message: Option<MessageBody>,
+}
+
+#[derive(Debug, Serialize)]
+struct MessageBody {
+    id: String,
+    topic: String,
+    payload: String,
+    payload_encoding: &'static str,
+    truncated: bool,
+    attributes: serde_json::Value,
+    status: String,
+    attempts: i64,
+    created_at: String,
+    delivered_at: Option<String>,
+    last_error: Option<String>,
+}
+
+const MESSAGE_PREVIEW_BYTES: usize = 64 * 1024;
+
+async fn topic_message(
+    State(state): State<StatusState>,
+    Query(query): Query<MessagesQuery>,
+) -> Result<Json<MessagePageBody>, StatusCode> {
+    let topic = query.topic.trim();
+    if topic.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let page = state
+        .db
+        .topic_message_page(topic, query.offset)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(MessagePageBody {
+        topic: topic.to_string(),
+        offset: page.offset,
+        total: page.total,
+        message: page.message.map(to_message_body),
+    }))
+}
+
+fn to_message_body(message: crate::db::StoredMessage) -> MessageBody {
+    let (payload, payload_encoding, truncated) = match String::from_utf8(message.payload) {
+        Ok(text) => {
+            if text.len() > MESSAGE_PREVIEW_BYTES {
+                let mut end = MESSAGE_PREVIEW_BYTES;
+                while end > 0 && !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                (text[..end].to_string(), "utf-8", true)
+            } else {
+                (text, "utf-8", false)
+            }
+        }
+        Err(error) => {
+            let bytes = error.into_bytes();
+            let truncated = bytes.len() > MESSAGE_PREVIEW_BYTES;
+            let slice = if truncated {
+                &bytes[..MESSAGE_PREVIEW_BYTES]
+            } else {
+                &bytes
+            };
+            (encode_base64(slice), "base64", truncated)
+        }
+    };
+    MessageBody {
+        id: message.id,
+        topic: message.topic,
+        payload,
+        payload_encoding,
+        truncated,
+        attributes: message.attributes,
+        status: message.status,
+        attempts: message.attempts,
+        created_at: message.created_at,
+        delivered_at: message.delivered_at,
+        last_error: message.last_error,
+    }
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        output.push(TABLE[((n >> 18) & 63) as usize] as char);
+        output.push(TABLE[((n >> 12) & 63) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
 }
 
 fn to_body(config: TopicConfig) -> TopicConfigBody {
@@ -817,6 +933,10 @@ mod tests {
         assert!(html.contains("function fuzzyMatch("), "{html}");
         assert!(html.contains("连接时长"), "{html}");
         assert!(html.contains("fmtSince("), "{html}");
+        assert!(html.contains("apiUrl(\"messages\")"), "{html}");
+        assert!(html.contains("data-msg-nav"), "{html}");
+        assert!(html.contains("function numCell("), "{html}");
+        assert!(html.contains("td.zero"), "{html}");
         assert!(!html.contains("连接时间"), "{html}");
         assert!(html.contains("pad2(date.getMonth() + 1)"), "{html}");
         assert!(!html.contains("toLocaleString"), "{html}");

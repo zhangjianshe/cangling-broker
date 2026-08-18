@@ -16,6 +16,26 @@ use crate::model::{
 #[derive(Clone)]
 pub struct Database(pub SqlitePool);
 
+#[derive(Debug, Clone)]
+pub struct StoredMessage {
+    pub id: String,
+    pub topic: String,
+    pub payload: Vec<u8>,
+    pub attributes: serde_json::Value,
+    pub status: String,
+    pub attempts: i64,
+    pub created_at: String,
+    pub delivered_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TopicMessagePage {
+    pub offset: i64,
+    pub total: i64,
+    pub message: Option<StoredMessage>,
+}
+
 impl Database {
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
         if let Some(path) = sqlite_file_path(url) {
@@ -498,6 +518,139 @@ impl Database {
         }
         self.bump_topic_stat(topic, 1, 0, 0, 0).await?;
         Ok((id, false))
+    }
+
+    pub async fn topic_message_page(
+        &self,
+        filter: &str,
+        offset: i64,
+    ) -> anyhow::Result<TopicMessagePage> {
+        let mut offset = offset.max(0);
+        let (total, id) = self.topic_message_id(filter, offset).await?;
+        let (total, id) = if id.is_none() && total > 0 && offset >= total {
+            offset = total - 1;
+            self.topic_message_id(filter, offset).await?
+        } else {
+            (total, id)
+        };
+        let Some(id) = id else {
+            return Ok(TopicMessagePage {
+                offset,
+                total,
+                message: None,
+            });
+        };
+        let Some(row) = sqlx::query(
+            "SELECT id, topic, payload, attributes, status, attempts, created_at, delivered_at, last_error
+             FROM messages WHERE id = ?",
+        )
+        .bind(&id)
+        .fetch_optional(&self.0)
+        .await?
+        else {
+            return Ok(TopicMessagePage {
+                offset,
+                total,
+                message: None,
+            });
+        };
+        let attributes_raw: String = row.get("attributes");
+        let attributes = serde_json::from_str(&attributes_raw)
+            .unwrap_or_else(|_| serde_json::json!({}));
+        Ok(TopicMessagePage {
+            offset,
+            total,
+            message: Some(StoredMessage {
+                id: row.get("id"),
+                topic: row.get("topic"),
+                payload: row.get("payload"),
+                attributes,
+                status: row.get("status"),
+                attempts: row.get("attempts"),
+                created_at: row.get("created_at"),
+                delivered_at: row.get("delivered_at"),
+                last_error: row.get("last_error"),
+            }),
+        })
+    }
+
+    async fn topic_message_id(
+        &self,
+        filter: &str,
+        offset: i64,
+    ) -> anyhow::Result<(i64, Option<String>)> {
+        if !crate::topic::is_wildcard_filter(filter) {
+            let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE topic = ?")
+                .bind(filter)
+                .fetch_one(&self.0)
+                .await?;
+            if total == 0 || offset >= total {
+                return Ok((total, None));
+            }
+            let id: Option<String> = sqlx::query_scalar(
+                "SELECT id FROM messages WHERE topic = ?
+                 ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET ?",
+            )
+            .bind(filter)
+            .bind(offset)
+            .fetch_optional(&self.0)
+            .await?;
+            return Ok((total, id));
+        }
+        if let Some(prefix) = crate::topic::multi_level_prefix(filter) {
+            let like = format!("{}/%", escape_like(prefix));
+            let total: i64 = if prefix.is_empty() {
+                sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE topic NOT LIKE '$%'")
+                    .fetch_one(&self.0)
+                    .await?
+            } else {
+                sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM messages
+                     WHERE topic = ? OR topic LIKE ? ESCAPE '\\'",
+                )
+                .bind(prefix)
+                .bind(&like)
+                .fetch_one(&self.0)
+                .await?
+            };
+            if total == 0 || offset >= total {
+                return Ok((total, None));
+            }
+            let id: Option<String> = if prefix.is_empty() {
+                sqlx::query_scalar(
+                    "SELECT id FROM messages WHERE topic NOT LIKE '$%'
+                     ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET ?",
+                )
+                .bind(offset)
+                .fetch_optional(&self.0)
+                .await?
+            } else {
+                sqlx::query_scalar(
+                    "SELECT id FROM messages
+                     WHERE topic = ? OR topic LIKE ? ESCAPE '\\'
+                     ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET ?",
+                )
+                .bind(prefix)
+                .bind(&like)
+                .bind(offset)
+                .fetch_optional(&self.0)
+                .await?
+            };
+            return Ok((total, id));
+        }
+        let rows = sqlx::query("SELECT id, topic FROM messages ORDER BY created_at DESC, id DESC")
+            .fetch_all(&self.0)
+            .await?;
+        let matched: Vec<String> = rows
+            .into_iter()
+            .filter_map(|row| {
+                let topic: String = row.get("topic");
+                crate::topic::filter_matches(filter, &topic).then(|| row.get("id"))
+            })
+            .collect();
+        let total = matched.len() as i64;
+        let id = matched.get(offset as usize).cloned();
+        Ok((total, id))
     }
 
     pub async fn accept_dropped(&self, topic: &str) -> anyhow::Result<String> {
@@ -1051,6 +1204,39 @@ mod tests {
         assert_eq!(stats.pending, 0);
         assert_eq!(stats.dropped, 1);
 
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn topic_message_page_walks_latest_first() {
+        let (db, dir) = temp_db().await;
+        db.enqueue(None, "jobs", b"one", HashMap::new()).await.unwrap();
+        db.enqueue(None, "jobs", b"two", HashMap::new()).await.unwrap();
+        db.enqueue(None, "other", b"skip", HashMap::new()).await.unwrap();
+        let latest = db.topic_message_page("jobs", 0).await.unwrap();
+        assert_eq!(latest.total, 2);
+        assert_eq!(latest.message.as_ref().unwrap().payload, b"two");
+        let older = db.topic_message_page("jobs", 1).await.unwrap();
+        assert_eq!(older.message.as_ref().unwrap().payload, b"one");
+        let past_end = db.topic_message_page("jobs", 5).await.unwrap();
+        assert_eq!(past_end.offset, 1);
+        assert_eq!(past_end.total, 2);
+        assert_eq!(past_end.message.as_ref().unwrap().payload, b"one");
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn topic_message_page_matches_hash_filter() {
+        let (db, dir) = temp_db().await;
+        db.enqueue(None, "building/a", b"a", HashMap::new())
+            .await
+            .unwrap();
+        db.enqueue(None, "other", b"no", HashMap::new()).await.unwrap();
+        let page = db.topic_message_page("building/#", 0).await.unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.message.as_ref().unwrap().topic, "building/a");
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }

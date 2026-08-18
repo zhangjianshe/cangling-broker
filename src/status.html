@@ -163,6 +163,7 @@
     .url { color: var(--text); word-break: break-all; }
     .fail { color: var(--fail); }
     .pending { color: var(--pending); }
+    .topic-list td.zero { color: var(--muted); opacity: 0.4; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
     .attr {
       display: inline-block;
@@ -235,6 +236,55 @@
     }
     .modal-close:hover { background: var(--btn-hover); }
     .modal-body { overflow: auto; }
+    .msg-view {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .msg-view h3 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .msg-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px 12px;
+      margin-bottom: 8px;
+    }
+    .msg-toolbar .btns { display: flex; gap: 8px; }
+    .msg-toolbar button {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+    .msg-toolbar button:hover { background: var(--btn-hover); }
+    .msg-toolbar button:disabled { opacity: 0.4; cursor: default; }
+    .msg-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .msg-payload {
+      margin: 0;
+      padding: 10px 12px;
+      background: var(--chip);
+      border-radius: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 260px;
+      overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
     .client-detail {
       margin-top: 10px;
       background: var(--panel);
@@ -467,6 +517,8 @@
     let selectedTopicName = "";
     let clientTypeFilter = "";
     let topicNameQuery = "";
+    let messageOffset = 0;
+    let messageTopic = "";
 
     function fmtBytes(n) {
       const bytes = Number(n) || 0;
@@ -535,7 +587,86 @@
 
     function closeTopicModal() {
       selectedTopicName = "";
+      messageTopic = "";
+      messageOffset = 0;
       $("topic-modal").hidden = true;
+    }
+
+    function messageStatusLabel(status) {
+      if (status === "pending") return "待处理";
+      if (status === "processing") return "投递中";
+      if (status === "delivered") return "已投递";
+      if (status === "failed") return "失败";
+      if (status === "dropped") return "已丢弃";
+      return status || "—";
+    }
+
+    function messageViewerHtml(html) {
+      return '<div id="topic-message" class="msg-view">' + html + "</div>";
+    }
+
+    function renderTopicMessage(data) {
+      const box = $("topic-message");
+      if (!box) return;
+      const total = Number(data.total) || 0;
+      const offset = Number(data.offset) || 0;
+      const index = total ? offset + 1 : 0;
+      const newerDisabled = offset <= 0 ? " disabled" : "";
+      const olderDisabled = !total || offset >= total - 1 ? " disabled" : "";
+      const toolbar =
+        '<div class="msg-toolbar"><h3>消息</h3><span>' +
+        (total ? ("第 " + index + " / " + total + " 条") : "0 条") +
+        '</span><span class="btns">' +
+        '<button type="button" data-msg-nav="newer"' + newerDisabled + ">较新</button>" +
+        '<button type="button" data-msg-nav="older"' + olderDisabled + ">较旧</button>" +
+        "</span></div>";
+      if (!data.message) {
+        box.innerHTML = toolbar + '<div class="empty">暂无已保存消息</div>';
+        return;
+      }
+      const msg = data.message;
+      const encoding = msg.payload_encoding === "base64" ? "base64" : "utf-8";
+      box.innerHTML = toolbar +
+        '<div class="msg-meta">' +
+        '<span class="pill">' + escapeHtml(messageStatusLabel(msg.status)) + "</span>" +
+        '<span class="mono">' + escapeHtml(msg.id) + "</span>" +
+        (msg.topic && msg.topic !== selectedTopicName
+          ? '<span class="mono">' + escapeHtml(msg.topic) + "</span>"
+          : "") +
+        "<span>入队 " + escapeHtml(fmtTs(msg.created_at)) + "</span>" +
+        (msg.delivered_at ? "<span>投递 " + escapeHtml(fmtTs(msg.delivered_at)) + "</span>" : "") +
+        "<span>尝试 " + (msg.attempts || 0) + " 次</span>" +
+        (msg.truncated ? "<span>内容已截断</span>" : "") +
+        (encoding === "base64" ? "<span>二进制</span>" : "") +
+        "</div>" +
+        (attrsHtml(msg.attributes) !== "—" ? "<div>" + attrsHtml(msg.attributes) + "</div>" : "") +
+        (msg.last_error ? '<div class="fail">' + escapeHtml(msg.last_error) + "</div>" : "") +
+        '<pre class="msg-payload">' + escapeHtml(msg.payload || "") + "</pre>";
+    }
+
+    async function loadTopicMessage(topic, offset) {
+      const box = $("topic-message");
+      if (box) box.innerHTML = '<div class="empty">正在加载消息…</div>';
+      try {
+        const url = new URL(apiUrl("messages"));
+        url.searchParams.set("topic", topic);
+        url.searchParams.set("offset", String(offset));
+        const token = new URLSearchParams(location.search).get("token") || "";
+        if (token) url.searchParams.set("token", token);
+        const headers = {};
+        if (token) headers.Authorization = "Bearer " + token;
+        const response = await fetch(url.toString(), { cache: "no-store", headers });
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        const data = await response.json();
+        if (selectedTopicName !== topic) return;
+        messageOffset = Number(data.offset) || 0;
+        renderTopicMessage(data);
+      } catch (error) {
+        const current = $("topic-message");
+        if (current) {
+          current.innerHTML = '<div class="empty">无法加载消息：' + escapeHtml(error.message) + "</div>";
+        }
+      }
     }
 
     function fillTopicModal() {
@@ -560,7 +691,23 @@
         '<span>' + (topic.streams || 0) + " 条在线流</span>";
       const body = $("topic-modal-body");
       const top = body.scrollTop;
-      body.innerHTML = consumersTable(consumers);
+      const persistent = topic.persistence !== "ephemeral";
+      const consumersBlock = consumersTable(consumers);
+      if (!persistent) {
+        messageTopic = "";
+        messageOffset = 0;
+        body.innerHTML = messageViewerHtml('<div class="empty">即弃主题不保存消息</div>') + consumersBlock;
+      } else {
+        const existing = $("topic-message");
+        const sameTopic = messageTopic === topic.name && existing;
+        body.innerHTML = (sameTopic ? existing.outerHTML : messageViewerHtml('<div class="empty">正在加载消息…</div>')) +
+          consumersBlock;
+        if (!sameTopic) {
+          messageTopic = topic.name;
+          messageOffset = 0;
+          loadTopicMessage(topic.name, 0);
+        }
+      }
       body.scrollTop = top;
       modal.hidden = false;
     }
@@ -747,6 +894,12 @@
       renderTopics(data.topics_detail || []);
     }
 
+    function numCell(value, extra) {
+      const n = Number(value) || 0;
+      const cls = [n === 0 ? "zero" : "", extra || ""].filter(Boolean).join(" ");
+      return "<td" + (cls ? ' class="' + cls + '"' : "") + ">" + n + "</td>";
+    }
+
     function topicsTable(pageItems, start) {
       const rows = pageItems.map((t, i) => {
         const selected = t.name === selectedTopicName ? " selected" : "";
@@ -755,14 +908,14 @@
           "<td>" + escapeHtml(t.name) + "</td>" +
           "<td>" + escapeHtml(t.delivery === "broadcast" ? "广播" : "单投") + "</td>" +
           "<td>" + escapeHtml(t.persistence === "ephemeral" ? "即弃" : "持久") + "</td>" +
-          "<td>" + t.accepted + "</td>" +
-          "<td>" + t.pending + "</td>" +
-          "<td>" + t.processing + "</td>" +
-          "<td>" + t.delivered + "</td>" +
-          '<td class="' + (t.failed ? "fail" : "") + '">' + t.failed + "</td>" +
-          "<td>" + (t.dropped || 0) + "</td>" +
-          "<td>" + t.duplicates + "</td>" +
-          "<td>" + (t.streams || 0) + "</td>" +
+          numCell(t.accepted) +
+          numCell(t.pending) +
+          numCell(t.processing) +
+          numCell(t.delivered) +
+          numCell(t.failed, t.failed ? "fail" : "") +
+          numCell(t.dropped) +
+          numCell(t.duplicates) +
+          numCell(t.streams) +
           "<td>" + consumerSummary(t.consumers) + "</td></tr>";
       }).join("");
       return '<div class="topic-list"><table><thead><tr>' +
@@ -799,6 +952,13 @@
     }
 
     document.addEventListener("click", (event) => {
+      const nav = event.target.closest("[data-msg-nav]");
+      if (nav && !nav.disabled && selectedTopicName) {
+        if (nav.getAttribute("data-msg-nav") === "older") messageOffset += 1;
+        else messageOffset = Math.max(0, messageOffset - 1);
+        loadTopicMessage(selectedTopicName, messageOffset);
+        return;
+      }
       if (event.target.closest("[data-close-topic-modal]")) {
         closeTopicModal();
         renderTopics(lastTopics);
@@ -840,9 +1000,22 @@
     });
 
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !$("topic-modal").hidden) {
+      if ($("topic-modal").hidden) return;
+      const typing = event.target && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName);
+      if (event.key === "Escape") {
         closeTopicModal();
         renderTopics(lastTopics);
+        return;
+      }
+      if (typing || !selectedTopicName) return;
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        messageOffset += 1;
+        loadTopicMessage(selectedTopicName, messageOffset);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        messageOffset = Math.max(0, messageOffset - 1);
+        loadTopicMessage(selectedTopicName, messageOffset);
       }
     });
 
