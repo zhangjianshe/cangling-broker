@@ -140,6 +140,13 @@
     table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 8px; overflow: hidden; }
     th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
     th { color: var(--muted); font-weight: 600; font-size: 12px; }
+    th.seq, td.seq {
+      width: 1%;
+      white-space: nowrap;
+      text-align: right;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
     tr:last-child td { border-bottom: 0; }
     .empty { color: var(--muted); padding: 16px 24px; }
     .pill {
@@ -435,10 +442,11 @@
       const pageItems = clients.slice(start, start + CLIENT_PAGE_SIZE);
       const from = start + 1;
       const to = Math.min(clients.length, start + CLIENT_PAGE_SIZE);
-      const rows = pageItems.map((client) => {
+      const rows = pageItems.map((client, i) => {
         const key = clientKey(client);
         const selected = key === selectedClientKey ? " selected" : "";
         return '<tr class="' + selected.trim() + '" data-client-key="' + escapeHtml(key) + '">' +
+          '<td class="seq">' + (start + i + 1) + "</td>" +
           '<td class="mono">' + escapeHtml(client.host || "—") + "</td>" +
           '<td class="mono">' + escapeHtml(client.peer || "未知来源") + "</td>" +
           "<td><span class=\"pill\">" + escapeHtml(clientType(client.protocol)) + "</span></td>" +
@@ -449,7 +457,7 @@
       }).join("");
       const table =
         '<div class="client-list"><table><thead><tr>' +
-        "<th>主机</th><th>地址</th><th>类型</th><th>客户端</th><th>版本</th><th>订阅数</th><th>连接时间</th>" +
+        "<th class=\"seq\">序号</th><th>主机</th><th>地址</th><th>类型</th><th>客户端</th><th>版本</th><th>订阅数</th><th>连接时间</th>" +
         "</tr></thead><tbody>" + rows + "</tbody></table></div>";
       $("clients").innerHTML =
         withPagers(table, from, to, clients.length, clientPage + 1, pages, "client-page") +
@@ -463,14 +471,15 @@
       const client = lastClients.find((item) => clientKey(item) === selectedClientKey);
       if (!client) return "";
       const subs = client.subscriptions || [];
-      const rows = subs.map((sub) =>
-        "<tr><td class=\"mono\">" + escapeHtml(sub.topic || "") + "</td>" +
+      const rows = subs.map((sub, i) =>
+        '<tr><td class="seq">' + (i + 1) + "</td>" +
+        "<td class=\"mono\">" + escapeHtml(sub.topic || "") + "</td>" +
         "<td>" + escapeHtml(sub.name || "—") + "</td>" +
         '<td class="mono">' + escapeHtml(sub.id) + "</td>" +
         "<td>" + escapeHtml(fmtTs(sub.connected_at)) + "</td></tr>"
       ).join("");
       const body = rows
-        ? "<table><thead><tr><th>订阅主题</th><th>名称</th><th>编号</th><th>订阅时间</th></tr></thead><tbody>" +
+        ? "<table><thead><tr><th class=\"seq\">序号</th><th>订阅主题</th><th>名称</th><th>编号</th><th>订阅时间</th></tr></thead><tbody>" +
           rows + "</tbody></table>"
         : '<div class="empty">已连接，暂无订阅</div>';
       return '<div class="client-detail"><div class="head">' +
@@ -535,13 +544,14 @@
       renderTopics(data.topics_detail || []);
     }
 
-    function topicsTable(pageItems) {
+    function topicsTable(pageItems, start) {
       return "<table><thead><tr>" +
-        "<th>主题</th><th>投递</th><th>持久</th><th>已接收</th><th>待处理</th><th>投递中</th>" +
+        "<th class=\"seq\">序号</th><th>主题</th><th>投递</th><th>持久</th><th>已接收</th><th>待处理</th><th>投递中</th>" +
         "<th>已投递</th><th>失败</th><th>丢弃</th><th>重复</th><th>在线流</th><th>消费者</th>" +
         "</tr></thead><tbody>" +
-        pageItems.map((t) =>
-          "<tr><td>" + escapeHtml(t.name) + "</td>" +
+        pageItems.map((t, i) =>
+          '<tr><td class="seq">' + (start + i + 1) + "</td>" +
+          "<td>" + escapeHtml(t.name) + "</td>" +
           "<td>" + escapeHtml(t.delivery === "broadcast" ? "广播" : "单投") + "</td>" +
           "<td>" + escapeHtml(t.persistence === "ephemeral" ? "即弃" : "持久") + "</td>" +
           "<td>" + t.accepted + "</td>" +
@@ -571,7 +581,7 @@
       const from = start + 1;
       const to = Math.min(topics.length, start + TOPIC_PAGE_SIZE);
       $("topics").innerHTML = withPagers(
-        topicsTable(topics.slice(start, start + TOPIC_PAGE_SIZE)),
+        topicsTable(topics.slice(start, start + TOPIC_PAGE_SIZE), start),
         from, to, topics.length, topicPage + 1, pages, "topic-page"
       );
     }

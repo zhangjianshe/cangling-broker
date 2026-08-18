@@ -752,6 +752,7 @@ mod tests {
         assert!(html.contains("withPagers("), "{html}");
         assert!(html.contains("client.version"), "{html}");
         assert!(html.contains("client.host"), "{html}");
+        assert!(html.contains("序号"), "{html}");
         assert!(html.contains("pad2(date.getMonth() + 1)"), "{html}");
         assert!(!html.contains("toLocaleString"), "{html}");
         assert!(!html.contains("toLocaleTimeString"), "{html}");
