@@ -291,10 +291,17 @@
     }
     .table-tools label {
       display: flex;
+      flex-wrap: nowrap;
       align-items: center;
       gap: 8px;
+      min-width: 0;
+      flex: 1 1 360px;
       color: var(--muted);
       font-size: 13px;
+    }
+    .table-tools label span {
+      flex: 0 0 auto;
+      white-space: nowrap;
     }
     .table-tools select,
     .table-tools input {
@@ -305,7 +312,12 @@
       padding: 5px 8px;
       font: 13px/1.3 system-ui, sans-serif;
     }
-    .table-tools input { min-width: min(280px, 100%); }
+    .table-tools input {
+      flex: 1 1 auto;
+      min-width: 0;
+      width: 100%;
+    }
+    .table-tools select { flex: 0 0 auto; }
     .table-tools select:focus,
     .table-tools input:focus {
       outline: 1px solid var(--pending);
@@ -346,7 +358,7 @@
     </div>
     <section id="panel-clients" role="tabpanel" aria-labelledby="tab-clients">
       <div class="table-tools">
-        <label>连接类型
+        <label><span>连接类型</span>
           <select id="client-type-filter" aria-label="按连接类型筛选">
             <option value="">全部</option>
             <option value="grpc">gRPC</option>
@@ -359,7 +371,7 @@
     </section>
     <section id="panel-topics" role="tabpanel" aria-labelledby="tab-topics" hidden>
       <div class="table-tools">
-        <label>主题名
+        <label><span>主题名</span>
           <input id="topic-name-filter" type="search" placeholder="模糊搜索，空格分隔多个词" aria-label="模糊搜索主题名">
         </label>
       </div>
