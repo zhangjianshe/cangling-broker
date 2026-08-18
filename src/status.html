@@ -112,8 +112,31 @@
     }
     .card .label { color: var(--muted); font-size: 12px; }
     .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
-    section { padding: 0 24px 24px; }
+    section { padding: 0; }
     h2 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 0 0 10px; }
+    .tabs-wrap { padding: 0 24px 24px; }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 12px;
+    }
+    .tabs button {
+      background: transparent;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      padding: 8px 14px;
+      cursor: pointer;
+      font: 13px/1.2 system-ui, sans-serif;
+      margin-bottom: -1px;
+    }
+    .tabs button:hover { color: var(--text); }
+    .tabs button.active {
+      color: var(--text);
+      border-bottom-color: var(--pending);
+      font-weight: 600;
+    }
     table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 8px; overflow: hidden; }
     th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
     th { color: var(--muted); font-weight: 600; font-size: 12px; }
@@ -179,10 +202,12 @@
       align-items: center;
       justify-content: space-between;
       gap: 10px;
-      margin-top: 10px;
+      margin: 10px 0;
       color: var(--muted);
       font-size: 13px;
     }
+    .pager.top { margin-top: 0; }
+    .pager.bottom { margin-bottom: 0; }
     .pager .btns { display: flex; gap: 8px; }
     .pager button {
       background: var(--panel);
@@ -222,21 +247,22 @@
   </header>
   <div id="error"></div>
   <div class="cards" id="cards"></div>
-  <section>
-    <div class="section-head">
-      <h2 id="clients-title">已连接客户端</h2>
+  <div class="tabs-wrap">
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tab-clients" data-tab="clients" aria-controls="panel-clients" aria-selected="true" class="active">已连接客户端</button>
+      <button type="button" role="tab" id="tab-topics" data-tab="topics" aria-controls="panel-topics" aria-selected="false">主题</button>
     </div>
-    <div id="clients"></div>
-  </section>
-  <section>
-    <div class="section-head">
-      <h2 id="topics-title">主题</h2>
-    </div>
-    <div id="topics"></div>
-  </section>
+    <section id="panel-clients" role="tabpanel" aria-labelledby="tab-clients">
+      <div id="clients"></div>
+    </section>
+    <section id="panel-topics" role="tabpanel" aria-labelledby="tab-topics" hidden>
+      <div id="topics"></div>
+    </section>
+  </div>
   <script>
     const $ = (id) => document.getElementById(id);
     const THEME_KEY = "cl-broker-theme";
+    const TAB_KEY = "cl-broker-tab";
 
     function currentTheme() {
       return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
@@ -260,6 +286,46 @@
       setTheme(currentTheme() === "light" ? "dark" : "light");
     });
     syncThemeButton();
+
+    function setTab(name) {
+      const tab = name === "topics" ? "topics" : "clients";
+      try { localStorage.setItem(TAB_KEY, tab); } catch (_) {}
+      document.querySelectorAll("[data-tab]").forEach((btn) => {
+        const on = btn.getAttribute("data-tab") === tab;
+        btn.classList.toggle("active", on);
+        btn.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      $("panel-clients").hidden = tab !== "clients";
+      $("panel-topics").hidden = tab !== "topics";
+      if (location.hash !== "#" + tab) {
+        history.replaceState(null, "", "#" + tab);
+      }
+    }
+
+    document.querySelector(".tabs").addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-tab]");
+      if (btn) setTab(btn.getAttribute("data-tab"));
+    });
+    window.addEventListener("hashchange", () => {
+      const hash = location.hash.replace("#", "");
+      if (hash === "topics" || hash === "clients") setTab(hash);
+    });
+    (function initTab() {
+      const hash = location.hash.replace("#", "");
+      if (hash === "topics" || hash === "clients") {
+        setTab(hash);
+        return;
+      }
+      try {
+        const savedTab = localStorage.getItem(TAB_KEY);
+        if (savedTab === "topics" || savedTab === "clients") {
+          setTab(savedTab);
+          return;
+        }
+      } catch (_) {}
+      setTab("clients");
+    })();
+
     const TOPIC_PAGE_SIZE = 30;
     const CLIENT_PAGE_SIZE = 10;
     let topicPage = 0;
@@ -340,7 +406,7 @@
 
     function renderClients(clients) {
       lastClients = clients;
-      $("clients-title").textContent = "已连接客户端" + (clients.length ? " · " + clients.length : "");
+      $("tab-clients").textContent = "已连接客户端" + (clients.length ? " · " + clients.length : "");
       if (!clients.length) {
         selectedClientKey = "";
         $("clients").innerHTML = '<div class="empty">暂无已连接客户端</div>';
@@ -366,11 +432,12 @@
           "<td>" + (client.streams || (client.subscriptions || []).length) + "</td>" +
           "<td>" + escapeHtml(fmtTs(client.connected_at)) + "</td></tr>";
       }).join("");
-      $("clients").innerHTML =
+      const table =
         '<div class="client-list"><table><thead><tr>' +
         "<th>地址</th><th>类型</th><th>客户端</th><th>订阅数</th><th>连接时间</th>" +
-        "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
-        pagerBar(from, to, clients.length, clientPage + 1, pages, "client-page") +
+        "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+      $("clients").innerHTML =
+        withPagers(table, from, to, clients.length, clientPage + 1, pages, "client-page") +
         clientDetailHtml();
     }
 
@@ -399,13 +466,19 @@
         '<span class="meta">' + (subs.length) + " 个订阅</span></div>" + body + "</div>";
     }
 
-    function pagerBar(from, to, total, page, pages, kind) {
-      return '<div class="pager"><span>第 ' + from + "–" + to + " 条，共 " + total +
+    function pagerBar(from, to, total, page, pages, kind, pos) {
+      return '<div class="pager ' + (pos || "") + '"><span>第 ' + from + "–" + to + " 条，共 " + total +
         " 条 · 第 " + page + "/" + pages + " 页</span>" +
         '<span class="btns">' +
         '<button type="button" data-' + kind + '="prev"' + (page <= 1 ? " disabled" : "") + ">上一页</button>" +
         '<button type="button" data-' + kind + '="next"' + (page >= pages ? " disabled" : "") + ">下一页</button>" +
         "</span></div>";
+    }
+
+    function withPagers(tableHtml, from, to, total, page, pages, kind) {
+      return pagerBar(from, to, total, page, pages, kind, "top") +
+        tableHtml +
+        pagerBar(from, to, total, page, pages, kind, "bottom");
     }
 
     function escapeHtml(value) {
@@ -482,7 +555,7 @@
 
     function renderTopics(topics) {
       lastTopics = topics;
-      $("topics-title").textContent = "主题" + (topics.length ? " · " + topics.length : "");
+      $("tab-topics").textContent = "主题" + (topics.length ? " · " + topics.length : "");
       if (!topics.length) {
         $("topics").innerHTML = '<div class="empty">暂无主题</div>';
         return;
@@ -493,8 +566,10 @@
       const start = topicPage * TOPIC_PAGE_SIZE;
       const from = start + 1;
       const to = Math.min(topics.length, start + TOPIC_PAGE_SIZE);
-      $("topics").innerHTML = topicsTable(topics.slice(start, start + TOPIC_PAGE_SIZE)) +
-        pagerBar(from, to, topics.length, topicPage + 1, pages, "topic-page");
+      $("topics").innerHTML = withPagers(
+        topicsTable(topics.slice(start, start + TOPIC_PAGE_SIZE)),
+        from, to, topics.length, topicPage + 1, pages, "topic-page"
+      );
     }
 
     document.addEventListener("click", (event) => {

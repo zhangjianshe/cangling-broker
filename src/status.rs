@@ -609,6 +609,9 @@ mod tests {
         assert!(html.contains(r#"<base href="/msg/">"#), "{html}");
         assert!(html.contains("apiUrl(\"status\")"), "{html}");
         assert!(!html.contains(r#"fetch("/status""#), "{html}");
+        assert!(html.contains("data-tab=\"clients\""), "{html}");
+        assert!(html.contains("data-tab=\"topics\""), "{html}");
+        assert!(html.contains("withPagers("), "{html}");
     }
 
     #[test]
@@ -616,6 +619,9 @@ mod tests {
         let html = dashboard_html(None);
         assert!(!html.contains("<base "));
         assert!(html.contains("apiUrl(\"status\")"));
+        assert!(html.contains("role=\"tablist\""));
+        assert!(html.contains("pager.top"));
+        assert!(html.contains("pager.bottom"));
     }
 
     #[test]
