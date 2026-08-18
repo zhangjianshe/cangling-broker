@@ -520,12 +520,19 @@
       }
     });
 
+    function apiUrl(name) {
+      const path = location.pathname.endsWith("/")
+        ? location.pathname
+        : location.pathname + "/";
+      return new URL(name.replace(/^\//, ""), location.origin + path).toString();
+    }
+
     async function refresh() {
       try {
         const token = new URLSearchParams(location.search).get("token") || "";
         const headers = {};
         if (token) headers.Authorization = "Bearer " + token;
-        const response = await fetch("/status", { cache: "no-store", headers });
+        const response = await fetch(apiUrl("status"), { cache: "no-store", headers });
         if (!response.ok) throw new Error("HTTP " + response.status);
         render(await response.json());
       } catch (error) {

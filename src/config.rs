@@ -13,6 +13,11 @@ pub struct Config {
     #[arg(long, env = "CL_BROKER_WEBPORT", default_value_t = 7501)]
     pub web_port: u16,
 
+    /// Optional HTTP path prefix when a reverse proxy forwards `/msg/...`
+    /// without stripping it. Root routes stay registered. Example: `/msg`.
+    #[arg(long, env = "CL_BROKER_WEB_BASE", default_value = "")]
+    pub web_base: String,
+
     /// Accept MQTT 3.1.1 clients over TCP and WebSocket.
     #[arg(long, env = "CL_BROKER_MQTT_ENABLED", default_value_t = true, action = clap::ArgAction::Set)]
     pub mqtt_enabled: bool,
@@ -102,6 +107,20 @@ impl Config {
     pub fn log_dir(&self) -> Option<PathBuf> {
         self.data_dir.as_ref().map(|dir| dir.join("logs"))
     }
+
+    /// `/msg` from `msg`, `/msg/`, or `/msg`. Empty or `/` is `None`.
+    pub fn status_web_base(&self) -> Option<String> {
+        normalize_web_base(&self.web_base)
+    }
+}
+
+pub fn normalize_web_base(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(format!("/{trimmed}"))
+    }
 }
 
 fn sqlite_url(dir: &str) -> String {
@@ -122,6 +141,7 @@ impl Config {
             mqtt_enabled: true,
             mqtt_port: 7883,
             mqtt_ws_port: 8083,
+            web_base: String::new(),
             auth_token: None,
             data_dir: None,
             downstream_url: None,
@@ -135,5 +155,26 @@ impl Config {
             log_max_bytes: 1024,
             log_keep_files: 1,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_web_base;
+
+    #[test]
+    fn normalize_web_base_empty_or_root() {
+        assert_eq!(normalize_web_base(""), None);
+        assert_eq!(normalize_web_base("   "), None);
+        assert_eq!(normalize_web_base("/"), None);
+        assert_eq!(normalize_web_base("//"), None);
+    }
+
+    #[test]
+    fn normalize_web_base_prefix() {
+        assert_eq!(normalize_web_base("msg").as_deref(), Some("/msg"));
+        assert_eq!(normalize_web_base("/msg").as_deref(), Some("/msg"));
+        assert_eq!(normalize_web_base("/msg/").as_deref(), Some("/msg"));
+        assert_eq!(normalize_web_base("  /msg/  ").as_deref(), Some("/msg"));
     }
 }

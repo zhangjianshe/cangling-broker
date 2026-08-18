@@ -28,6 +28,7 @@ struct StatusState {
     consumer_ttl_secs: u64,
     started: Instant,
     auth_token: Option<String>,
+    web_base: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -102,18 +103,9 @@ pub async fn serve(
         consumer_ttl_secs: config.consumer_ttl_secs,
         started: Instant::now(),
         auth_token: auth::normalize(config.auth_token.as_deref()),
+        web_base: config.status_web_base(),
     };
-    let app = Router::new()
-        .route("/", get(page))
-        .route("/health", get(health))
-        .route("/status", get(status))
-        .route("/topics", get(list_topics).post(configure_topics))
-        .layer(middleware::from_fn_with_state(state.clone(), require_token))
-        .with_state(state);
-    let app = match mqtt {
-        Some(ctx) => app.merge(crate::mqtt::ws_status_router(ctx)),
-        None => app,
-    };
+    let app = status_app(state, mqtt);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -125,12 +117,52 @@ pub async fn serve(
     Ok(())
 }
 
+fn status_app(state: StatusState, mqtt: Option<crate::mqtt::MqttCtx>) -> Router {
+    let web_base = state.web_base.clone();
+    let mut app = status_routes(state.clone());
+    if let Some(ctx) = mqtt {
+        app = app.merge(crate::mqtt::ws_status_router(ctx));
+    }
+    match web_base {
+        Some(base) => Router::new().merge(app.clone()).nest(&base, app),
+        None => app,
+    }
+}
+
+fn status_routes(state: StatusState) -> Router {
+    Router::new()
+        .route("/", get(page))
+        .route("/health", get(health))
+        .route("/status", get(status))
+        .route("/topics", get(list_topics).post(configure_topics))
+        .layer(middleware::from_fn_with_state(state.clone(), require_token))
+        .with_state(state)
+}
+
+fn is_open_health_path(path: &str, web_base: Option<&str>) -> bool {
+    if path == "/health" {
+        return true;
+    }
+    web_base.is_some_and(|base| path == format!("{base}/health"))
+}
+
+fn dashboard_html(web_base: Option<&str>) -> String {
+    let html = include_str!("status.html");
+    match web_base {
+        Some(base) => {
+            let tag = format!(r#"<base href="{}/">"#, base.trim_end_matches('/'));
+            html.replacen("<head>", &format!("<head>\n  {tag}"), 1)
+        }
+        None => html.to_string(),
+    }
+}
+
 async fn require_token(
     State(state): State<StatusState>,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    if request.uri().path() == "/health" {
+    if is_open_health_path(request.uri().path(), state.web_base.as_deref()) {
         return Ok(next.run(request).await);
     }
     let Some(expected) = state.auth_token.as_deref() else {
@@ -147,8 +179,8 @@ async fn require_token(
     Err(StatusCode::UNAUTHORIZED)
 }
 
-async fn page() -> Html<&'static str> {
-    Html(include_str!("status.html"))
+async fn page(State(state): State<StatusState>) -> Html<String> {
+    Html(dashboard_html(state.web_base.as_deref()))
 }
 
 async fn health() -> Json<Health> {
@@ -569,5 +601,29 @@ mod tests {
         assert_eq!(clients[0].peer, "10.0.0.8:44321");
         assert_eq!(clients[0].streams, 0);
         assert!(clients[0].subscriptions.is_empty());
+    }
+
+    #[test]
+    fn dashboard_html_injects_base_href() {
+        let html = dashboard_html(Some("/msg"));
+        assert!(html.contains(r#"<base href="/msg/">"#), "{html}");
+        assert!(html.contains("apiUrl(\"status\")"), "{html}");
+        assert!(!html.contains(r#"fetch("/status""#), "{html}");
+    }
+
+    #[test]
+    fn dashboard_html_root_has_no_base_tag() {
+        let html = dashboard_html(None);
+        assert!(!html.contains("<base "));
+        assert!(html.contains("apiUrl(\"status\")"));
+    }
+
+    #[test]
+    fn health_stays_open_under_web_base() {
+        assert!(is_open_health_path("/health", None));
+        assert!(is_open_health_path("/health", Some("/msg")));
+        assert!(is_open_health_path("/msg/health", Some("/msg")));
+        assert!(!is_open_health_path("/msg/status", Some("/msg")));
+        assert!(!is_open_health_path("/status", Some("/msg")));
     }
 }
