@@ -160,7 +160,6 @@
     }
     .live { background: var(--live-bg); color: var(--live); }
     .stale { background: var(--stale-bg); color: var(--stale); }
-    .consumer { color: var(--muted); font-size: 12px; margin: 2px 0; }
     .url { color: var(--text); word-break: break-all; }
     .fail { color: var(--fail); }
     .pending { color: var(--pending); }
@@ -174,11 +173,68 @@
       color: var(--muted);
       font-size: 11px;
     }
-    .client-list { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-    .client-list table { border-radius: 0; }
-    .client-list tr { cursor: pointer; }
-    .client-list tr:hover td { background: var(--hover); }
-    .client-list tr.selected td { background: var(--selected); }
+    .client-list, .topic-list { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .client-list table, .topic-list table { border-radius: 0; }
+    .client-list tr, .topic-list tr { cursor: pointer; }
+    .client-list tr:hover td, .topic-list tr:hover td { background: var(--hover); }
+    .client-list tr.selected td, .topic-list tr.selected td { background: var(--selected); }
+    .hint { color: var(--muted); font-size: 12px; }
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      background: rgba(15, 20, 25, 0.55);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 8vh 16px 24px;
+    }
+    html[data-theme="light"] .modal { background: rgba(27, 36, 44, 0.35); }
+    .modal[hidden] { display: none; }
+    .modal-panel {
+      width: min(920px, 100%);
+      max-height: 80vh;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+    }
+    .modal-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .modal-head h2 {
+      margin: 0;
+      color: var(--text);
+      font-size: 16px;
+      word-break: break-all;
+    }
+    .modal-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .modal-close {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 4px 10px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .modal-close:hover { background: var(--btn-hover); }
+    .modal-body { overflow: auto; }
     .client-detail {
       margin-top: 10px;
       background: var(--panel);
@@ -266,6 +322,18 @@
       <div id="topics"></div>
     </section>
   </div>
+  <div id="topic-modal" class="modal" hidden>
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="topic-modal-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="topic-modal-title">主题</h2>
+          <div id="topic-modal-meta" class="modal-meta"></div>
+        </div>
+        <button type="button" class="modal-close" data-close-topic-modal aria-label="关闭">关闭</button>
+      </div>
+      <div id="topic-modal-body" class="modal-body"></div>
+    </div>
+  </div>
   <script>
     const $ = (id) => document.getElementById(id);
     const THEME_KEY = "cl-broker-theme";
@@ -340,6 +408,7 @@
     let lastTopics = [];
     let lastClients = [];
     let selectedClientKey = "";
+    let selectedTopicName = "";
 
     function fmtBytes(n) {
       const bytes = Number(n) || 0;
@@ -370,19 +439,63 @@
         '<div class="value' + (cls ? " " + cls : "") + '">' + value + "</div></div>";
     }
 
-    function consumersHtml(list) {
-      if (!list || !list.length) return '<div class="consumer">暂无消费者</div>';
-      return list.map((c) => {
-        const pill = c.live
+    function consumerSummary(list) {
+      const total = (list || []).length;
+      if (!total) return '<span class="hint">暂无</span>';
+      const live = list.filter((c) => c.live).length;
+      const stale = total - live;
+      return '<span class="pill live">' + live + " 在线</span>" +
+        (stale ? ' <span class="pill stale">' + stale + " 离线</span>" : "") +
+        ' <span class="hint">点击查看</span>';
+    }
+
+    function consumersTable(list) {
+      if (!list || !list.length) return '<div class="empty">暂无消费者</div>';
+      const rows = list.map((c, i) =>
+        '<tr><td class="seq">' + (i + 1) + "</td>" +
+        "<td>" + (c.live
           ? '<span class="pill live">在线</span>'
-          : '<span class="pill stale">离线</span>';
-        const attrs = attrsHtml(c.attributes);
-        return '<div class="consumer">' + pill +
-          ' <span class="url">' + escapeHtml(c.name || "(未命名)") + "</span>" +
-          "<br>编号 " + escapeHtml(c.id) +
-          " · 最近心跳 " + escapeHtml(fmtTs(c.last_seen_at)) +
-          (attrs !== "—" ? "<br>" + attrs : "") + "</div>";
-      }).join("");
+          : '<span class="pill stale">离线</span>') + "</td>" +
+        '<td class="url">' + escapeHtml(c.name || "(未命名)") + "</td>" +
+        '<td class="mono">' + escapeHtml(c.id) + "</td>" +
+        "<td>" + escapeHtml(fmtTs(c.last_seen_at)) + "</td>" +
+        "<td>" + attrsHtml(c.attributes) + "</td></tr>"
+      ).join("");
+      return "<table><thead><tr>" +
+        "<th class=\"seq\">序号</th><th>状态</th><th>名称</th><th>编号</th><th>最近心跳</th><th>属性</th>" +
+        "</tr></thead><tbody>" + rows + "</tbody></table>";
+    }
+
+    function closeTopicModal() {
+      selectedTopicName = "";
+      $("topic-modal").hidden = true;
+    }
+
+    function fillTopicModal() {
+      const modal = $("topic-modal");
+      if (!selectedTopicName) {
+        modal.hidden = true;
+        return;
+      }
+      const topic = lastTopics.find((item) => item.name === selectedTopicName);
+      if (!topic) {
+        closeTopicModal();
+        return;
+      }
+      $("topic-modal-title").textContent = topic.name;
+      const consumers = topic.consumers || [];
+      const live = consumers.filter((c) => c.live).length;
+      $("topic-modal-meta").innerHTML =
+        '<span class="pill">' + escapeHtml(topic.delivery === "broadcast" ? "广播" : "单投") + "</span>" +
+        '<span class="pill">' + escapeHtml(topic.persistence === "ephemeral" ? "即弃" : "持久") + "</span>" +
+        '<span class="pill live">' + live + " 在线</span>" +
+        '<span>' + consumers.length + " 个消费者</span>" +
+        '<span>' + (topic.streams || 0) + " 条在线流</span>";
+      const body = $("topic-modal-body");
+      const top = body.scrollTop;
+      body.innerHTML = consumersTable(consumers);
+      body.scrollTop = top;
+      modal.hidden = false;
     }
 
     function attrsHtml(attrs) {
@@ -545,12 +658,10 @@
     }
 
     function topicsTable(pageItems, start) {
-      return "<table><thead><tr>" +
-        "<th class=\"seq\">序号</th><th>主题</th><th>投递</th><th>持久</th><th>已接收</th><th>待处理</th><th>投递中</th>" +
-        "<th>已投递</th><th>失败</th><th>丢弃</th><th>重复</th><th>在线流</th><th>消费者</th>" +
-        "</tr></thead><tbody>" +
-        pageItems.map((t, i) =>
-          '<tr><td class="seq">' + (start + i + 1) + "</td>" +
+      const rows = pageItems.map((t, i) => {
+        const selected = t.name === selectedTopicName ? " selected" : "";
+        return '<tr class="' + selected.trim() + '" data-topic-name="' + escapeHtml(t.name) + '">' +
+          '<td class="seq">' + (start + i + 1) + "</td>" +
           "<td>" + escapeHtml(t.name) + "</td>" +
           "<td>" + escapeHtml(t.delivery === "broadcast" ? "广播" : "单投") + "</td>" +
           "<td>" + escapeHtml(t.persistence === "ephemeral" ? "即弃" : "持久") + "</td>" +
@@ -562,9 +673,12 @@
           "<td>" + (t.dropped || 0) + "</td>" +
           "<td>" + t.duplicates + "</td>" +
           "<td>" + (t.streams || 0) + "</td>" +
-          "<td>" + consumersHtml(t.consumers) + "</td></tr>"
-        ).join("") +
-        "</tbody></table>";
+          "<td>" + consumerSummary(t.consumers) + "</td></tr>";
+      }).join("");
+      return '<div class="topic-list"><table><thead><tr>' +
+        "<th class=\"seq\">序号</th><th>主题</th><th>投递</th><th>持久</th><th>已接收</th><th>待处理</th><th>投递中</th>" +
+        "<th>已投递</th><th>失败</th><th>丢弃</th><th>重复</th><th>在线流</th><th>消费者</th>" +
+        "</tr></thead><tbody>" + rows + "</tbody></table></div>";
     }
 
     function renderTopics(topics) {
@@ -572,6 +686,7 @@
       $("tab-topics").textContent = "主题" + (topics.length ? " · " + topics.length : "");
       if (!topics.length) {
         $("topics").innerHTML = '<div class="empty">暂无主题</div>';
+        fillTopicModal();
         return;
       }
       const pages = Math.max(1, Math.ceil(topics.length / TOPIC_PAGE_SIZE));
@@ -584,9 +699,28 @@
         topicsTable(topics.slice(start, start + TOPIC_PAGE_SIZE), start),
         from, to, topics.length, topicPage + 1, pages, "topic-page"
       );
+      fillTopicModal();
     }
 
     document.addEventListener("click", (event) => {
+      if (event.target.closest("[data-close-topic-modal]")) {
+        closeTopicModal();
+        renderTopics(lastTopics);
+        return;
+      }
+      const modal = $("topic-modal");
+      if (modal && !modal.hidden && event.target === modal) {
+        closeTopicModal();
+        renderTopics(lastTopics);
+        return;
+      }
+      const topicRow = event.target.closest("[data-topic-name]");
+      if (topicRow) {
+        const name = topicRow.getAttribute("data-topic-name") || "";
+        selectedTopicName = selectedTopicName === name ? "" : name;
+        renderTopics(lastTopics);
+        return;
+      }
       const row = event.target.closest("[data-client-key]");
       if (row) {
         const key = row.getAttribute("data-client-key") || "";
@@ -605,6 +739,13 @@
       if (topicBtn && !topicBtn.disabled) {
         if (topicBtn.getAttribute("data-topic-page") === "prev") topicPage -= 1;
         else topicPage += 1;
+        renderTopics(lastTopics);
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !$("topic-modal").hidden) {
+        closeTopicModal();
         renderTopics(lastTopics);
       }
     });
