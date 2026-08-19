@@ -597,6 +597,19 @@ async fn retention_loop(
                 Err(error) => error!(%error, "unable to purge expired messages"),
             }
         }
+        if config.delivered_retention_hours > 0 {
+            let cutoff = chrono::Utc::now()
+                - chrono::Duration::hours(config.delivered_retention_hours as i64);
+            match db.purge_delivered_older_than(&cutoff.to_rfc3339()).await {
+                Ok(0) => {}
+                Ok(deleted) => info!(
+                    deleted,
+                    hours = config.delivered_retention_hours,
+                    "purged delivered messages older than retention"
+                ),
+                Err(error) => error!(%error, "unable to purge delivered messages"),
+            }
+        }
         let due_idle_purge = config.ephemeral_idle_hours > 0
             && last_idle_purge
                 .map(|started| {

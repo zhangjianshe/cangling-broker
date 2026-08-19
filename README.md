@@ -270,7 +270,8 @@ Call `AckMessage` with that `message_id` and `lease`. `success = true` marks the
 | `DOWNSTREAM_URL` | unset | optional HTTP POST fallback when a topic has no live `Subscribe` stream |
 | `WORKER_POLL_MS` | `500` | queue polling interval |
 | `MAX_DELIVERY_ATTEMPTS` | `10` | attempts before a message is marked failed |
-| `MESSAGE_RETENTION_DAYS` | `10` | delete messages older than this; `0` keeps them forever |
+| `MESSAGE_RETENTION_DAYS` | `10` | delete messages older than this (any status, by `created_at`); `0` keeps them forever |
+| `CL_BROKER_DELIVERED_RETENTION_HOURS` | `24` | delete delivered messages whose `delivered_at` is older than this; `0` disables. Pending, failed, and dropped rows stay until `MESSAGE_RETENTION_DAYS` |
 | `CL_BROKER_EPHEMERAL_IDLE_HOURS` | `1` | delete unconfigured ephemeral topic rows with no new message for this many hours; `0` disables. `ConfigureTopics` rows are kept |
 | `CL_BROKER_PURGE_INTERVAL_HOURS` | `1` | how often idle-topic purge runs; `0` runs it on every 60s sweep |
 | `ACK_TIMEOUT_SECS` | `30` | how long a subscriber may take to `AckMessage` before the message is retried |
@@ -364,6 +365,6 @@ erDiagram
     }
 ```
 
-索引：`messages(status, next_attempt_at, created_at)`、`messages(created_at)`、`messages(topic, status, next_attempt_at, created_at)`、`consumers(topic, last_seen_at)`。
+索引：`messages(status, next_attempt_at, created_at)`、`messages(created_at)`、`messages(status, delivered_at)`、`messages(topic, status, next_attempt_at, created_at)`、`consumers(topic, last_seen_at)`。
 
-`consumers` 只存 gRPC `Register` 元数据。投递走内存里的 `Subscribe` / MQTT 会话；MQTT 订约本身写入 `topic_stats`，不写 `consumers`。`messages.idempotency_key` 全局唯一，用于 `AcceptMessages` 去重。隐式 ephemeral 且空闲超过 `CL_BROKER_EPHEMERAL_IDLE_HOURS` 的行会被 purge 删掉；`configured=1` 和 MQTT 订约的 persistent filter 会留下。
+`consumers` 只存 gRPC `Register` 元数据。投递走内存里的 `Subscribe` / MQTT 会话；MQTT 订约本身写入 `topic_stats`，不写 `consumers`。`messages.idempotency_key` 全局唯一，用于 `AcceptMessages` 去重。隐式 ephemeral 且空闲超过 `CL_BROKER_EPHEMERAL_IDLE_HOURS` 的行会被 purge 删掉；`configured=1` 和 MQTT 订约的 persistent filter 会留下。已投递且 `delivered_at` 超过 `CL_BROKER_DELIVERED_RETENTION_HOURS` 的消息行会被删掉；未投递的行仍按 `MESSAGE_RETENTION_DAYS` 清理。

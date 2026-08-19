@@ -54,6 +54,12 @@ pub struct Config {
     #[arg(long, env = "MESSAGE_RETENTION_DAYS", default_value_t = 10)]
     pub message_retention_days: i64,
 
+    /// Delete delivered messages whose `delivered_at` is older than this many
+    /// hours. Pending, processing, failed, and dropped rows are left alone.
+    /// 0 disables. Independent of `MESSAGE_RETENTION_DAYS`.
+    #[arg(long, env = "CL_BROKER_DELIVERED_RETENTION_HOURS", default_value_t = 24)]
+    pub delivered_retention_hours: u64,
+
     /// Delete unconfigured ephemeral topic rows that have not received a
     /// message for this many hours. 0 disables. Explicit ConfigureTopics stay.
     #[arg(long, env = "CL_BROKER_EPHEMERAL_IDLE_HOURS", default_value_t = 1)]
@@ -152,6 +158,7 @@ impl Config {
             worker_poll_ms: 20,
             max_delivery_attempts: 10,
             message_retention_days: 0,
+            delivered_retention_hours: 0,
             ephemeral_idle_hours: 0,
             purge_interval_hours: 1,
             ack_timeout_secs: 3,

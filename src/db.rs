@@ -86,6 +86,8 @@ impl Database {
                 ON messages(status, next_attempt_at, created_at);
             CREATE INDEX IF NOT EXISTS idx_messages_created_at
                 ON messages(created_at);
+            CREATE INDEX IF NOT EXISTS idx_messages_delivered
+                ON messages(status, delivered_at);
             CREATE INDEX IF NOT EXISTS idx_messages_topic_ready
                 ON messages(topic, status, next_attempt_at, created_at);",
         )
@@ -1095,6 +1097,19 @@ impl Database {
         Ok(result.rows_affected())
     }
 
+    /// Remove delivered rows whose `delivered_at` is older than `cutoff`.
+    /// Caller passes `now - delivered_retention_hours`. Other statuses stay.
+    pub async fn purge_delivered_older_than(&self, cutoff: &str) -> anyhow::Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM messages
+             WHERE status = 'delivered' AND delivered_at IS NOT NULL AND delivered_at < ?",
+        )
+        .bind(cutoff)
+        .execute(&self.0)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Remove implicit ephemeral topics that have been idle since `cutoff`.
     /// Caller passes `now - ephemeral_idle_hours` and schedules on `purge_interval_hours`
     /// (both default to 1 hour). Live subscriber topics in `keep` and ConfigureTopics stay.
@@ -1507,6 +1522,64 @@ mod tests {
         let configured = db.topic_config("fresh").await.unwrap();
         assert_eq!(configured.delivery, DeliveryMode::Single);
         assert_eq!(configured.persistence, PersistenceMode::Persistent);
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn purge_delivered_older_than_keeps_pending_and_recent() {
+        let (db, dir) = temp_db().await;
+        let visibility = Duration::from_secs(5);
+        let (old_id, _) = db
+            .enqueue(None, "jobs", b"old-delivered", HashMap::new())
+            .await
+            .unwrap();
+        let old = db
+            .claim_next_for_topic("jobs", visibility)
+            .await
+            .unwrap()
+            .expect("old claim");
+        assert_eq!(old.id, old_id);
+        db.delivered(&old.id, &old.lease).await.unwrap();
+
+        let (recent_id, _) = db
+            .enqueue(None, "jobs", b"recent-delivered", HashMap::new())
+            .await
+            .unwrap();
+        let recent = db
+            .claim_next_for_topic("jobs", visibility)
+            .await
+            .unwrap()
+            .expect("recent claim");
+        assert_eq!(recent.id, recent_id);
+        db.delivered(&recent.id, &recent.lease).await.unwrap();
+
+        let (pending_id, _) = db
+            .enqueue(None, "jobs", b"still-pending", HashMap::new())
+            .await
+            .unwrap();
+
+        let stale = (Utc::now() - chrono::Duration::hours(25)).to_rfc3339();
+        sqlx::query("UPDATE messages SET delivered_at = ? WHERE id = ?")
+            .bind(&stale)
+            .bind(&old_id)
+            .execute(&db.0)
+            .await
+            .unwrap();
+
+        let cutoff = (Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
+        let deleted = db.purge_delivered_older_than(&cutoff).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        let remaining: Vec<String> = sqlx::query("SELECT id FROM messages ORDER BY created_at")
+            .fetch_all(&db.0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("id"))
+            .collect();
+        assert_eq!(remaining, vec![recent_id, pending_id]);
 
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);
