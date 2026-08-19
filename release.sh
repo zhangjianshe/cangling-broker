@@ -58,6 +58,8 @@ py.write_text(py_text.replace(py_old, f'version = "{new}"', 1))
 PY
 
 git add Cargo.toml Cargo.lock java/pom.xml python/pyproject.toml
+# Do not put [skip ci] here: GitHub would also skip the tag push that must compile and publish.
+# ci.yml skips jobs on a branch push whose message starts with "Release v".
 git commit -m "Release v${new}"
 git tag -a "v${new}" -m "Release v${new}"
 

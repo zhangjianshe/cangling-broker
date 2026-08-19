@@ -156,7 +156,7 @@ python python/examples/consumer.py --broker 127.0.0.1:7500 --topic cangling-test
 python python/examples/producer.py --broker 127.0.0.1:7500 --topic cangling-test --text hello --count 1 --token change-me
 ```
 
-CI compiles on **x86_64** (`ubuntu-latest`) and **aarch64** (`ubuntu-24.04-arm`), caches the Cargo output for the next run, then publishes a multi-arch image to both:
+CI compiles on **x86_64** (`ubuntu-latest`) and **aarch64** (`ubuntu-24.04-arm`) and caches the Cargo output for the next run. A normal branch push or pull request only compiles. A version tag compiles again, then publishes Docker, Maven Central, and PyPI. Images:
 
 - `docker.io/mapway/cangling-broker:latest`
 - `harbor.cangling.cn:22002/cangling/cangling-broker:latest`
@@ -167,7 +167,7 @@ CI compiles on **x86_64** (`ubuntu-latest`) and **aarch64** (`ubuntu-24.04-arm`)
 ./release.sh
 ```
 
-Each run bumps the patch version in `Cargo.toml`, `java/pom.xml`, and `python/pyproject.toml` (`0.1.0` → `0.1.1`), commits, tags `v0.1.1`, and pushes. Deploy stays in GitHub Actions: the tag publishes Docker images, `cn.mapway:cangling-broker` to Maven Central, and `cangling-broker` to PyPI. A branch push or pull request only compiles.
+Each run bumps the patch version in `Cargo.toml`, `java/pom.xml`, and `python/pyproject.toml` (`0.1.0` → `0.1.1`), commits `Release v0.1.1`, tags `v0.1.1`, and pushes. That is two Git refs, so GitHub starts two workflows. Do not put `[skip ci]` on the commit: GitHub would skip the tag as well. Compile jobs skip the branch push when the message starts with `Release v`. The **tag** run is the one that compiles and publishes Docker, `cn.mapway:cangling-broker` to Maven Central, and `cangling-broker` to PyPI. Docker images are not published from `main`.
 
 Set these repository secrets:
 
