@@ -15,45 +15,53 @@
   </script>
   <style>
     :root, html[data-theme="dark"] {
-      --bg: #0f1419;
-      --panel: #1a2129;
-      --line: #2a3440;
-      --text: #e7ecf1;
-      --muted: #8b98a5;
-      --live: #3dd68c;
-      --stale: #f0b429;
-      --fail: #f07178;
-      --pending: #59c2ff;
-      --chip: #243040;
-      --live-bg: #143d2c;
-      --stale-bg: #3d3114;
-      --hover: #222b35;
-      --selected: #1c3348;
-      --btn-hover: #243040;
+      /* GitHub Primer dark */
+      --bg: #0d1117;
+      --panel: #151b23;
+      --line: #3d444d;
+      --text: #f0f6fc;
+      --muted: #9198a1;
+      --live: #3fb950;
+      --stale: #d29922;
+      --fail: #f85149;
+      --pending: #4493f8;
+      --chip: #656c7633;
+      --live-bg: #2ea04326;
+      --stale-bg: #bb800926;
+      --hover: #656c7633;
+      --selected: #388bfd1a;
+      --btn-hover: #262c36;
+      --inset: #010409;
+      --overlay: #21283066;
+      --shadow: 0 0 0 1px #3d444d80, 0 16px 32px #01040966;
     }
     html[data-theme="light"] {
-      --bg: #f4f6f8;
+      /* GitHub Primer light */
+      --bg: #f6f8fa;
       --panel: #ffffff;
-      --line: #d8dee6;
-      --text: #1b242c;
-      --muted: #667585;
-      --live: #178a54;
-      --stale: #b58114;
-      --fail: #c43d46;
-      --pending: #1a7ab8;
-      --chip: #e8eef4;
-      --live-bg: #dff3e8;
-      --stale-bg: #f8edd0;
-      --hover: #eef3f8;
-      --selected: #dceaf6;
-      --btn-hover: #e8eef4;
+      --line: #d1d9e0;
+      --text: #1f2328;
+      --muted: #59636e;
+      --live: #1a7f37;
+      --stale: #9a6700;
+      --fail: #d1242f;
+      --pending: #0969da;
+      --chip: #818b981f;
+      --live-bg: #dafbe1;
+      --stale-bg: #fff8c5;
+      --hover: #818b981a;
+      --selected: #ddf4ff;
+      --btn-hover: #eff2f5;
+      --inset: #f6f8fa;
+      --overlay: #c8d1da66;
+      --shadow: 0 0 0 1px #d1d9e040, 0 6px 12px -3px #25292e0a, 0 6px 18px 0 #25292e1f;
     }
     * { box-sizing: border-box; }
     html { color-scheme: dark; }
     html[data-theme="light"] { color-scheme: light; }
     body {
       margin: 0;
-      font: 14px/1.45 system-ui, sans-serif;
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
       background: var(--bg);
       color: var(--text);
     }
@@ -86,7 +94,7 @@
       border-radius: 8px;
       padding: 6px 10px;
       cursor: pointer;
-      font: 12px/1.2 system-ui, sans-serif;
+      font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
       white-space: nowrap;
     }
     #theme-toggle:hover { background: var(--btn-hover); }
@@ -128,7 +136,7 @@
       color: var(--muted);
       padding: 8px 14px;
       cursor: pointer;
-      font: 13px/1.2 system-ui, sans-serif;
+      font: 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
       margin-bottom: -1px;
     }
     .tabs button:hover { color: var(--text); }
@@ -184,13 +192,12 @@
       position: fixed;
       inset: 0;
       z-index: 40;
-      background: rgba(15, 20, 25, 0.55);
+      background: var(--overlay);
       display: flex;
       align-items: flex-start;
       justify-content: center;
       padding: 8vh 16px 24px;
     }
-    html[data-theme="light"] .modal { background: rgba(27, 36, 44, 0.35); }
     .modal[hidden] { display: none; }
     .modal-panel {
       width: min(920px, 100%);
@@ -201,7 +208,7 @@
       overflow: hidden;
       display: flex;
       flex-direction: column;
-      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+      box-shadow: var(--shadow);
     }
     .modal-head {
       display: flex;
@@ -242,7 +249,7 @@
       border-radius: 6px;
       padding: 2px 8px;
       cursor: pointer;
-      font: 12px/1.2 system-ui, sans-serif;
+      font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
       white-space: nowrap;
     }
     .row-btn:hover { background: var(--btn-hover); color: var(--fail); border-color: var(--fail); }
@@ -287,7 +294,8 @@
     .msg-payload {
       margin: 0;
       padding: 10px 12px;
-      background: var(--chip);
+      background: var(--inset);
+      border: 1px solid var(--line);
       border-radius: 6px;
       white-space: pre-wrap;
       word-break: break-word;
@@ -379,7 +387,7 @@
       color: var(--text);
       border-radius: 6px;
       padding: 5px 8px;
-      font: 13px/1.3 system-ui, sans-serif;
+      font: 13px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
     }
     .table-tools input {
       flex: 1 1 auto;
@@ -400,13 +408,13 @@
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="48" height="48">
         <defs>
           <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#00F2FE"></stop>
-            <stop offset="100%" stop-color="#3b82f6"></stop>
+            <stop offset="0%" stop-color="var(--pending)"></stop>
+            <stop offset="100%" stop-color="var(--live)"></stop>
           </linearGradient>
         </defs>
         <rect x="2" y="2" width="36" height="36" rx="10" fill="var(--panel)" stroke="url(#logoGrad)" stroke-width="2"></rect>
         <path d="M 26 12 C 22 10 16 12 13 16 C 10 20 12 26 16 28 C 20 30 26 27 28 24" fill="none" stroke="url(#logoGrad)" stroke-width="3" stroke-linecap="round"></path>
-        <circle cx="27" cy="14" r="3" fill="#00F2FE"></circle>
+        <circle cx="27" cy="14" r="3" fill="var(--pending)"></circle>
       </svg>
       <div>
         <h1>CANGLING BROKER</h1>
