@@ -220,7 +220,7 @@
     }
     table { width: 100%; border-collapse: collapse; background: var(--bg-2); }
     th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-    th { color: var(--muted); font-weight: 500; }
+    th { color: var(--muted); font-weight: 700; }
     th.seq, td.seq {
       width: 1%;
       white-space: nowrap;
@@ -399,7 +399,27 @@
     }
     .pager.top { margin-top: 0; }
     .pager.bottom { margin-bottom: 0; }
-    .pager .btns { display: flex; gap: 8px; }
+    .pager .btns { display: flex; align-items: center; gap: 8px; }
+    .pager .page-size {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .pager .page-size input {
+      width: 4.5em;
+      min-width: 4.5em;
+      background: var(--bg-input);
+      border: 1px solid var(--line);
+      color: var(--text);
+      padding: 7px 8px;
+      outline: none;
+    }
+    .pager .page-size input:focus {
+      border-color: var(--accent-emphasis);
+      box-shadow: 0 0 0 3px var(--bg-active);
+    }
     .table-tools {
       display: flex;
       flex-wrap: wrap;
@@ -413,18 +433,12 @@
       align-items: center;
       gap: 8px;
       min-width: 0;
-      flex: 1 1 360px;
+      flex: 0 0 auto;
       color: var(--muted);
     }
     .table-tools label span {
       flex: 0 0 auto;
       white-space: nowrap;
-    }
-    .table-tools label.compact { flex: 0 0 auto; }
-    .table-tools input[type="number"] {
-      width: 4.5em;
-      min-width: 4.5em;
-      flex: 0 0 auto;
     }
     .table-tools select,
     .table-tools input {
@@ -434,12 +448,12 @@
       padding: 9px 11px;
       outline: none;
     }
-    .table-tools input {
-      flex: 1 1 auto;
-      min-width: 0;
-      width: 100%;
-    }
     .table-tools select { flex: 0 0 auto; }
+    #topic-name-filter {
+      width: 250px;
+      min-width: 250px;
+      flex: 0 0 250px;
+    }
     .table-tools select:focus,
     .table-tools input:focus {
       border-color: var(--accent-emphasis);
@@ -483,9 +497,6 @@
             <option value="mqtt-ws">MQTT-WS</option>
           </select>
         </label>
-        <label class="compact"><span>每页</span>
-          <input id="client-page-size" type="number" min="1" max="200" value="10" aria-label="每页条数">
-        </label>
       </div>
       <div id="clients"></div>
     </section>
@@ -493,9 +504,6 @@
       <div class="table-tools">
         <label><span>主题名</span>
           <input id="topic-name-filter" type="search" placeholder="模糊搜索，空格分隔多个词" aria-label="模糊搜索主题名">
-        </label>
-        <label class="compact"><span>每页</span>
-          <input id="topic-page-size" type="number" min="1" max="200" value="10" aria-label="每页条数">
         </label>
       </div>
       <div id="topics"></div>
@@ -917,10 +925,15 @@
     }
 
     function pagerBar(from, to, total, page, pages, kind, pos) {
+      const sizeKind = kind === "topic-page" ? "topic" : "client";
+      const size = sizeKind === "topic" ? topicPageSize : clientPageSize;
       return '<div class="pager ' + (pos || "") + '">' +
         '<span class="btns">' +
         '<button type="button" data-' + kind + '="prev"' + (page <= 1 ? " disabled" : "") + ">上一页</button>" +
         '<button type="button" data-' + kind + '="next"' + (page >= pages ? " disabled" : "") + ">下一页</button>" +
+        '<label class="page-size"><span>每页</span>' +
+        '<input type="number" min="1" max="200" value="' + size +
+        '" data-page-size="' + sizeKind + '" aria-label="每页条数"></label>' +
         "</span>" +
         "<span>第 " + from + "–" + to + " 条，共 " + total +
         " 条 · 第 " + page + "/" + pages + " 页</span></div>";
@@ -1147,17 +1160,19 @@
       return Math.min(200, n);
     }
 
-    $("client-page-size").addEventListener("change", (event) => {
-      clientPageSize = parsePageSize(event.target.value);
-      event.target.value = String(clientPageSize);
-      clientPage = 0;
-      renderClients(lastClients);
-    });
-    $("topic-page-size").addEventListener("change", (event) => {
-      topicPageSize = parsePageSize(event.target.value);
-      event.target.value = String(topicPageSize);
-      topicPage = 0;
-      renderTopics(lastTopics);
+    document.addEventListener("change", (event) => {
+      const input = event.target.closest("[data-page-size]");
+      if (!input) return;
+      const size = parsePageSize(input.value);
+      if (input.getAttribute("data-page-size") === "topic") {
+        topicPageSize = size;
+        topicPage = 0;
+        renderTopics(lastTopics);
+      } else {
+        clientPageSize = size;
+        clientPage = 0;
+        renderClients(lastClients);
+      }
     });
 
     function apiUrl(name) {
