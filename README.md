@@ -318,7 +318,7 @@ A gRPC `AcceptMessages` publish is delivered to MQTT subscribers on that topic, 
 
 ## 数据库 ER
 
-三张表落在同一个 SQLite 文件（`<data>/queue.db`）。没有声明 `FOREIGN KEY`，逻辑外键是 `topic`。
+三张表落在同一个 SQLite 文件（`<data>/queue.db`）。没有声明 `FOREIGN KEY`，逻辑外键是 `topic`。列、默认值和索引与 `src/db.rs` 里 `Database::connect` 的 `CREATE TABLE` / `CREATE INDEX` 一致。
 
 `topic_stats.topic` 可以是精确名，也可以是 MQTT 订约 filter（`building/#`、`sensor/+/temp`）。`messages.topic` 永远是精确发布名。通配符订约会单独占一行 `topic_stats`（`persistence=persistent`，`configured=0`），这样 idle purge 不会删掉已订约的 filter；发布出来的子主题（如 `building/floor1/temp`）仍按 ephemeral 处理，空闲后可被回收。
 
@@ -328,43 +328,54 @@ erDiagram
     topic_stats ||--o{ consumers : "topic"
 
     topic_stats {
-        TEXT topic PK "精确主题或 MQTT filter"
-        INTEGER accepted "累计接收"
-        INTEGER duplicates "重复提交"
-        INTEGER delivered "累计投递成功"
-        INTEGER failed "累计投递失败"
-        TEXT delivery "single 或 broadcast 默认 broadcast"
-        TEXT persistence "persistent 或 ephemeral 默认 ephemeral"
-        INTEGER dropped "无在线流时丢弃"
-        TEXT last_seen_at "最近收消息或订约时间"
-        INTEGER configured "1=ConfigureTopics 0=隐式或 MQTT 订约"
+        TEXT topic PK "NOT NULL 精确主题或 MQTT filter"
+        INTEGER accepted "NOT NULL DEFAULT 0 累计接收"
+        INTEGER duplicates "NOT NULL DEFAULT 0 重复提交"
+        INTEGER delivered "NOT NULL DEFAULT 0 累计投递成功"
+        INTEGER failed "NOT NULL DEFAULT 0 累计投递失败"
+        TEXT delivery "NOT NULL DEFAULT broadcast"
+        TEXT persistence "NOT NULL DEFAULT ephemeral"
+        INTEGER dropped "NOT NULL DEFAULT 0 无在线流时丢弃"
+        TEXT last_seen_at "可空 最近收消息或订约"
+        INTEGER configured "NOT NULL DEFAULT 0 1=ConfigureTopics 0=隐式或 MQTT 订约"
     }
 
     messages {
-        TEXT id PK "消息 UUID"
-        TEXT idempotency_key UK "可选幂等键 全局唯一"
-        TEXT topic FK "精确发布主题"
-        BLOB payload "消息体"
-        TEXT attributes "JSON 属性"
-        TEXT status "pending processing delivered failed dropped"
-        INTEGER attempts "投递次数"
-        TEXT next_attempt_at "下次可投递时间"
-        TEXT last_error "最近失败或丢弃原因"
-        TEXT created_at "入队时间"
-        TEXT delivered_at "投递成功时间"
-        TEXT lease "当前认领租约"
+        TEXT id PK "NOT NULL 消息 UUID"
+        TEXT idempotency_key UK "可空 全局唯一幂等键"
+        TEXT topic FK "NOT NULL 精确发布主题"
+        BLOB payload "NOT NULL 消息体"
+        TEXT attributes "NOT NULL JSON"
+        TEXT status "NOT NULL DEFAULT pending"
+        INTEGER attempts "NOT NULL DEFAULT 0"
+        TEXT next_attempt_at "NOT NULL 下次可投递时间"
+        TEXT last_error "可空 最近失败或丢弃原因"
+        TEXT created_at "NOT NULL 入队时间"
+        TEXT delivered_at "可空 投递成功时间"
+        TEXT lease "可空 当前认领租约"
     }
 
     consumers {
-        TEXT id PK "Register 返回的 consumer_id"
-        TEXT topic FK "Register 时的主题"
-        TEXT name "显示名"
-        TEXT attributes "JSON 属性"
-        TEXT last_seen_at "最近心跳"
-        TEXT created_at "首次注册"
+        TEXT id PK "NOT NULL Register 返回的 consumer_id"
+        TEXT topic FK "NOT NULL Register 时的主题"
+        TEXT name "NOT NULL DEFAULT 空串 显示名"
+        TEXT attributes "NOT NULL DEFAULT 空对象 JSON"
+        TEXT last_seen_at "NOT NULL 最近心跳"
+        TEXT created_at "NOT NULL 首次注册"
     }
 ```
 
-索引：`messages(status, next_attempt_at, created_at)`、`messages(created_at)`、`messages(status, delivered_at)`、`messages(topic, status, next_attempt_at, created_at)`、`consumers(topic, last_seen_at)`。
+`status`：`pending` / `processing` / `delivered` / `failed` / `dropped`（进程启动时会把仍为 `processing` 的行改回 `pending` 并清空 `lease`）。`delivery`：`single` 或 `broadcast`。`persistence`：`persistent` 或 `ephemeral`。
+
+索引：
+
+| 名称 | 列 |
+| --- | --- |
+| `idx_messages_ready` | `messages(status, next_attempt_at, created_at)` |
+| `idx_messages_created_at` | `messages(created_at)` |
+| `idx_messages_delivered` | `messages(status, delivered_at)` |
+| `idx_messages_topic_ready` | `messages(topic, status, next_attempt_at, created_at)` |
+| `idx_consumers_topic_seen` | `consumers(topic, last_seen_at)` |
+| `messages.idempotency_key` | `UNIQUE` |
 
 `consumers` 只存 gRPC `Register` 元数据。投递走内存里的 `Subscribe` / MQTT 会话；MQTT 订约本身写入 `topic_stats`，不写 `consumers`。`messages.idempotency_key` 全局唯一，用于 `AcceptMessages` 去重。隐式 ephemeral 且空闲超过 `CL_BROKER_EPHEMERAL_IDLE_HOURS` 的行会被 purge 删掉；`configured=1` 和 MQTT 订约的 persistent filter 会留下。已投递且 `delivered_at` 超过 `CL_BROKER_DELIVERED_RETENTION_HOURS` 的消息行会被删掉；未投递的行仍按 `MESSAGE_RETENTION_DAYS` 清理。
