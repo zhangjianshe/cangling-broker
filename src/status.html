@@ -14,140 +14,213 @@
     })();
   </script>
   <style>
-    :root, html[data-theme="dark"] {
-      /* GitHub Primer dark */
+    /* Primer / GitHub color system — same tokens as cangling-update */
+    :root[data-theme="dark"] {
+      color-scheme: dark;
       --bg: #0d1117;
-      --panel: #151b23;
+      --bg-header: #010409;
+      --bg-2: #161b22;
+      --bg-3: #212830;
+      --bg-input: #0d1117;
+      --bg-active: #388bfd1a;
       --line: #3d444d;
+      --line-muted: #212830;
+      --line-hover: #656c76;
       --text: #f0f6fc;
       --muted: #9198a1;
-      --live: #3fb950;
-      --stale: #d29922;
-      --fail: #f85149;
-      --pending: #4493f8;
-      --chip: #656c7633;
-      --live-bg: #2ea04326;
-      --stale-bg: #bb800926;
-      --hover: #656c7633;
-      --selected: #388bfd1a;
-      --btn-hover: #262c36;
-      --inset: #010409;
+      --subtle: #656c76;
+      --on-emphasis: #ffffff;
+      --accent: #4493f8;
+      --accent-emphasis: #1f6feb;
+      --success: #3fb950;
+      --success-emphasis: #238636;
+      --success-hover: #2ea043;
+      --attention: #d29922;
+      --attention-bg: #bb800926;
+      --danger: #f85149;
+      --danger-emphasis: #da3633;
+      --flash-err-bg: #f851491a;
+      --flash-err-text: #f85149;
+      --flash-err-line: #f8514966;
+      --success-bg: #2ea04326;
+      --log-bg: #010409;
       --overlay: #21283066;
-      --shadow: 0 0 0 1px #3d444d80, 0 16px 32px #01040966;
+      --shadow: 0 0 0 1px #3d444d;
+      --float-shadow: 0 0 0 1px #3d444d80, 0 16px 32px #01040966;
+      --panel: var(--bg-2);
+      --live: var(--success);
+      --stale: var(--attention);
+      --fail: var(--danger);
+      --pending: var(--accent);
+      --chip: var(--bg-3);
+      --live-bg: var(--success-bg);
+      --stale-bg: var(--attention-bg);
+      --hover: var(--bg-3);
+      --selected: var(--bg-active);
+      --btn-hover: var(--bg-2);
+      --inset: var(--log-bg);
     }
-    html[data-theme="light"] {
-      /* GitHub Primer light */
-      --bg: #f6f8fa;
-      --panel: #ffffff;
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --bg: #ffffff;
+      --bg-header: #f6f8fa;
+      --bg-2: #ffffff;
+      --bg-3: #f6f8fa;
+      --bg-input: #ffffff;
+      --bg-active: #ddf4ff;
       --line: #d1d9e0;
+      --line-muted: #d8dee4;
+      --line-hover: #8c959f;
       --text: #1f2328;
       --muted: #59636e;
-      --live: #1a7f37;
-      --stale: #9a6700;
-      --fail: #d1242f;
-      --pending: #0969da;
-      --chip: #818b981f;
-      --live-bg: #dafbe1;
-      --stale-bg: #fff8c5;
-      --hover: #818b981a;
-      --selected: #ddf4ff;
-      --btn-hover: #eff2f5;
-      --inset: #f6f8fa;
+      --subtle: #818b98;
+      --on-emphasis: #ffffff;
+      --accent: #0969da;
+      --accent-emphasis: #0969da;
+      --success: #1a7f37;
+      --success-emphasis: #1f883d;
+      --success-hover: #1c8139;
+      --attention: #9a6700;
+      --attention-bg: #fff8c5;
+      --danger: #d1242f;
+      --danger-emphasis: #cf222e;
+      --flash-err-bg: #ffebe9;
+      --flash-err-text: #d1242f;
+      --flash-err-line: #ff818266;
+      --success-bg: #dafbe1;
+      --log-bg: #f6f8fa;
       --overlay: #c8d1da66;
-      --shadow: 0 0 0 1px #d1d9e040, 0 6px 12px -3px #25292e0a, 0 6px 18px 0 #25292e1f;
+      --shadow: 0 1px 0 rgba(31, 35, 40, 0.04);
+      --float-shadow: 0 0 0 1px #d1d9e040, 0 6px 12px -3px #25292e0a, 0 6px 18px 0 #25292e1f;
+      --panel: var(--bg-2);
+      --live: var(--success);
+      --stale: var(--attention);
+      --fail: var(--danger);
+      --pending: var(--accent);
+      --chip: var(--bg-3);
+      --live-bg: var(--success-bg);
+      --stale-bg: var(--attention-bg);
+      --hover: var(--bg-3);
+      --selected: var(--bg-active);
+      --btn-hover: var(--bg-2);
+      --inset: var(--log-bg);
     }
-    * { box-sizing: border-box; }
-    html { color-scheme: dark; }
-    html[data-theme="light"] { color-scheme: light; }
-    body {
+    * { box-sizing: border-box; border-radius: 4px; }
+    html { font-size: 16px; }
+    html, body {
       margin: 0;
-      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+      min-height: 100%;
       background: var(--bg);
       color: var(--text);
+      font-size: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", "PingFang SC", "Noto Sans CJK SC", Helvetica, Arial, sans-serif;
     }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    a { color: var(--accent); }
     header {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      padding: 20px 24px 8px;
+      height: 64px;
+      padding: 0 22px;
+      border-bottom: 1px solid var(--line);
+      background: var(--bg-header);
+      border-radius: 0;
     }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      min-width: 0;
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .mark {
+      width: 28px; height: 28px; flex: 0 0 auto;
+      background: var(--success-emphasis);
     }
-    h1 { font-size: 18px; font-weight: 600; margin: 0; }
-    #build { color: var(--muted); font-size: 12px; margin-top: 2px; word-break: break-all; }
-    .toolbar {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      flex-shrink: 0;
+    h1 { font-size: 18px; font-weight: 650; margin: 0; letter-spacing: 0.02em; }
+    .app-ver {
+      display: inline-block; margin-left: 8px; padding: 1px 8px;
+      border: 1px solid var(--line); background: var(--bg-3); color: var(--muted);
+      font-size: 14px; font-weight: 500; vertical-align: middle;
     }
-    #meta { color: var(--muted); font-size: 13px; text-align: right; }
-    #theme-toggle {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      color: var(--text);
-      border-radius: 8px;
-      padding: 6px 10px;
-      cursor: pointer;
-      font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
-      white-space: nowrap;
+    .app-ver:empty { display: none; }
+    #build { display: block; color: var(--muted); margin-top: 1px; word-break: break-all; }
+    .header-right {
+      display: flex; align-items: center; gap: 8px; min-width: 0;
+      flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0;
     }
-    #theme-toggle:hover { background: var(--btn-hover); }
+    header .btn { height: 34px; display: inline-flex; align-items: center; }
+    .meta, #meta {
+      color: var(--muted); display: flex; align-items: center; gap: 8px;
+      flex-wrap: wrap; justify-content: flex-end;
+    }
+    #meta > span {
+      display: inline-flex; align-items: center; height: 34px; padding: 0 10px;
+      border: 1px solid var(--line); background: var(--bg-3); line-height: 1;
+    }
+    #meta b { color: var(--text); font-weight: 600; }
+    .btn,
+    .pager button,
+    .msg-toolbar button,
+    .modal-close {
+      border: 1px solid var(--line); background: var(--bg-3); color: var(--text);
+      padding: 7px 12px; white-space: nowrap;
+    }
+    .btn:hover,
+    .pager button:hover,
+    .msg-toolbar button:hover,
+    .modal-close:hover { background: var(--bg-2); border-color: var(--line-hover); }
+    .btn:disabled,
+    .pager button:disabled,
+    .msg-toolbar button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .page { padding: 22px 26px 40px; }
     #error {
       display: none;
-      margin: 8px 24px;
-      padding: 8px 12px;
-      border: 1px solid var(--fail);
-      color: var(--fail);
-      border-radius: 6px;
+      margin: 0 0 14px;
+      padding: 10px 12px;
+      background: var(--flash-err-bg);
+      color: var(--flash-err-text);
+      border: 1px solid var(--flash-err-line);
     }
     .cards {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
       gap: 10px;
-      padding: 12px 24px 20px;
+      margin-bottom: 16px;
     }
     .card {
-      background: var(--panel);
+      background: var(--bg-2);
       border: 1px solid var(--line);
-      border-radius: 8px;
       padding: 12px 14px;
+      box-shadow: var(--shadow);
     }
-    .card .label { color: var(--muted); font-size: 12px; }
+    .card .label { color: var(--muted); font-size: 13px; }
     .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
     section { padding: 0; }
-    h2 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 0 0 10px; }
-    .tabs-wrap { padding: 0 24px 24px; }
+    h2 { font-size: 16px; color: var(--muted); font-weight: 600; margin: 0 0 10px; }
+    .tabs-wrap { padding: 0; }
     .tabs {
       display: flex;
       gap: 4px;
       border-bottom: 1px solid var(--line);
-      margin-bottom: 12px;
+      margin-bottom: 14px;
+      border-radius: 0;
     }
     .tabs button {
       background: transparent;
       border: 0;
       border-bottom: 2px solid transparent;
+      border-radius: 0;
       color: var(--muted);
       padding: 8px 14px;
-      cursor: pointer;
-      font: 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
       margin-bottom: -1px;
     }
     .tabs button:hover { color: var(--text); }
     .tabs button.active {
       color: var(--text);
-      border-bottom-color: var(--pending);
+      border-bottom-color: var(--accent-emphasis);
       font-weight: 600;
     }
-    table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 8px; overflow: hidden; }
-    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-    th { color: var(--muted); font-weight: 600; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; background: var(--bg-2); }
+    th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; }
     th.seq, td.seq {
       width: 1%;
       white-space: nowrap;
@@ -156,38 +229,39 @@
       font-variant-numeric: tabular-nums;
     }
     tr:last-child td { border-bottom: 0; }
-    .empty { color: var(--muted); padding: 16px 24px; }
+    .empty { color: var(--muted); padding: 28px 8px; text-align: center; }
     .pill {
-      display: inline-block;
-      padding: 1px 7px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 600;
-      background: var(--chip);
-      color: var(--muted);
+      display: inline-flex; align-items: center; gap: 6px;
+      border: 1px solid var(--line); padding: 3px 9px;
+      color: var(--muted); background: var(--bg-3); font-size: 13px;
     }
-    .live { background: var(--live-bg); color: var(--live); }
-    .stale { background: var(--stale-bg); color: var(--stale); }
+    .live { background: var(--live-bg); color: var(--live); border-color: transparent; }
+    .stale { background: var(--stale-bg); color: var(--stale); border-color: transparent; }
     .url { color: var(--text); word-break: break-all; }
     .fail { color: var(--fail); }
     .pending { color: var(--pending); }
     .topic-list td.zero { color: var(--muted); opacity: 0.4; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; }
     .attr {
       display: inline-block;
       margin: 1px 4px 1px 0;
       padding: 0 6px;
-      border-radius: 4px;
-      background: var(--chip);
+      background: var(--bg-3);
+      border: 1px solid var(--line);
       color: var(--muted);
-      font-size: 11px;
+      font-size: 13px;
     }
-    .client-list, .topic-list { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .client-list, .topic-list {
+      background: var(--bg-2);
+      border: 1px solid var(--line);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
     .client-list table, .topic-list table { border-radius: 0; }
     .client-list tr, .topic-list tr { cursor: pointer; }
     .client-list tr:hover td, .topic-list tr:hover td { background: var(--hover); }
     .client-list tr.selected td, .topic-list tr.selected td { background: var(--selected); }
-    .hint { color: var(--muted); font-size: 12px; }
+    .hint { color: var(--muted); }
     .modal {
       position: fixed;
       inset: 0;
@@ -197,18 +271,18 @@
       align-items: flex-start;
       justify-content: center;
       padding: 8vh 16px 24px;
+      border-radius: 0;
     }
     .modal[hidden] { display: none; }
     .modal-panel {
       width: min(920px, 100%);
       max-height: 80vh;
-      background: var(--panel);
+      background: var(--bg-2);
       border: 1px solid var(--line);
-      border-radius: 10px;
       overflow: hidden;
       display: flex;
       flex-direction: column;
-      box-shadow: var(--shadow);
+      box-shadow: var(--float-shadow);
     }
     .modal-head {
       display: flex;
@@ -217,11 +291,13 @@
       gap: 16px;
       padding: 14px 16px;
       border-bottom: 1px solid var(--line);
+      background: var(--bg-header);
+      border-radius: 0;
     }
     .modal-head h2 {
       margin: 0;
       color: var(--text);
-      font-size: 16px;
+      font-size: 18px;
       word-break: break-all;
     }
     .modal-meta {
@@ -230,33 +306,26 @@
       gap: 8px;
       margin-top: 8px;
       color: var(--muted);
-      font-size: 12px;
+      font-size: 13px;
     }
-    .modal-close {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      color: var(--text);
-      border-radius: 6px;
-      padding: 4px 10px;
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-    .modal-close:hover { background: var(--btn-hover); }
+    .modal-close { flex-shrink: 0; }
     .row-btn {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      color: var(--muted);
-      border-radius: 6px;
-      padding: 2px 8px;
-      cursor: pointer;
-      font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+      border: 1px solid var(--flash-err-line);
+      background: var(--flash-err-bg);
+      color: var(--flash-err-text);
+      padding: 3px 9px;
       white-space: nowrap;
     }
-    .row-btn:hover { background: var(--btn-hover); color: var(--fail); border-color: var(--fail); }
-    .modal-body { overflow: auto; }
+    .row-btn:hover {
+      background: var(--danger-emphasis);
+      color: var(--on-emphasis);
+      border-color: var(--danger-emphasis);
+    }
+    .modal-body { overflow: auto; border-radius: 0; }
     .msg-view {
       padding: 12px 14px;
       border-bottom: 1px solid var(--line);
+      border-radius: 0;
     }
     .msg-view h3 {
       margin: 0 0 8px;
@@ -273,43 +342,32 @@
       margin-bottom: 8px;
     }
     .msg-toolbar .btns { display: flex; gap: 8px; }
-    .msg-toolbar button {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      color: var(--text);
-      border-radius: 6px;
-      padding: 4px 10px;
-      cursor: pointer;
-    }
-    .msg-toolbar button:hover { background: var(--btn-hover); }
-    .msg-toolbar button:disabled { opacity: 0.4; cursor: default; }
     .msg-meta {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
       color: var(--muted);
-      font-size: 12px;
+      font-size: 13px;
       margin-bottom: 8px;
     }
     .msg-payload {
       margin: 0;
-      padding: 10px 12px;
-      background: var(--inset);
+      padding: 12px;
+      background: var(--log-bg);
       border: 1px solid var(--line);
-      border-radius: 6px;
       white-space: pre-wrap;
       word-break: break-word;
       max-height: 260px;
       overflow: auto;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 13px;
     }
     .client-detail {
       margin-top: 10px;
-      background: var(--panel);
+      background: var(--bg-2);
       border: 1px solid var(--line);
-      border-radius: 8px;
       overflow: hidden;
+      box-shadow: var(--shadow);
     }
     .client-detail .head {
       display: flex;
@@ -318,8 +376,10 @@
       gap: 8px 14px;
       padding: 10px 12px;
       border-bottom: 1px solid var(--line);
+      background: var(--bg-header);
+      border-radius: 0;
     }
-    .client-detail .head .meta { color: var(--muted); font-size: 12px; }
+    .client-detail .head .meta { color: var(--muted); font-size: 13px; }
     .section-head {
       display: flex;
       align-items: baseline;
@@ -336,21 +396,10 @@
       gap: 10px;
       margin: 10px 0;
       color: var(--muted);
-      font-size: 13px;
     }
     .pager.top { margin-top: 0; }
     .pager.bottom { margin-bottom: 0; }
     .pager .btns { display: flex; gap: 8px; }
-    .pager button {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      color: var(--text);
-      border-radius: 6px;
-      padding: 4px 10px;
-      cursor: pointer;
-    }
-    .pager button:hover { background: var(--btn-hover); }
-    .pager button:disabled { opacity: 0.4; cursor: default; }
     .table-tools {
       display: flex;
       flex-wrap: wrap;
@@ -366,15 +415,12 @@
       min-width: 0;
       flex: 1 1 360px;
       color: var(--muted);
-      font-size: 13px;
     }
     .table-tools label span {
       flex: 0 0 auto;
       white-space: nowrap;
     }
-    .table-tools label.compact {
-      flex: 0 0 auto;
-    }
+    .table-tools label.compact { flex: 0 0 auto; }
     .table-tools input[type="number"] {
       width: 4.5em;
       min-width: 4.5em;
@@ -382,12 +428,11 @@
     }
     .table-tools select,
     .table-tools input {
-      background: var(--panel);
+      background: var(--bg-input);
       border: 1px solid var(--line);
       color: var(--text);
-      border-radius: 6px;
-      padding: 5px 8px;
-      font: 13px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+      padding: 9px 11px;
+      outline: none;
     }
     .table-tools input {
       flex: 1 1 auto;
@@ -397,35 +442,30 @@
     .table-tools select { flex: 0 0 auto; }
     .table-tools select:focus,
     .table-tools input:focus {
-      outline: 1px solid var(--pending);
-      border-color: var(--pending);
+      border-color: var(--accent-emphasis);
+      box-shadow: 0 0 0 3px var(--bg-active);
+    }
+    @media (max-width: 720px) {
+      header { height: auto; padding: 12px 16px; }
+      .page { padding: 16px; }
     }
   </style>
 </head>
 <body>
   <header>
     <div class="brand">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="48" height="48">
-        <defs>
-          <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="var(--pending)"></stop>
-            <stop offset="100%" stop-color="var(--live)"></stop>
-          </linearGradient>
-        </defs>
-        <rect x="2" y="2" width="36" height="36" rx="10" fill="var(--panel)" stroke="url(#logoGrad)" stroke-width="2"></rect>
-        <path d="M 26 12 C 22 10 16 12 13 16 C 10 20 12 26 16 28 C 20 30 26 27 28 24" fill="none" stroke="url(#logoGrad)" stroke-width="3" stroke-linecap="round"></path>
-        <circle cx="27" cy="14" r="3" fill="var(--pending)"></circle>
-      </svg>
+      <div class="mark"></div>
       <div>
-        <h1>CANGLING BROKER</h1>
-        <div id="build">正在加载版本…</div>
+        <h1>CANGLING BROKER <span class="app-ver" id="version"></span></h1>
+        <small id="build">正在加载版本…</small>
       </div>
     </div>
-    <div class="toolbar">
-      <div id="meta">正在加载…</div>
-      <button type="button" id="theme-toggle" aria-label="切换主题">浅色</button>
+    <div class="header-right">
+      <div class="meta" id="meta"><span>正在加载…</span></div>
+      <button type="button" class="btn" id="theme-toggle" aria-label="切换深色或浅色主题">浅色</button>
     </div>
   </header>
+  <main class="page">
   <div id="error"></div>
   <div class="cards" id="cards"></div>
   <div class="tabs-wrap">
@@ -461,6 +501,7 @@
       <div id="topics"></div>
     </section>
   </div>
+  </main>
   <div id="topic-modal" class="modal" hidden>
     <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="topic-modal-title">
       <div class="modal-head">
@@ -468,7 +509,7 @@
           <h2 id="topic-modal-title">主题</h2>
           <div id="topic-modal-meta" class="modal-meta"></div>
         </div>
-        <button type="button" class="modal-close" data-close-topic-modal aria-label="关闭">关闭</button>
+        <button type="button" class="btn modal-close" data-close-topic-modal aria-label="关闭">关闭</button>
       </div>
       <div id="topic-modal-body" class="modal-body"></div>
     </div>
@@ -900,17 +941,18 @@
     }
 
     function buildLabel(data) {
-      const version = data.version ? "v" + data.version : "";
       const git = data.git && data.git !== "unknown" ? data.git : "";
       const built = data.built && data.built !== "unknown" ? fmtTs(data.built) : "";
-      return [version, git, built ? "构建 " + built : ""].filter(Boolean).join(" · ") || "版本未知";
+      return [git, built ? "构建 " + built : ""].filter(Boolean).join(" · ") || "版本未知";
     }
 
     function render(data) {
       $("error").style.display = "none";
+      $("version").textContent = data.version ? "v" + data.version : "";
       $("build").textContent = buildLabel(data);
-      $("meta").textContent = "已运行 " + fmtUptime(data.uptime_secs) + " · 刷新于 " +
-        fmtTs(new Date());
+      $("meta").innerHTML =
+        "<span>已运行 <b>" + escapeHtml(fmtUptime(data.uptime_secs)) + "</b></span>" +
+        "<span>刷新于 <b>" + escapeHtml(fmtTs(new Date())) + "</b></span>";
       $("cards").innerHTML =
         card("主题数", data.topics) +
         card("客户端", (data.clients || []).length) +
@@ -1136,7 +1178,7 @@
       } catch (error) {
         $("error").style.display = "block";
         $("error").textContent = "无法加载状态接口：" + error.message;
-        $("meta").textContent = "离线";
+        $("meta").innerHTML = "<span>离线</span>";
       }
     }
 
