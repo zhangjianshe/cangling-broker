@@ -112,9 +112,10 @@ class MessageQueueServicer:
 
     def ConfigureTopics(self, request, context):
         """Create or replace delivery and persistence for many topics at once.
-        delivery is "single" (competing consumers, default) or "broadcast" (every live stream).
-        persistence is "persistent" (store and deliver later, default) or "ephemeral"
+        delivery is "single" (competing consumers) or "broadcast" (every live stream).
+        persistence is "persistent" (store and deliver later) or "ephemeral"
         (deliver only to live Subscribe streams; drop if nobody is connected).
+        Topics never passed to ConfigureTopics default to broadcast + ephemeral.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -355,6 +356,431 @@ class MessageQueue:
             '/dispatcher.v1.MessageQueue/ListTopics',
             queue__pb2.ListTopicsRequest.SerializeToString,
             queue__pb2.ListTopicsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+
+class CacheServiceStub:
+    """CacheService is a SQLite-backed Redis replacement: string KV cache with TTL
+    plus distributed locks. Values are binary-safe bytes; Incr treats the stored
+    value as a signed integer.
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.Set = channel.unary_unary(
+                '/dispatcher.v1.CacheService/Set',
+                request_serializer=queue__pb2.CacheSetRequest.SerializeToString,
+                response_deserializer=queue__pb2.CacheSetResponse.FromString,
+                _registered_method=True)
+        self.Get = channel.unary_unary(
+                '/dispatcher.v1.CacheService/Get',
+                request_serializer=queue__pb2.CacheGetRequest.SerializeToString,
+                response_deserializer=queue__pb2.CacheGetResponse.FromString,
+                _registered_method=True)
+        self.Delete = channel.unary_unary(
+                '/dispatcher.v1.CacheService/Delete',
+                request_serializer=queue__pb2.CacheDeleteRequest.SerializeToString,
+                response_deserializer=queue__pb2.CacheDeleteResponse.FromString,
+                _registered_method=True)
+        self.Incr = channel.unary_unary(
+                '/dispatcher.v1.CacheService/Incr',
+                request_serializer=queue__pb2.CacheIncrRequest.SerializeToString,
+                response_deserializer=queue__pb2.CacheIncrResponse.FromString,
+                _registered_method=True)
+        self.Expire = channel.unary_unary(
+                '/dispatcher.v1.CacheService/Expire',
+                request_serializer=queue__pb2.CacheExpireRequest.SerializeToString,
+                response_deserializer=queue__pb2.CacheExpireResponse.FromString,
+                _registered_method=True)
+        self.Ttl = channel.unary_unary(
+                '/dispatcher.v1.CacheService/Ttl',
+                request_serializer=queue__pb2.CacheTtlRequest.SerializeToString,
+                response_deserializer=queue__pb2.CacheTtlResponse.FromString,
+                _registered_method=True)
+        self.AcquireLock = channel.unary_unary(
+                '/dispatcher.v1.CacheService/AcquireLock',
+                request_serializer=queue__pb2.LockAcquireRequest.SerializeToString,
+                response_deserializer=queue__pb2.LockAcquireResponse.FromString,
+                _registered_method=True)
+        self.RenewLock = channel.unary_unary(
+                '/dispatcher.v1.CacheService/RenewLock',
+                request_serializer=queue__pb2.LockRenewRequest.SerializeToString,
+                response_deserializer=queue__pb2.LockRenewResponse.FromString,
+                _registered_method=True)
+        self.ReleaseLock = channel.unary_unary(
+                '/dispatcher.v1.CacheService/ReleaseLock',
+                request_serializer=queue__pb2.LockReleaseRequest.SerializeToString,
+                response_deserializer=queue__pb2.LockReleaseResponse.FromString,
+                _registered_method=True)
+
+
+class CacheServiceServicer:
+    """CacheService is a SQLite-backed Redis replacement: string KV cache with TTL
+    plus distributed locks. Values are binary-safe bytes; Incr treats the stored
+    value as a signed integer.
+    """
+
+    def Set(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Get(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Delete(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Incr(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Expire(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Ttl(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AcquireLock(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RenewLock(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReleaseLock(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_CacheServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'Set': grpc.unary_unary_rpc_method_handler(
+                    servicer.Set,
+                    request_deserializer=queue__pb2.CacheSetRequest.FromString,
+                    response_serializer=queue__pb2.CacheSetResponse.SerializeToString,
+            ),
+            'Get': grpc.unary_unary_rpc_method_handler(
+                    servicer.Get,
+                    request_deserializer=queue__pb2.CacheGetRequest.FromString,
+                    response_serializer=queue__pb2.CacheGetResponse.SerializeToString,
+            ),
+            'Delete': grpc.unary_unary_rpc_method_handler(
+                    servicer.Delete,
+                    request_deserializer=queue__pb2.CacheDeleteRequest.FromString,
+                    response_serializer=queue__pb2.CacheDeleteResponse.SerializeToString,
+            ),
+            'Incr': grpc.unary_unary_rpc_method_handler(
+                    servicer.Incr,
+                    request_deserializer=queue__pb2.CacheIncrRequest.FromString,
+                    response_serializer=queue__pb2.CacheIncrResponse.SerializeToString,
+            ),
+            'Expire': grpc.unary_unary_rpc_method_handler(
+                    servicer.Expire,
+                    request_deserializer=queue__pb2.CacheExpireRequest.FromString,
+                    response_serializer=queue__pb2.CacheExpireResponse.SerializeToString,
+            ),
+            'Ttl': grpc.unary_unary_rpc_method_handler(
+                    servicer.Ttl,
+                    request_deserializer=queue__pb2.CacheTtlRequest.FromString,
+                    response_serializer=queue__pb2.CacheTtlResponse.SerializeToString,
+            ),
+            'AcquireLock': grpc.unary_unary_rpc_method_handler(
+                    servicer.AcquireLock,
+                    request_deserializer=queue__pb2.LockAcquireRequest.FromString,
+                    response_serializer=queue__pb2.LockAcquireResponse.SerializeToString,
+            ),
+            'RenewLock': grpc.unary_unary_rpc_method_handler(
+                    servicer.RenewLock,
+                    request_deserializer=queue__pb2.LockRenewRequest.FromString,
+                    response_serializer=queue__pb2.LockRenewResponse.SerializeToString,
+            ),
+            'ReleaseLock': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReleaseLock,
+                    request_deserializer=queue__pb2.LockReleaseRequest.FromString,
+                    response_serializer=queue__pb2.LockReleaseResponse.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'dispatcher.v1.CacheService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('dispatcher.v1.CacheService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class CacheService:
+    """CacheService is a SQLite-backed Redis replacement: string KV cache with TTL
+    plus distributed locks. Values are binary-safe bytes; Incr treats the stored
+    value as a signed integer.
+    """
+
+    @staticmethod
+    def Set(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.CacheService/Set',
+            queue__pb2.CacheSetRequest.SerializeToString,
+            queue__pb2.CacheSetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Get(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.CacheService/Get',
+            queue__pb2.CacheGetRequest.SerializeToString,
+            queue__pb2.CacheGetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Delete(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.CacheService/Delete',
+            queue__pb2.CacheDeleteRequest.SerializeToString,
+            queue__pb2.CacheDeleteResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Incr(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.CacheService/Incr',
+            queue__pb2.CacheIncrRequest.SerializeToString,
+            queue__pb2.CacheIncrResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Expire(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.CacheService/Expire',
+            queue__pb2.CacheExpireRequest.SerializeToString,
+            queue__pb2.CacheExpireResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Ttl(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.CacheService/Ttl',
+            queue__pb2.CacheTtlRequest.SerializeToString,
+            queue__pb2.CacheTtlResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AcquireLock(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.CacheService/AcquireLock',
+            queue__pb2.LockAcquireRequest.SerializeToString,
+            queue__pb2.LockAcquireResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RenewLock(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.CacheService/RenewLock',
+            queue__pb2.LockRenewRequest.SerializeToString,
+            queue__pb2.LockRenewResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReleaseLock(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.CacheService/ReleaseLock',
+            queue__pb2.LockReleaseRequest.SerializeToString,
+            queue__pb2.LockReleaseResponse.FromString,
             options,
             channel_credentials,
             insecure,

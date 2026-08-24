@@ -104,6 +104,7 @@ class SatwayClient:
     def __init__(self, channel: grpc.Channel, metadata: list[tuple[str, str]]):
         self._channel = channel
         self._stub = queue_pb2_grpc.MessageQueueStub(channel)
+        self._cache_stub = queue_pb2_grpc.CacheServiceStub(channel)
         self._metadata = metadata
         self._open = True
         self._consumers: list[Consumer] = []
@@ -290,6 +291,175 @@ class SatwayClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
+    # ==================== cache & lock (SQLite-backed Redis replacement) ====================
+
+    def cache_set(
+        self,
+        key: str,
+        value: str | bytes,
+        ttl_seconds: int = 0,
+        value_type: str = "string",
+    ) -> None:
+        """Store a value. ``ttl_seconds <= 0`` means no expiry.
+
+        ``value_type`` is an optional hint (``string`` / ``long`` / ``int`` /
+        ``double`` / ``bool``) stored alongside the value so typed reads can
+        restore the original type.
+        """
+        if not key or not key.strip():
+            raise ValueError("key is required")
+        body = value.encode("utf-8") if isinstance(value, str) else bytes(value)
+
+        def once() -> None:
+            self._cache_stub.Set(
+                queue_pb2.CacheSetRequest(
+                    key=key,
+                    value=body,
+                    ttl_seconds=ttl_seconds,
+                    value_type=value_type or "string",
+                ),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            )
+
+        self._call_with_reconnect("cache_set", once)
+
+    def cache_get(self, key: str) -> bytes | None:
+        """Return the raw value, or ``None`` when missing/expired."""
+        if not key or not key.strip():
+            raise ValueError("key is required")
+
+        def once() -> bytes | None:
+            response = self._cache_stub.Get(
+                queue_pb2.CacheGetRequest(key=key),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            )
+            return bytes(response.value) if response.found else None
+
+        return self._call_with_reconnect("cache_get", once)
+
+    def cache_get_entry(self, key: str) -> tuple[bytes, str] | None:
+        """Return ``(value, value_type)``, or ``None`` when missing/expired."""
+        if not key or not key.strip():
+            raise ValueError("key is required")
+
+        def once() -> tuple[bytes, str] | None:
+            response = self._cache_stub.Get(
+                queue_pb2.CacheGetRequest(key=key),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            )
+            if not response.found:
+                return None
+            return (bytes(response.value), response.value_type)
+
+        return self._call_with_reconnect("cache_get_entry", once)
+
+    def cache_get_string(self, key: str) -> str | None:
+        """Return the value decoded as UTF-8, or ``None`` when missing."""
+        value = self.cache_get(key)
+        return value.decode("utf-8") if value is not None else None
+
+    def cache_delete(self, key: str) -> bool:
+        if not key or not key.strip():
+            raise ValueError("key is required")
+
+        def once() -> bool:
+            return self._cache_stub.Delete(
+                queue_pb2.CacheDeleteRequest(key=key),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            ).deleted
+
+        return self._call_with_reconnect("cache_delete", once)
+
+    def cache_incr(self, key: str, delta: int = 1, ttl_seconds: int = 0) -> int:
+        if not key or not key.strip():
+            raise ValueError("key is required")
+
+        def once() -> int:
+            return self._cache_stub.Incr(
+                queue_pb2.CacheIncrRequest(key=key, delta=delta, ttl_seconds=ttl_seconds),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            ).value
+
+        return self._call_with_reconnect("cache_incr", once)
+
+    def cache_expire(self, key: str, ttl_seconds: int) -> bool:
+        if not key or not key.strip():
+            raise ValueError("key is required")
+
+        def once() -> bool:
+            return self._cache_stub.Expire(
+                queue_pb2.CacheExpireRequest(key=key, ttl_seconds=ttl_seconds),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            ).ok
+
+        return self._call_with_reconnect("cache_expire", once)
+
+    def cache_ttl(self, key: str) -> int:
+        """Redis semantics: -2 missing, -1 no expiry, else seconds remaining."""
+        if not key or not key.strip():
+            raise ValueError("key is required")
+
+        def once() -> int:
+            return self._cache_stub.Ttl(
+                queue_pb2.CacheTtlRequest(key=key),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            ).ttl_seconds
+
+        return self._call_with_reconnect("cache_ttl", once)
+
+    def acquire_lock(self, lock_key: str, ttl_seconds: int, owner: str = "") -> Lock | None:
+        """Try to acquire a distributed lock. Returns a :class:`Lock` or ``None``."""
+        if not lock_key or not lock_key.strip():
+            raise ValueError("lock_key is required")
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be > 0")
+        owner = owner or str(uuid.uuid4())
+
+        def once() -> bool:
+            return self._cache_stub.AcquireLock(
+                queue_pb2.LockAcquireRequest(
+                    lock_key=lock_key,
+                    owner=owner,
+                    ttl_seconds=ttl_seconds,
+                ),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            ).acquired
+
+        acquired = self._call_with_reconnect("acquire_lock", once)
+        return Lock(self, lock_key, owner) if acquired else None
+
+    def _lock_renew(self, lock_key: str, owner: str, ttl_seconds: int) -> bool:
+        def once() -> bool:
+            return self._cache_stub.RenewLock(
+                queue_pb2.LockRenewRequest(
+                    lock_key=lock_key,
+                    owner=owner,
+                    ttl_seconds=ttl_seconds,
+                ),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            ).renewed
+
+        return self._call_with_reconnect("renew_lock", once)
+
+    def _lock_release(self, lock_key: str, owner: str) -> bool:
+        def once() -> bool:
+            return self._cache_stub.ReleaseLock(
+                queue_pb2.LockReleaseRequest(lock_key=lock_key, owner=owner),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            ).released
+
+        return self._call_with_reconnect("release_lock", once)
+
     def _is_open(self) -> bool:
         return self._open
 
@@ -430,3 +600,34 @@ def _to_message(incoming: queue_pb2.SatwayMessage) -> SatwayMessage:
         created_at=incoming.created_at,
         lease=incoming.lease,
     )
+
+
+class Lock:
+    """A held distributed lock returned by :meth:`SatwayClient.acquire_lock`.
+
+    Renew the lease with :meth:`renew` and release it with :meth:`release`
+    (also called by ``close()`` / context-manager exit). Releasing only
+    succeeds while this lock's ``owner`` still holds the key.
+    """
+
+    def __init__(self, client: SatwayClient, lock_key: str, owner: str):
+        self._client = client
+        self.lock_key = lock_key
+        self.owner = owner
+
+    def renew(self, ttl_seconds: int) -> bool:
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be > 0")
+        return self._client._lock_renew(self.lock_key, self.owner, ttl_seconds)
+
+    def release(self) -> bool:
+        return self._client._lock_release(self.lock_key, self.owner)
+
+    def close(self) -> bool:
+        return self.release()
+
+    def __enter__(self) -> Lock:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.release()

@@ -116,3 +116,110 @@ message ListTopicsRequest {}
 message ListTopicsResponse {
   repeated TopicConfig topics = 1;
 }
+
+// CacheService is a SQLite-backed Redis replacement: string KV cache with TTL
+// plus distributed locks. Values are binary-safe bytes; Incr treats the stored
+// value as a signed integer.
+service CacheService {
+  rpc Set(CacheSetRequest) returns (CacheSetResponse);
+  rpc Get(CacheGetRequest) returns (CacheGetResponse);
+  rpc Delete(CacheDeleteRequest) returns (CacheDeleteResponse);
+  rpc Incr(CacheIncrRequest) returns (CacheIncrResponse);
+  rpc Expire(CacheExpireRequest) returns (CacheExpireResponse);
+  rpc Ttl(CacheTtlRequest) returns (CacheTtlResponse);
+  rpc AcquireLock(LockAcquireRequest) returns (LockAcquireResponse);
+  rpc RenewLock(LockRenewRequest) returns (LockRenewResponse);
+  rpc ReleaseLock(LockReleaseRequest) returns (LockReleaseResponse);
+}
+
+message CacheSetRequest {
+  string key = 1;
+  bytes value = 2;
+  // Optional time-to-live in seconds. <= 0 means no expiry.
+  int64 ttl_seconds = 3;
+  // Optional type hint stored with the value: "string" (default), "long",
+  // "int", "double", "bool". Clients may use it to restore a typed value.
+  string value_type = 4;
+}
+
+message CacheSetResponse {
+  bool ok = 1;
+}
+
+message CacheGetRequest {
+  string key = 1;
+}
+
+message CacheGetResponse {
+  bool found = 1;
+  bytes value = 2;
+  string value_type = 3;
+}
+
+message CacheDeleteRequest {
+  string key = 1;
+}
+
+message CacheDeleteResponse {
+  bool deleted = 1;
+}
+
+message CacheIncrRequest {
+  string key = 1;
+  int64 delta = 2;
+  // TTL applied only when the key is created.
+  int64 ttl_seconds = 3;
+}
+
+message CacheIncrResponse {
+  int64 value = 1;
+}
+
+message CacheExpireRequest {
+  string key = 1;
+  int64 ttl_seconds = 2;
+}
+
+message CacheExpireResponse {
+  bool ok = 1;
+}
+
+message CacheTtlRequest {
+  string key = 1;
+}
+
+message CacheTtlResponse {
+  // Redis semantics: -2 missing, -1 no expiry, >= 0 seconds remaining.
+  int64 ttl_seconds = 1;
+}
+
+message LockAcquireRequest {
+  string lock_key = 1;
+  // Owner token (UUID). Release and renew must present the same owner.
+  string owner = 2;
+  // How long the lock may be held before it expires, in seconds. Must be > 0.
+  int64 ttl_seconds = 3;
+}
+
+message LockAcquireResponse {
+  bool acquired = 1;
+}
+
+message LockRenewRequest {
+  string lock_key = 1;
+  string owner = 2;
+  int64 ttl_seconds = 3;
+}
+
+message LockRenewResponse {
+  bool renewed = 1;
+}
+
+message LockReleaseRequest {
+  string lock_key = 1;
+  string owner = 2;
+}
+
+message LockReleaseResponse {
+  bool released = 1;
+}

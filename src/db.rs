@@ -180,6 +180,31 @@ impl Database {
         )
             .execute(&pool)
             .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS sys_kv (
+                key TEXT PRIMARY KEY NOT NULL,
+                value BLOB NOT NULL,
+                value_type TEXT NOT NULL DEFAULT 'string',
+                expire_at TEXT,
+                update_time TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sys_kv_expire ON sys_kv(expire_at);",
+        )
+            .execute(&pool)
+            .await
+            .context("creating SQLite kv cache schema")?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS sys_lock (
+                lock_key TEXT PRIMARY KEY NOT NULL,
+                owner TEXT NOT NULL,
+                expire_at TEXT NOT NULL,
+                create_time TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sys_lock_expire ON sys_lock(expire_at);",
+        )
+            .execute(&pool)
+            .await
+            .context("creating SQLite lock schema")?;
         Ok(Self(pool))
     }
 

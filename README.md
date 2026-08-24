@@ -255,6 +255,58 @@ The consumer receives one `SatwayMessage` on the `Subscribe` stream:
 
 Call `AckMessage` with that `message_id` and `lease`. `success = true` marks the message delivered; `success = false` or a timeout requeues it. This is **at-least-once delivery**: receivers should use `message_id` to make handling idempotent. Pass an `idempotency_key` on `AcceptMessages` to make producer retries safe.
 
+## Cache & lock (SQLite-backed Redis replacement)
+
+The broker also serves a small Redis replacement backed by the same SQLite file: a
+string KV cache with TTL and atomic increment, plus distributed locks. It is exposed
+over gRPC (`dispatcher.v1.CacheService`) and over the status port under `/cache*` and
+`/lock*`. Values are binary-safe bytes; `Incr` treats the stored value as an integer.
+
+TTL semantics match Redis: `Ttl` returns `-2` for a missing key, `-1` for a key
+without expiry, and the remaining seconds otherwise. Locks require an `owner` token;
+`release` and `renew` only succeed for the owner that holds the lock, and a lease
+never outlives its `ttl_seconds` (so a crashed holder cannot deadlock others).
+
+HTTP (same Bearer token as the rest of the dashboard):
+
+```bash
+curl -s -H 'authorization: Bearer change-me' 'http://127.0.0.1:7501/cache?key=jobs:count'
+curl -s -X PUT -H 'authorization: Bearer change-me' -H 'content-type: application/json' \
+  -d '{"key":"session:u1","value":"hello","ttl_seconds":300}' http://127.0.0.1:7501/cache
+curl -s -X POST -H 'authorization: Bearer change-me' -H 'content-type: application/json' \
+  -d '{"key":"jobs:count","delta":1,"ttl_seconds":60}' http://127.0.0.1:7501/cache/incr
+curl -s -X POST -H 'authorization: Bearer change-me' -H 'content-type: application/json' \
+  -d '{"lock_key":"import:dataset","owner":"u1","ttl_seconds":30}' http://127.0.0.1:7501/lock/acquire
+curl -s -X DELETE -H 'authorization: Bearer change-me' \
+  'http://127.0.0.1:7501/lock?lock_key=import:dataset&owner=u1'
+```
+
+Java:
+
+```java
+try (SatwayClient client = SatwayClient.connect("127.0.0.1:7500", "change-me")) {
+    client.cacheSet("session:u1", "hello", 300);
+    String value = client.cacheGetString("session:u1");
+    long n = client.cacheIncr("jobs:count", 1, 60);
+    try (LockHandle lock = client.acquireLock("import:dataset", 30)) {
+        if (lock != null) lock.renew(30);
+    }
+}
+```
+
+Python:
+
+```python
+with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
+    client.cache_set("session:u1", "hello", ttl_seconds=300)
+    value = client.cache_get_string("session:u1")
+    n = client.cache_incr("jobs:count", 1, ttl_seconds=60)
+    lock = client.acquire_lock("import:dataset", 30)
+    if lock:
+        with lock:
+            lock.renew(30)
+```
+
 ## Configuration
 
 | Environment variable | Default | Purpose |

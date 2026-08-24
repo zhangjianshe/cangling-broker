@@ -3,8 +3,19 @@ package cn.mapway.broker;
 import cn.mapway.broker.proto.AcceptMessageRequest;
 import cn.mapway.broker.proto.AcceptMessageResponse;
 import cn.mapway.broker.proto.AckMessageRequest;
+import cn.mapway.broker.proto.CacheDeleteRequest;
+import cn.mapway.broker.proto.CacheExpireRequest;
+import cn.mapway.broker.proto.CacheGetRequest;
+import cn.mapway.broker.proto.CacheGetResponse;
+import cn.mapway.broker.proto.CacheIncrRequest;
+import cn.mapway.broker.proto.CacheServiceGrpc;
+import cn.mapway.broker.proto.CacheSetRequest;
+import cn.mapway.broker.proto.CacheTtlRequest;
 import cn.mapway.broker.proto.ConfigureTopicsRequest;
 import cn.mapway.broker.proto.ListTopicsRequest;
+import cn.mapway.broker.proto.LockAcquireRequest;
+import cn.mapway.broker.proto.LockReleaseRequest;
+import cn.mapway.broker.proto.LockRenewRequest;
 import cn.mapway.broker.proto.MessageQueueGrpc;
 import cn.mapway.broker.proto.RegisterRequest;
 import cn.mapway.broker.proto.UnregisterRequest;
@@ -56,6 +67,7 @@ public final class SatwayClient implements AutoCloseable {
     private final ManagedChannel channel;
     private final MessageQueueGrpc.MessageQueueBlockingStub stub;
     private final MessageQueueGrpc.MessageQueueStub async;
+    private final CacheServiceGrpc.CacheServiceBlockingStub cacheStub;
     private final AtomicBoolean open = new AtomicBoolean(true);
     private final Thread reconnect;
     private final List<Consumer> consumers = new CopyOnWriteArrayList<>();
@@ -65,6 +77,7 @@ public final class SatwayClient implements AutoCloseable {
         this.channel = channel;
         this.stub = MessageQueueGrpc.newBlockingStub(channel);
         this.async = MessageQueueGrpc.newStub(channel);
+        this.cacheStub = CacheServiceGrpc.newBlockingStub(channel);
         if (onConnected != null) {
             connectionListeners.add(onConnected);
         }
@@ -282,6 +295,165 @@ public final class SatwayClient implements AutoCloseable {
             return null;
         });
     }
+
+    // ==================== cache & lock (SQLite-backed Redis replacement) ====================
+
+    /** Store a value. {@code ttlSeconds <= 0} means no expiry. */
+    public void cacheSet(String key, byte[] value, long ttlSeconds) {
+        cacheSet(key, value, ttlSeconds, "string");
+    }
+
+    /**
+     * Store a value with an explicit type hint ({@code string} / {@code long} /
+     * {@code int} / {@code double} / {@code bool}), stored alongside the value so
+     * {@link #cacheGetEntry(String)} can restore the original type.
+     */
+    public void cacheSet(String key, byte[] value, long ttlSeconds, String valueType) {
+        requireKey(key);
+        byte[] body = value == null ? new byte[0] : value;
+        String type = valueType == null || valueType.isBlank() ? "string" : valueType;
+        callWithReconnect("cacheSet", () -> {
+            cacheStub()
+                    .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                    .set(CacheSetRequest.newBuilder()
+                            .setKey(key)
+                            .setValue(ByteString.copyFrom(body))
+                            .setTtlSeconds(ttlSeconds)
+                            .setValueType(type)
+                            .build());
+            return null;
+        });
+    }
+
+    public void cacheSet(String key, String value, long ttlSeconds) {
+        cacheSet(key, value == null ? new byte[0]
+                : value.getBytes(java.nio.charset.StandardCharsets.UTF_8), ttlSeconds);
+    }
+
+    /** Return the raw value, or {@code null} when missing or expired. */
+    public byte[] cacheGet(String key) {
+        requireKey(key);
+        return callWithReconnect("cacheGet", () -> {
+            CacheGetResponse response = cacheStub()
+                    .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                    .get(CacheGetRequest.newBuilder().setKey(key).build());
+            return response.getFound() ? response.getValue().toByteArray() : null;
+        });
+    }
+
+    /** Return the value plus its type hint, or {@code null} when missing/expired. */
+    public CacheEntry cacheGetEntry(String key) {
+        requireKey(key);
+        return callWithReconnect("cacheGetEntry", () -> {
+            CacheGetResponse response = cacheStub()
+                    .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                    .get(CacheGetRequest.newBuilder().setKey(key).build());
+            return response.getFound()
+                    ? new CacheEntry(response.getValue().toByteArray(), response.getValueType())
+                    : null;
+        });
+    }
+
+    public String cacheGetString(String key) {
+        byte[] value = cacheGet(key);
+        return value == null ? null : new String(value, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    public boolean cacheDelete(String key) {
+        requireKey(key);
+        return callWithReconnect("cacheDelete", () -> cacheStub()
+                .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                .delete(CacheDeleteRequest.newBuilder().setKey(key).build())
+                .getDeleted());
+    }
+
+    /** Atomically add {@code delta}; creates the key with {@code ttlSeconds} when absent. */
+    public long cacheIncr(String key, long delta, long ttlSeconds) {
+        requireKey(key);
+        return callWithReconnect("cacheIncr", () -> cacheStub()
+                .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                .incr(CacheIncrRequest.newBuilder()
+                        .setKey(key)
+                        .setDelta(delta)
+                        .setTtlSeconds(ttlSeconds)
+                        .build())
+                .getValue());
+    }
+
+    public boolean cacheExpire(String key, long ttlSeconds) {
+        requireKey(key);
+        return callWithReconnect("cacheExpire", () -> cacheStub()
+                .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                .expire(CacheExpireRequest.newBuilder()
+                        .setKey(key)
+                        .setTtlSeconds(ttlSeconds)
+                        .build())
+                .getOk());
+    }
+
+    /** Redis semantics: -2 missing, -1 no expiry, otherwise seconds remaining. */
+    public long cacheTtl(String key) {
+        requireKey(key);
+        return callWithReconnect("cacheTtl", () -> cacheStub()
+                .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                .ttl(CacheTtlRequest.newBuilder().setKey(key).build())
+                .getTtlSeconds());
+    }
+
+    /**
+     * Try to acquire a distributed lock. Returns a {@link LockHandle} on success,
+     * or {@code null} when another owner already holds it. The returned handle
+     * owns a fresh random owner token; use {@link LockHandle#renew(long)} and
+     * {@link LockHandle#release()} (or try-with-resources) on it.
+     */
+    public LockHandle acquireLock(String lockKey, long ttlSeconds) {
+        requireKey(lockKey);
+        if (ttlSeconds <= 0) {
+            throw new IllegalArgumentException("ttlSeconds must be > 0");
+        }
+        String owner = UUID.randomUUID().toString();
+        boolean acquired = callWithReconnect("acquireLock", () -> cacheStub()
+                .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                .acquireLock(LockAcquireRequest.newBuilder()
+                        .setLockKey(lockKey)
+                        .setOwner(owner)
+                        .setTtlSeconds(ttlSeconds)
+                        .build())
+                .getAcquired());
+        return acquired ? new LockHandle(this, lockKey, owner) : null;
+    }
+
+    boolean lockRenew(String lockKey, String owner, long ttlSeconds) {
+        return callWithReconnect("lockRenew", () -> cacheStub()
+                .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                .renewLock(LockRenewRequest.newBuilder()
+                        .setLockKey(lockKey)
+                        .setOwner(owner)
+                        .setTtlSeconds(ttlSeconds)
+                        .build())
+                .getRenewed());
+    }
+
+    boolean lockRelease(String lockKey, String owner) {
+        return callWithReconnect("lockRelease", () -> cacheStub()
+                .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                .releaseLock(LockReleaseRequest.newBuilder()
+                        .setLockKey(lockKey)
+                        .setOwner(owner)
+                        .build())
+                .getReleased());
+    }
+
+    private static void requireKey(String key) {
+        if (key == null || key.isBlank()) {
+            throw new IllegalArgumentException("key is required");
+        }
+    }
+
+    private CacheServiceGrpc.CacheServiceBlockingStub cacheStub() {
+        return cacheStub;
+    }
+
 
     boolean awaitReady() throws InterruptedException {
         while (open.get()) {

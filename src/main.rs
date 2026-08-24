@@ -1,4 +1,5 @@
 mod auth;
+mod cache;
 mod config;
 mod db;
 mod delivery;
@@ -14,6 +15,7 @@ use std::{pin::Pin, sync::Arc, time::Duration};
 
 use clap::Parser;
 use auth::AuthInterceptor;
+use cache::CacheService;
 use config::Config;
 use db::Database;
 use delivery::{Ingested, PROTOCOL_GRPC};
@@ -30,6 +32,7 @@ pub mod proto {
     tonic::include_proto!("dispatcher.v1");
 }
 use proto::{
+    cache_service_server::CacheServiceServer,
     message_queue_server::{MessageQueue, MessageQueueServer},
     AcceptMessageRequest, AcceptMessageResponse, AckMessageRequest, AckMessageResponse,
     ConfigureTopicsRequest, ConfigureTopicsResponse, ListTopicsRequest, ListTopicsResponse,
@@ -428,13 +431,17 @@ async fn main() -> anyhow::Result<()> {
     Server::builder()
         .add_service(MessageQueueServer::with_interceptor(
             QueueService {
-                db,
+                db: db.clone(),
                 config,
                 subscribers,
                 inflight,
                 grpc_clients: grpc_clients.clone(),
                 shutdown: shutdown.clone(),
             },
+            interceptor.clone(),
+        ))
+        .add_service(CacheServiceServer::with_interceptor(
+            CacheService::new(db),
             interceptor,
         ))
         .serve_with_incoming_shutdown(
@@ -560,6 +567,8 @@ async fn retention_loop(
     shutdown: CancellationToken,
 ) {
     const SWEEP_SECS: u64 = 60;
+    let cache = crate::cache::CacheStore::new(db.clone());
+    let lock = crate::cache::LockStore::new(db.clone());
     let purge_every = (config.purge_interval_hours > 0)
         .then(|| Duration::from_secs(config.purge_interval_hours.saturating_mul(3600)));
     let mut last_idle_purge: Option<tokio::time::Instant> = None;
@@ -641,6 +650,16 @@ async fn retention_loop(
                     Err(error) => error!(%error, "unable to purge stale consumers"),
                 }
             }
+        }
+        match cache.purge_expired().await {
+            Ok(0) => {}
+            Ok(deleted) => info!(deleted, "purged expired cache keys"),
+            Err(error) => error!(%error, "unable to purge expired cache keys"),
+        }
+        match lock.purge_expired().await {
+            Ok(0) => {}
+            Ok(deleted) => info!(deleted, "purged expired locks"),
+            Err(error) => error!(%error, "unable to purge expired locks"),
         }
         tokio::select! {
             _ = shutdown.cancelled() => break,

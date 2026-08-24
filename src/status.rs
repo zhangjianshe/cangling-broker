@@ -5,7 +5,7 @@ use axum::{
     http::{header::AUTHORIZATION, Request, StatusCode},
     middleware::{self, Next},
     response::{Html, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use std::net::SocketAddr;
@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     auth,
+    cache::{CacheStore, LockStore},
     config::Config,
     db::Database,
     grpc_conn::{GrpcClientInfo, GrpcClientRegistry},
@@ -24,6 +25,8 @@ use crate::{
 #[derive(Clone)]
 struct StatusState {
     db: Database,
+    cache: CacheStore,
+    lock: LockStore,
     subscribers: TopicSubscribers,
     mqtt_clients: crate::mqtt::ClientRegistry,
     grpc_clients: GrpcClientRegistry,
@@ -108,7 +111,9 @@ pub async fn serve(
     grpc_clients: GrpcClientRegistry,
 ) -> anyhow::Result<()> {
     let state = StatusState {
-        db,
+        db: db.clone(),
+        cache: CacheStore::new(db.clone()),
+        lock: LockStore::new(db),
         subscribers,
         mqtt_clients,
         grpc_clients,
@@ -148,6 +153,11 @@ fn status_routes(state: StatusState) -> Router {
         .route("/status", get(status))
         .route("/topics", get(list_topics).post(configure_topics))
         .route("/messages", get(topic_message).delete(clear_topic_messages))
+        .route("/cache", get(cache_get).put(cache_set).post(cache_set).delete(cache_delete))
+        .route("/cache/incr", post(cache_incr))
+        .route("/lock", get(lock_get).delete(lock_release))
+        .route("/lock/acquire", post(lock_acquire))
+        .route("/lock/renew", post(lock_renew))
         .layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state)
 }
@@ -339,6 +349,263 @@ async fn clear_topic_messages(
     Ok(Json(ClearMessagesBody {
         topic: topic.to_string(),
         deleted,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CacheQuery {
+    key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CacheSetBody {
+    key: String,
+    #[serde(default)]
+    value: String,
+    #[serde(default)]
+    ttl_seconds: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct CacheValueBody {
+    key: String,
+    found: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
+    ttl_seconds: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct CacheWriteBody {
+    key: String,
+    ok: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct CacheDeleteBody {
+    key: String,
+    deleted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct CacheIncrBody {
+    key: String,
+    #[serde(default)]
+    delta: i64,
+    #[serde(default)]
+    ttl_seconds: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct CacheIncrResultBody {
+    key: String,
+    value: i64,
+}
+
+async fn cache_get(
+    State(state): State<StatusState>,
+    Query(query): Query<CacheQuery>,
+) -> Result<Json<CacheValueBody>, StatusCode> {
+    let key = query.key.trim();
+    if key.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let value = state
+        .cache
+        .get(key)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let ttl_seconds = state
+        .cache
+        .ttl(key)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(CacheValueBody {
+        key: key.to_string(),
+        found: value.is_some(),
+        value: value
+            .as_ref()
+            .map(|(bytes, _)| String::from_utf8_lossy(bytes).into_owned()),
+        ttl_seconds,
+    }))
+}
+
+async fn cache_set(
+    State(state): State<StatusState>,
+    Json(body): Json<CacheSetBody>,
+) -> Result<Json<CacheWriteBody>, StatusCode> {
+    let key = body.key.trim();
+    if key.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    state
+        .cache
+        .set(key, body.value.as_bytes(), "string", body.ttl_seconds)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(CacheWriteBody {
+        key: key.to_string(),
+        ok: true,
+    }))
+}
+
+async fn cache_delete(
+    State(state): State<StatusState>,
+    Query(query): Query<CacheQuery>,
+) -> Result<Json<CacheDeleteBody>, StatusCode> {
+    let key = query.key.trim();
+    if key.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let deleted = state
+        .cache
+        .delete(key)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(CacheDeleteBody {
+        key: key.to_string(),
+        deleted,
+    }))
+}
+
+async fn cache_incr(
+    State(state): State<StatusState>,
+    Json(body): Json<CacheIncrBody>,
+) -> Result<Json<CacheIncrResultBody>, StatusCode> {
+    let key = body.key.trim();
+    if key.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let value = state
+        .cache
+        .incr(key, body.delta, body.ttl_seconds)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(CacheIncrResultBody {
+        key: key.to_string(),
+        value,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct LockQuery {
+    lock_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LockReleaseQuery {
+    lock_key: String,
+    owner: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LockBody {
+    lock_key: String,
+    owner: String,
+    #[serde(default)]
+    ttl_seconds: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct LockStateBody {
+    lock_key: String,
+    locked: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct LockAcquireBody {
+    lock_key: String,
+    acquired: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct LockRenewBody {
+    lock_key: String,
+    renewed: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct LockReleaseBody {
+    lock_key: String,
+    released: bool,
+}
+
+async fn lock_get(
+    State(state): State<StatusState>,
+    Query(query): Query<LockQuery>,
+) -> Result<Json<LockStateBody>, StatusCode> {
+    let lock_key = query.lock_key.trim();
+    if lock_key.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let locked = state
+        .lock
+        .is_locked(lock_key)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(LockStateBody {
+        lock_key: lock_key.to_string(),
+        locked,
+    }))
+}
+
+async fn lock_acquire(
+    State(state): State<StatusState>,
+    Json(body): Json<LockBody>,
+) -> Result<Json<LockAcquireBody>, StatusCode> {
+    let lock_key = body.lock_key.trim();
+    let owner = body.owner.trim();
+    if lock_key.is_empty() || owner.is_empty() || body.ttl_seconds <= 0 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let acquired = state
+        .lock
+        .acquire(lock_key, owner, body.ttl_seconds)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(LockAcquireBody {
+        lock_key: lock_key.to_string(),
+        acquired,
+    }))
+}
+
+async fn lock_renew(
+    State(state): State<StatusState>,
+    Json(body): Json<LockBody>,
+) -> Result<Json<LockRenewBody>, StatusCode> {
+    let lock_key = body.lock_key.trim();
+    let owner = body.owner.trim();
+    if lock_key.is_empty() || owner.is_empty() || body.ttl_seconds <= 0 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let renewed = state
+        .lock
+        .renew(lock_key, owner, body.ttl_seconds)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(LockRenewBody {
+        lock_key: lock_key.to_string(),
+        renewed,
+    }))
+}
+
+async fn lock_release(
+    State(state): State<StatusState>,
+    Query(query): Query<LockReleaseQuery>,
+) -> Result<Json<LockReleaseBody>, StatusCode> {
+    let lock_key = query.lock_key.trim();
+    let owner = query.owner.trim();
+    if lock_key.is_empty() || owner.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let released = state
+        .lock
+        .release(lock_key, owner)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(LockReleaseBody {
+        lock_key: lock_key.to_string(),
+        released,
     }))
 }
 
