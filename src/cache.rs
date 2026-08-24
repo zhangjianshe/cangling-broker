@@ -21,7 +21,7 @@ use crate::proto::{
     CacheDeleteResponse, CacheExpireRequest, CacheExpireResponse, CacheGetRequest,
     CacheGetResponse, CacheIncrRequest, CacheIncrResponse, CacheSetRequest, CacheSetResponse,
     CacheTtlRequest, CacheTtlResponse, LockAcquireRequest, LockAcquireResponse, LockReleaseRequest,
-    LockReleaseResponse, LockRenewRequest, LockRenewResponse,
+    LockReleaseResponse, LockRenewRequest, LockRenewResponse, LockIsLockedRequest, LockIsLockedResponse,
 };
 
 const TYPE_STRING: &str = "string";
@@ -485,6 +485,19 @@ impl CacheServiceTrait for CacheService {
                 Status::internal("lock release failed")
             })?;
         Ok(Response::new(LockReleaseResponse { released }))
+    }
+
+    async fn is_locked(
+        &self,
+        request: Request<LockIsLockedRequest>,
+    ) -> Result<Response<LockIsLockedResponse>, Status> {
+        let request = request.into_inner();
+        let lock_key = require_key(&request.lock_key)?;
+        let locked = self.lock.is_locked(lock_key).await.map_err(|error| {
+            tracing::error!(%error, lock_key, "lock is_locked failed");
+            Status::internal("lock is_locked failed")
+        })?;
+        Ok(Response::new(LockIsLockedResponse { locked }))
     }
 }
 

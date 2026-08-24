@@ -14,6 +14,7 @@ import cn.mapway.broker.proto.CacheTtlRequest;
 import cn.mapway.broker.proto.ConfigureTopicsRequest;
 import cn.mapway.broker.proto.ListTopicsRequest;
 import cn.mapway.broker.proto.LockAcquireRequest;
+import cn.mapway.broker.proto.LockIsLockedRequest;
 import cn.mapway.broker.proto.LockReleaseRequest;
 import cn.mapway.broker.proto.LockRenewRequest;
 import cn.mapway.broker.proto.MessageQueueGrpc;
@@ -401,17 +402,27 @@ public final class SatwayClient implements AutoCloseable {
     }
 
     /**
-     * Try to acquire a distributed lock. Returns a {@link LockHandle} on success,
-     * or {@code null} when another owner already holds it. The returned handle
-     * owns a fresh random owner token; use {@link LockHandle#renew(long)} and
-     * {@link LockHandle#release()} (or try-with-resources) on it.
+     * Try to acquire a distributed lock with a fresh random owner. Returns a
+     * {@link LockHandle} on success, or {@code null} when another owner already
+     * holds it. Use {@link LockHandle#renew(long)} / {@link LockHandle#release()}.
      */
     public LockHandle acquireLock(String lockKey, long ttlSeconds) {
+        return acquireLock(lockKey, UUID.randomUUID().toString(), ttlSeconds);
+    }
+
+    /**
+     * Try to acquire a distributed lock for an explicit {@code owner} token.
+     * Renewal and release must present the same owner. Returns {@code null}
+     * when the lock is currently held by someone else.
+     */
+    public LockHandle acquireLock(String lockKey, String owner, long ttlSeconds) {
         requireKey(lockKey);
+        if (owner == null || owner.isBlank()) {
+            throw new IllegalArgumentException("owner is required");
+        }
         if (ttlSeconds <= 0) {
             throw new IllegalArgumentException("ttlSeconds must be > 0");
         }
-        String owner = UUID.randomUUID().toString();
         boolean acquired = callWithReconnect("acquireLock", () -> cacheStub()
                 .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
                 .acquireLock(LockAcquireRequest.newBuilder()
@@ -442,6 +453,15 @@ public final class SatwayClient implements AutoCloseable {
                         .setOwner(owner)
                         .build())
                 .getReleased());
+    }
+
+    /** Whether the lock is currently held (i.e. not expired). */
+    public boolean lockIsLocked(String lockKey) {
+        requireKey(lockKey);
+        return callWithReconnect("lockIsLocked", () -> cacheStub()
+                .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                .isLocked(LockIsLockedRequest.newBuilder().setLockKey(lockKey).build())
+                .getLocked());
     }
 
     private static void requireKey(String key) {

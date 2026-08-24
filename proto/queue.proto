@@ -130,6 +130,7 @@ service CacheService {
   rpc AcquireLock(LockAcquireRequest) returns (LockAcquireResponse);
   rpc RenewLock(LockRenewRequest) returns (LockRenewResponse);
   rpc ReleaseLock(LockReleaseRequest) returns (LockReleaseResponse);
+  rpc IsLocked(LockIsLockedRequest) returns (LockIsLockedResponse);
 }
 
 message CacheSetRequest {
@@ -222,4 +223,12 @@ message LockReleaseRequest {
 
 message LockReleaseResponse {
   bool released = 1;
+}
+
+message LockIsLockedRequest {
+  string lock_key = 1;
+}
+
+message LockIsLockedResponse {
+  bool locked = 1;
 }

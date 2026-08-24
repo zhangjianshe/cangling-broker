@@ -460,6 +460,19 @@ class SatwayClient:
 
         return self._call_with_reconnect("release_lock", once)
 
+    def lock_is_locked(self, lock_key: str) -> bool:
+        if not lock_key or not lock_key.strip():
+            raise ValueError("lock_key is required")
+
+        def once() -> bool:
+            return self._cache_stub.IsLocked(
+                queue_pb2.LockIsLockedRequest(lock_key=lock_key),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            ).locked
+
+        return self._call_with_reconnect("is_locked", once)
+
     def _is_open(self) -> bool:
         return self._open
 
