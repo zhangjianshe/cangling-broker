@@ -398,10 +398,14 @@ async fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+    let cache_store = cache::CacheStore::new(config.cache_max_entries);
+    let lock_store = cache::LockStore::new(db.clone());
     let status = tokio::spawn(status::serve(
         status_listener,
         db.clone(),
         config.clone(),
+        cache_store.clone(),
+        lock_store.clone(),
         subscribers.clone(),
         shutdown.clone(),
         mqtt_on_status.then(|| mqtt_ctx.clone()),
@@ -417,11 +421,12 @@ async fn main() -> anyhow::Result<()> {
     let cleaner = tokio::spawn(retention_loop(
         db.clone(),
         config.clone(),
+        cache_store.clone(),
+        lock_store.clone(),
         subscribers.clone(),
         shutdown.clone(),
     ));
     let address = config.grpc_listen_addr();
-    let cache_max_entries = config.cache_max_entries;
     let interceptor = AuthInterceptor::new(config.auth_token.clone());
     if interceptor.enabled() {
         info!(%address, "gRPC intake service listening (CL_BROKER_AUTH_TOKEN required)");
@@ -442,7 +447,7 @@ async fn main() -> anyhow::Result<()> {
             interceptor.clone(),
         ))
         .add_service(CacheServiceServer::with_interceptor(
-            CacheService::new(db, cache_max_entries),
+            CacheService::new(cache_store, lock_store),
             interceptor,
         ))
         .serve_with_incoming_shutdown(
@@ -564,12 +569,12 @@ async fn dispatch_loop(
 async fn retention_loop(
     db: Database,
     config: Arc<Config>,
+    cache: crate::cache::CacheStore,
+    lock: crate::cache::LockStore,
     subscribers: TopicSubscribers,
     shutdown: CancellationToken,
 ) {
     const SWEEP_SECS: u64 = 60;
-    let cache = crate::cache::CacheStore::new(config.cache_max_entries);
-    let lock = crate::cache::LockStore::new(db.clone());
     let purge_every = (config.purge_interval_hours > 0)
         .then(|| Duration::from_secs(config.purge_interval_hours.saturating_mul(3600)));
     let mut last_idle_purge: Option<tokio::time::Instant> = None;

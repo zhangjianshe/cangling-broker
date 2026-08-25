@@ -381,11 +381,8 @@ pub struct CacheService {
 }
 
 impl CacheService {
-    pub fn new(db: Database, cache_max_entries: usize) -> Self {
-        Self {
-            cache: CacheStore::new(cache_max_entries),
-            lock: LockStore::new(db),
-        }
+    pub fn new(cache: CacheStore, lock: LockStore) -> Self {
+        Self { cache, lock }
     }
 }
 
@@ -413,6 +410,7 @@ impl CacheServiceTrait for CacheService {
                 tracing::error!(%error, key, "cache set failed");
                 Status::internal("cache set failed")
             })?;
+        tracing::info!(key, "cache set");
         Ok(Response::new(CacheSetResponse { ok: true }))
     }
 
@@ -428,6 +426,7 @@ impl CacheServiceTrait for CacheService {
         })?;
         let found = entry.is_some();
         let (value, value_type) = entry.unwrap_or_default();
+        tracing::info!(key, found, "cache get");
         Ok(Response::new(CacheGetResponse {
             found,
             value,
@@ -445,6 +444,7 @@ impl CacheServiceTrait for CacheService {
             tracing::error!(%error, key, "cache delete failed");
             Status::internal("cache delete failed")
         })?;
+        tracing::info!(key, deleted, "cache delete");
         Ok(Response::new(CacheDeleteResponse { deleted }))
     }
 
@@ -462,6 +462,7 @@ impl CacheServiceTrait for CacheService {
                 tracing::error!(%error, key, "cache incr failed");
                 Status::invalid_argument(format!("cache incr failed: {error}"))
             })?;
+        tracing::info!(key, value, "cache incr");
         Ok(Response::new(CacheIncrResponse { value }))
     }
 
@@ -475,6 +476,7 @@ impl CacheServiceTrait for CacheService {
             tracing::error!(%error, key, "cache expire failed");
             Status::internal("cache expire failed")
         })?;
+        tracing::info!(key, ok, "cache expire");
         Ok(Response::new(CacheExpireResponse { ok }))
     }
 
@@ -512,6 +514,7 @@ impl CacheServiceTrait for CacheService {
                 tracing::error!(%error, lock_key, "lock acquire failed");
                 Status::internal("lock acquire failed")
             })?;
+        tracing::info!(lock_key, owner, acquired, "lock acquire");
         Ok(Response::new(LockAcquireResponse { acquired }))
     }
 
@@ -536,6 +539,7 @@ impl CacheServiceTrait for CacheService {
                 tracing::error!(%error, lock_key, "lock renew failed");
                 Status::internal("lock renew failed")
             })?;
+        tracing::info!(lock_key, owner, renewed, "lock renew");
         Ok(Response::new(LockRenewResponse { renewed }))
     }
 
@@ -557,6 +561,7 @@ impl CacheServiceTrait for CacheService {
                 tracing::error!(%error, lock_key, "lock release failed");
                 Status::internal("lock release failed")
             })?;
+        tracing::info!(lock_key, owner, released, "lock release");
         Ok(Response::new(LockReleaseResponse { released }))
     }
 

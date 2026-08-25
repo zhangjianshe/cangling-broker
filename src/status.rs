@@ -104,6 +104,8 @@ pub async fn serve(
     listener: tokio::net::TcpListener,
     db: Database,
     config: std::sync::Arc<Config>,
+    cache: CacheStore,
+    lock: LockStore,
     subscribers: TopicSubscribers,
     shutdown: CancellationToken,
     mqtt: Option<crate::mqtt::MqttCtx>,
@@ -112,8 +114,8 @@ pub async fn serve(
 ) -> anyhow::Result<()> {
     let state = StatusState {
         db: db.clone(),
-        cache: CacheStore::new(config.cache_max_entries),
-        lock: LockStore::new(db),
+        cache,
+        lock,
         subscribers,
         mqtt_clients,
         grpc_clients,
@@ -1302,6 +1304,12 @@ mod tests {
         assert!(html.contains("data-view=\"lock\""), "{html}");
         assert!(html.contains("cache/keys"), "{html}");
         assert!(html.contains("lock/list"), "{html}");
+        assert!(html.contains("renderCache("), "{html}");
+        assert!(html.contains("renderLocks("), "{html}");
+        assert!(html.contains("[data-cache-page]"), "{html}");
+        assert!(html.contains("[data-lock-page]"), "{html}");
+        assert!(html.contains("\"cache-page\""), "{html}");
+        assert!(html.contains("\"lock-page\""), "{html}");
         assert!(!html.contains("连接时间"), "{html}");
         assert!(html.contains("pad2(date.getMonth() + 1)"), "{html}");
         assert!(!html.contains("toLocaleString"), "{html}");

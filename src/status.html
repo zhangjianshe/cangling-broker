@@ -767,8 +767,14 @@
     let clientPageSize = 10;
     let topicPage = 0;
     let clientPage = 0;
+    let cachePageSize = 10;
+    let lockPageSize = 10;
+    let cachePage = 0;
+    let lockPage = 0;
     let lastTopics = [];
     let lastClients = [];
+    let lastCache = [];
+    let lastLocks = [];
     let selectedClientKey = "";
     let selectedTopicName = "";
     let clientTypeFilter = "";
@@ -1098,9 +1104,17 @@
         '<span class="meta">' + (subs.length) + " 个订阅</span></div>" + body + "</div>";
     }
 
+    function pageSizeOf(kind) {
+      if (kind === "topic") return topicPageSize;
+      if (kind === "client") return clientPageSize;
+      if (kind === "cache") return cachePageSize;
+      if (kind === "lock") return lockPageSize;
+      return 10;
+    }
+
     function pagerBar(from, to, total, page, pages, kind, pos) {
-      const sizeKind = kind === "topic-page" ? "topic" : "client";
-      const size = sizeKind === "topic" ? topicPageSize : clientPageSize;
+      const sizeKind = kind.replace(/-page$/, "");
+      const size = pageSizeOf(sizeKind);
       return '<div class="pager ' + (pos || "") + '">' +
         '<span class="btns">' +
         '<button type="button" data-' + kind + '="prev"' + (page <= 1 ? " disabled" : "") + ">上一页</button>" +
@@ -1294,6 +1308,20 @@
         if (topicBtn.getAttribute("data-topic-page") === "prev") topicPage -= 1;
         else topicPage += 1;
         renderTopics(lastTopics);
+        return;
+      }
+      const cacheBtn = event.target.closest("[data-cache-page]");
+      if (cacheBtn && !cacheBtn.disabled) {
+        if (cacheBtn.getAttribute("data-cache-page") === "prev") cachePage -= 1;
+        else cachePage += 1;
+        renderCache(lastCache);
+        return;
+      }
+      const lockBtn = event.target.closest("[data-lock-page]");
+      if (lockBtn && !lockBtn.disabled) {
+        if (lockBtn.getAttribute("data-lock-page") === "prev") lockPage -= 1;
+        else lockPage += 1;
+        renderLocks(lastLocks);
       }
     });
 
@@ -1338,14 +1366,23 @@
       const input = event.target.closest("[data-page-size]");
       if (!input) return;
       const size = parsePageSize(input.value);
-      if (input.getAttribute("data-page-size") === "topic") {
+      const kind = input.getAttribute("data-page-size");
+      if (kind === "topic") {
         topicPageSize = size;
         topicPage = 0;
         renderTopics(lastTopics);
-      } else {
+      } else if (kind === "client") {
         clientPageSize = size;
         clientPage = 0;
         renderClients(lastClients);
+      } else if (kind === "cache") {
+        cachePageSize = size;
+        cachePage = 0;
+        renderCache(lastCache);
+      } else if (kind === "lock") {
+        lockPageSize = size;
+        lockPage = 0;
+        renderLocks(lastLocks);
       }
     });
 
@@ -1411,26 +1448,66 @@
       return s + " 秒";
     }
 
-    function cacheListHtml(entries) {
-      if (!entries || !entries.length) return '<div class="empty">暂无缓存键</div>';
-      const rows = entries.map((entry) =>
-        '<tr><td class="mono">' + escapeHtml(entry.key) + '</td>' +
+    function cacheTable(pageItems, start) {
+      const rows = pageItems.map((entry, i) =>
+        '<tr><td class="seq">' + (start + i + 1) + '</td>' +
+        '<td class="mono">' + escapeHtml(entry.key) + '</td>' +
         '<td class="mono">' + escapeHtml(truncate(entry.value, 200)) + '</td>' +
         '<td>' + escapeHtml(entry.value_type || "string") + '</td>' +
         '<td>' + escapeHtml(ttlLabel(entry.ttl_seconds)) + '</td></tr>'
       ).join("");
-      return '<div class="list"><table><thead><tr><th>键</th><th>值</th><th>类型</th><th>TTL</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+      return '<div class="list"><table><thead><tr><th class="seq">序号</th><th>键</th><th>值</th><th>类型</th><th>TTL</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
     }
 
-    function lockListHtml(locks) {
-      if (!locks || !locks.length) return '<div class="empty">暂无锁</div>';
-      const rows = locks.map((lock) =>
-        '<tr><td class="mono">' + escapeHtml(lock.lock_key) + '</td>' +
+    function lockTable(pageItems, start) {
+      const rows = pageItems.map((lock, i) =>
+        '<tr><td class="seq">' + (start + i + 1) + '</td>' +
+        '<td class="mono">' + escapeHtml(lock.lock_key) + '</td>' +
         '<td class="mono">' + escapeHtml(lock.owner) + '</td>' +
         '<td>' + escapeHtml(fmtTs(lock.expire_at)) + '</td>' +
         '<td>' + escapeHtml(fmtTs(lock.create_time)) + '</td></tr>'
       ).join("");
-      return '<div class="list"><table><thead><tr><th>锁键</th><th>持有者</th><th>过期时间</th><th>创建时间</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+      return '<div class="list"><table><thead><tr><th class="seq">序号</th><th>锁键</th><th>持有者</th><th>过期时间</th><th>创建时间</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+
+    function renderCache(entries) {
+      lastCache = entries || [];
+      $("cache-count").textContent = lastCache.length;
+      if (!lastCache.length) {
+        $("cache-list").innerHTML = '<div class="empty">暂无缓存键</div>';
+        return;
+      }
+      const pages = Math.max(1, Math.ceil(lastCache.length / cachePageSize));
+      if (cachePage >= pages) cachePage = pages - 1;
+      if (cachePage < 0) cachePage = 0;
+      const start = cachePage * cachePageSize;
+      const pageItems = lastCache.slice(start, start + cachePageSize);
+      const from = start + 1;
+      const to = Math.min(lastCache.length, start + cachePageSize);
+      $("cache-list").innerHTML = withPagers(
+        cacheTable(pageItems, start),
+        from, to, lastCache.length, cachePage + 1, pages, "cache-page"
+      );
+    }
+
+    function renderLocks(locks) {
+      lastLocks = locks || [];
+      $("lock-count").textContent = lastLocks.length;
+      if (!lastLocks.length) {
+        $("lock-list").innerHTML = '<div class="empty">暂无锁</div>';
+        return;
+      }
+      const pages = Math.max(1, Math.ceil(lastLocks.length / lockPageSize));
+      if (lockPage >= pages) lockPage = pages - 1;
+      if (lockPage < 0) lockPage = 0;
+      const start = lockPage * lockPageSize;
+      const pageItems = lastLocks.slice(start, start + lockPageSize);
+      const from = start + 1;
+      const to = Math.min(lastLocks.length, start + lockPageSize);
+      $("lock-list").innerHTML = withPagers(
+        lockTable(pageItems, start),
+        from, to, lastLocks.length, lockPage + 1, pages, "lock-page"
+      );
     }
 
     function setCacheResult(html) {
@@ -1444,8 +1521,7 @@
     async function loadCache() {
       try {
         const data = await apiRequest("cache/keys");
-        $("cache-count").textContent = (data.entries || []).length;
-        $("cache-list").innerHTML = cacheListHtml(data.entries || []);
+        renderCache(data.entries || []);
       } catch (error) {
         $("cache-list").innerHTML = '<div class="empty">无法加载缓存：' + escapeHtml(error.message) + '</div>';
       }
@@ -1454,8 +1530,7 @@
     async function loadLocks() {
       try {
         const data = await apiRequest("lock/list");
-        $("lock-count").textContent = (data.locks || []).length;
-        $("lock-list").innerHTML = lockListHtml(data.locks || []);
+        renderLocks(data.locks || []);
       } catch (error) {
         $("lock-list").innerHTML = '<div class="empty">无法加载锁：' + escapeHtml(error.message) + '</div>';
       }
