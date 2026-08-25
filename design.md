@@ -35,63 +35,13 @@
 
 ## 3. 总体架构
 
-```
-                        ┌──────────────────────────────────────────────┐
-                        │                  Clients                     │
-                        │  Java SDK │ Python SDK │ MQTT 3.1.1 客户端    │
-                        └───────┬──────────┬──────────────┬─────────────┘
-                                │ gRPC     │ gRPC/HTTP    │ MQTT(TCP/WS)
-        ┌───────────────────────▼──────────▼──────────────▼──────────────┐
-        │                        接入层 (Ingress)                        │
-        │  tonic gRPC Server         axum HTTP Status       mqtt module  │
-        │  (MessageQueue/CacheService) (dashboard + APIs)  (codec/session)│
-        └───────────────────────────────┬────────────────────────────────┘
-                                        │
-        ┌───────────────────────────────▼────────────────────────────────┐
-        │                      核心逻辑层 (Core)                         │
-        │  delivery::ingest / fanout_ephemeral / run_subscribe_loop      │
-        │  subscribers::TopicSubscribers (内存订阅表)                     │
-        │  subscribers::InflightAcks    (in-flight 消息 ack 等待表)       │
-        │  topic::filter_matches        (MQTT `+`/`#` 主题匹配)           │
-        └───────────────────────────────┬────────────────────────────────┘
-                                        │
-        ┌───────────────────────────────▼────────────────────────────────┐
-        │                      存储层 (Storage)                          │
-        │  db::Database (SqlitePool, WAL)  ── messages / consumers /      │
-        │                                     topic_stats / sys_lock     │
-        │  cache::CacheStore (Arc<Mutex<HashMap>>, 内存 + TTL + LRU)     │
-        │  cache::LockStore  (SQLite sys_lock)                           │
-        └───────────────────────────────┬────────────────────────────────┘
-                                        │
-        ┌───────────────────────────────▼────────────────────────────────┐
-        │                    后台任务 (Background tasks)                  │
-        │  dispatch_loop   (persistent 主题无在线流时 HTTP 回退)          │
-        │  retention_loop  (过期消息/消费者/缓存/锁 清理)                 │
-        │  subscribe loops (每订阅一条，负责 claim → 投递 → ack)          │
-        └────────────────────────────────────────────────────────────────┘
-```
+![总体架构图](doc/img/architecture.png)
 
 ### 3.1 消息生命周期与状态机
 
 消息在 SQLite `messages` 表中的状态迁移：
 
-```
- AcceptMessages
-      │  (enqueue: idempotency_key 去重)
-      ▼
-  pending ──claim(事务: 置 processing + lease + next_attempt_at)──▶ processing
-      ▲                                                              │
-      │   reclaim_stale() 超时未 ack 回收                              │ AckMessage(success)
-      │  (processing 且 next_attempt_at 过期 → pending)              │ 或超时
-      └──────────────────────────────────────────────────────────────┤
-                                             ┌────────────────────────┴─────────────┐
-                                             ▼                                      ▼
-                                        delivered                               failed
-                                        (成功, 可清理)                     (attempts+1, 达上限)
-                                                                                   │
-                                                                                   ▼
-                                              next_attempt_at 到期 → 重新进入 pending（重试）
-```
+![消息生命周期状态机](doc/img/message-state-machine.png)
 
 关键点：
 
