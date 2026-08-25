@@ -121,9 +121,10 @@
     header {
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      justify-content: flex-start;
+      flex-wrap: wrap;
       gap: 16px;
-      height: 64px;
+      min-height: 64px;
       padding: 0 22px;
       border-bottom: 1px solid var(--line);
       background: var(--bg-header);
@@ -145,8 +146,35 @@
     .header-right {
       display: flex; align-items: center; gap: 8px; min-width: 0;
       flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0;
+      margin-left: auto;
     }
     header .btn { height: 34px; display: inline-flex; align-items: center; }
+    .topnav {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin: 0;
+      padding: 0;
+    }
+    .topnav a {
+      display: inline-flex;
+      align-items: center;
+      height: 34px;
+      padding: 0 12px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+    .topnav a:hover { color: var(--text); background: var(--bg-3); }
+    .topnav a.active {
+      color: var(--text);
+      background: var(--bg-active);
+      border-color: var(--line);
+      font-weight: 600;
+    }
     .meta, #meta {
       color: var(--muted); display: flex; align-items: center; gap: 8px;
       flex-wrap: wrap; justify-content: flex-end;
@@ -388,6 +416,57 @@
       margin-bottom: 10px;
     }
     .section-head h2 { margin: 0; }
+    .cache-form {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      gap: 10px 16px;
+      margin-bottom: 12px;
+    }
+    .cache-form label {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      min-width: 0;
+    }
+    .cache-form label span { white-space: nowrap; }
+    .cache-form input {
+      background: var(--bg-input);
+      border: 1px solid var(--line);
+      color: var(--text);
+      padding: 9px 11px;
+      outline: none;
+      min-width: 0;
+    }
+    .cache-form input:focus {
+      border-color: var(--accent-emphasis);
+      box-shadow: 0 0 0 3px var(--bg-active);
+    }
+    #cache-key, #lock-key { width: 280px; }
+    #cache-value { width: 340px; }
+    #cache-ttl, #lock-ttl, #cache-delta { width: 120px; }
+    #lock-owner { width: 280px; }
+    .cache-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .cache-result {
+      margin-bottom: 16px;
+      color: var(--muted);
+    }
+    .cache-result pre { margin: 8px 0 0; }
+    .list {
+      background: var(--bg-2);
+      border: 1px solid var(--line);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    .list table { border-radius: 0; }
+    .list th, .list td { word-break: break-word; }
     .pager {
       display: flex;
       flex-wrap: wrap;
@@ -474,6 +553,11 @@
         <small id="build">正在加载版本…</small>
       </div>
     </div>
+    <nav class="topnav" aria-label="主菜单">
+      <a href="#messages" data-view="messages" class="active">消息</a>
+      <a href="#cache" data-view="cache">缓存</a>
+      <a href="#lock" data-view="lock">分布式锁</a>
+    </nav>
     <div class="header-right">
       <div class="meta" id="meta"><span>正在加载…</span></div>
       <button type="button" class="btn" id="theme-toggle" aria-label="切换深色或浅色主题">浅色</button>
@@ -481,6 +565,7 @@
   </header>
   <main class="page">
   <div id="error"></div>
+  <section id="view-messages" data-view-panel="messages">
   <div class="cards" id="cards"></div>
   <div class="tabs-wrap">
     <div class="tabs" role="tablist">
@@ -509,6 +594,48 @@
       <div id="topics"></div>
     </section>
   </div>
+  </section>
+  <section id="view-cache" data-view-panel="cache" hidden>
+    <h2>缓存</h2>
+    <div class="cache-form">
+      <label><span>键</span><input id="cache-key" type="text" placeholder="例如 session:u1" autocomplete="off"></label>
+      <label><span>值</span><input id="cache-value" type="text" placeholder="写入 / 查询的值" autocomplete="off"></label>
+      <label><span>TTL（秒）</span><input id="cache-ttl" type="number" min="0" value="0"></label>
+      <label><span>增量</span><input id="cache-delta" type="number" value="1"></label>
+    </div>
+    <div class="cache-actions">
+      <button type="button" class="btn" data-cache-op="get">查询</button>
+      <button type="button" class="btn" data-cache-op="set">写入</button>
+      <button type="button" class="btn" data-cache-op="delete">删除</button>
+      <button type="button" class="btn" data-cache-op="incr">自增</button>
+    </div>
+    <div id="cache-result" class="cache-result"></div>
+    <div class="section-head">
+      <h2>全部键（<span id="cache-count">0</span>）</h2>
+      <button type="button" class="btn" id="cache-refresh">刷新</button>
+    </div>
+    <div id="cache-list"></div>
+  </section>
+  <section id="view-lock" data-view-panel="lock" hidden>
+    <h2>分布式锁</h2>
+    <div class="cache-form">
+      <label><span>锁键</span><input id="lock-key" type="text" placeholder="例如 import:dataset" autocomplete="off"></label>
+      <label><span>持有者</span><input id="lock-owner" type="text" placeholder="例如 owner-uuid" autocomplete="off"></label>
+      <label><span>TTL（秒）</span><input id="lock-ttl" type="number" min="1" value="30"></label>
+    </div>
+    <div class="cache-actions">
+      <button type="button" class="btn" data-lock-op="get">查询状态</button>
+      <button type="button" class="btn" data-lock-op="acquire">获取锁</button>
+      <button type="button" class="btn" data-lock-op="renew">续期</button>
+      <button type="button" class="btn" data-lock-op="release">释放</button>
+    </div>
+    <div id="lock-result" class="cache-result"></div>
+    <div class="section-head">
+      <h2>全部锁（<span id="lock-count">0</span>）</h2>
+      <button type="button" class="btn" id="lock-refresh">刷新</button>
+    </div>
+    <div id="lock-list"></div>
+  </section>
   </main>
   <div id="topic-modal" class="modal" hidden>
     <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="topic-modal-title">
@@ -526,6 +653,8 @@
     const $ = (id) => document.getElementById(id);
     const THEME_KEY = "cl-broker-theme";
     const TAB_KEY = "cl-broker-tab";
+    const VIEW_KEY = "cl-broker-view";
+    const VIEWS = ["messages", "cache", "lock"];
 
     function currentTheme() {
       return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
@@ -550,9 +679,23 @@
     });
     syncThemeButton();
 
-    function setTab(name) {
-      const tab = name === "topics" ? "topics" : "clients";
-      try { localStorage.setItem(TAB_KEY, tab); } catch (_) {}
+    function currentView() {
+      const first = (location.hash.replace(/^#/, "").split("/")[0] || "").toLowerCase();
+      return VIEWS.indexOf(first) >= 0 ? first : "messages";
+    }
+
+    function currentTab() {
+      const parts = location.hash.replace(/^#/, "").split("/");
+      const tab = parts[1];
+      if (tab === "topics" || tab === "clients") return tab;
+      try {
+        const saved = localStorage.getItem(TAB_KEY);
+        if (saved === "topics" || saved === "clients") return saved;
+      } catch (_) {}
+      return "clients";
+    }
+
+    function applyTab(tab) {
       document.querySelectorAll("[data-tab]").forEach((btn) => {
         const on = btn.getAttribute("data-tab") === tab;
         btn.classList.toggle("active", on);
@@ -560,33 +703,64 @@
       });
       $("panel-clients").hidden = tab !== "clients";
       $("panel-topics").hidden = tab !== "topics";
-      if (location.hash !== "#" + tab) {
-        history.replaceState(null, "", "#" + tab);
+    }
+
+    function writeHash(view, tab) {
+      const hash = view === "messages" ? "#" + view + "/" + tab : "#" + view;
+      if (location.hash !== hash) history.replaceState(null, "", hash);
+    }
+
+    function setTab(name) {
+      const tab = name === "topics" ? "topics" : "clients";
+      try { localStorage.setItem(TAB_KEY, tab); } catch (_) {}
+      applyTab(tab);
+      writeHash(currentView(), tab);
+    }
+
+    function setView(name) {
+      const view = VIEWS.indexOf(name) >= 0 ? name : "messages";
+      try { localStorage.setItem(VIEW_KEY, view); } catch (_) {}
+      document.querySelectorAll(".topnav [data-view]").forEach((link) => {
+        link.classList.toggle("active", link.getAttribute("data-view") === view);
+      });
+      document.querySelectorAll("[data-view-panel]").forEach((panel) => {
+        panel.hidden = panel.getAttribute("data-view-panel") !== view;
+      });
+      if (view === "messages") {
+        const tab = currentTab();
+        applyTab(tab);
+        writeHash(view, tab);
+      } else {
+        writeHash(view, null);
+        if (view === "cache") loadCache();
+        if (view === "lock") loadLocks();
       }
     }
 
+    document.querySelector(".topnav").addEventListener("click", (event) => {
+      const link = event.target.closest("[data-view]");
+      if (link) {
+        event.preventDefault();
+        setView(link.getAttribute("data-view"));
+      }
+    });
     document.querySelector(".tabs").addEventListener("click", (event) => {
       const btn = event.target.closest("[data-tab]");
       if (btn) setTab(btn.getAttribute("data-tab"));
     });
     window.addEventListener("hashchange", () => {
-      const hash = location.hash.replace("#", "");
-      if (hash === "topics" || hash === "clients") setTab(hash);
+      setView(currentView());
     });
-    (function initTab() {
-      const hash = location.hash.replace("#", "");
-      if (hash === "topics" || hash === "clients") {
-        setTab(hash);
-        return;
-      }
+    (function initRouting() {
+      const view = currentView();
       try {
-        const savedTab = localStorage.getItem(TAB_KEY);
-        if (savedTab === "topics" || savedTab === "clients") {
-          setTab(savedTab);
+        if (!location.hash || location.hash === "#") {
+          const savedView = localStorage.getItem(VIEW_KEY);
+          setView(VIEWS.indexOf(savedView) >= 0 ? savedView : "messages");
           return;
         }
       } catch (_) {}
-      setTab("clients");
+      setView(view);
     })();
 
     let topicPageSize = 10;
@@ -1182,7 +1356,7 @@
       return new URL(name.replace(/^\//, ""), location.origin + path).toString();
     }
 
-    async function refresh() {
+    async function refreshStatus() {
       try {
         const token = new URLSearchParams(location.search).get("token") || "";
         const headers = {};
@@ -1196,6 +1370,194 @@
         $("meta").innerHTML = "<span>离线</span>";
       }
     }
+
+    function authHeaders() {
+      const token = new URLSearchParams(location.search).get("token") || "";
+      const headers = {};
+      if (token) headers.Authorization = "Bearer " + token;
+      return headers;
+    }
+
+    async function apiRequest(path, options) {
+      const opts = options || {};
+      const url = new URL(apiUrl(path));
+      if (opts.query) {
+        Object.keys(opts.query).forEach((key) => {
+          url.searchParams.set(key, opts.query[key]);
+        });
+      }
+      const headers = authHeaders();
+      if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+      const response = await fetch(url.toString(), {
+        method: opts.method || "GET",
+        headers,
+        cache: "no-store",
+        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      return response.json();
+    }
+
+    function truncate(value, max) {
+      const text = String(value == null ? "" : value);
+      return text.length > max ? text.slice(0, max) + "…" : text;
+    }
+
+    function ttlLabel(seconds) {
+      const s = Number(seconds);
+      if (s === -2) return "不存在";
+      if (s === -1) return "永不过期";
+      if (s <= 0) return "已过期";
+      return s + " 秒";
+    }
+
+    function cacheListHtml(entries) {
+      if (!entries || !entries.length) return '<div class="empty">暂无缓存键</div>';
+      const rows = entries.map((entry) =>
+        '<tr><td class="mono">' + escapeHtml(entry.key) + '</td>' +
+        '<td class="mono">' + escapeHtml(truncate(entry.value, 200)) + '</td>' +
+        '<td>' + escapeHtml(entry.value_type || "string") + '</td>' +
+        '<td>' + escapeHtml(ttlLabel(entry.ttl_seconds)) + '</td></tr>'
+      ).join("");
+      return '<div class="list"><table><thead><tr><th>键</th><th>值</th><th>类型</th><th>TTL</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+
+    function lockListHtml(locks) {
+      if (!locks || !locks.length) return '<div class="empty">暂无锁</div>';
+      const rows = locks.map((lock) =>
+        '<tr><td class="mono">' + escapeHtml(lock.lock_key) + '</td>' +
+        '<td class="mono">' + escapeHtml(lock.owner) + '</td>' +
+        '<td>' + escapeHtml(fmtTs(lock.expire_at)) + '</td>' +
+        '<td>' + escapeHtml(fmtTs(lock.create_time)) + '</td></tr>'
+      ).join("");
+      return '<div class="list"><table><thead><tr><th>锁键</th><th>持有者</th><th>过期时间</th><th>创建时间</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+
+    function setCacheResult(html) {
+      $("cache-result").innerHTML = html;
+    }
+
+    function setLockResult(html) {
+      $("lock-result").innerHTML = html;
+    }
+
+    async function loadCache() {
+      try {
+        const data = await apiRequest("cache/keys");
+        $("cache-count").textContent = (data.entries || []).length;
+        $("cache-list").innerHTML = cacheListHtml(data.entries || []);
+      } catch (error) {
+        $("cache-list").innerHTML = '<div class="empty">无法加载缓存：' + escapeHtml(error.message) + '</div>';
+      }
+    }
+
+    async function loadLocks() {
+      try {
+        const data = await apiRequest("lock/list");
+        $("lock-count").textContent = (data.locks || []).length;
+        $("lock-list").innerHTML = lockListHtml(data.locks || []);
+      } catch (error) {
+        $("lock-list").innerHTML = '<div class="empty">无法加载锁：' + escapeHtml(error.message) + '</div>';
+      }
+    }
+
+    async function cacheOp(op) {
+      const key = $("cache-key").value.trim();
+      const value = $("cache-value").value;
+      const ttl = parseInt($("cache-ttl").value, 10) || 0;
+      const delta = parseInt($("cache-delta").value, 10) || 1;
+      setCacheResult('<span class="hint">正在处理…</span>');
+      try {
+        let data;
+        if (op === "get") {
+          if (!key) throw new Error("请输入键");
+          data = await apiRequest("cache", { query: { key } });
+          setCacheResult(
+            '<span>键 <b>' + escapeHtml(data.key) + '</b></span> ' +
+            (data.found
+              ? '<span class="pill live">已命中</span><span>TTL ' + escapeHtml(ttlLabel(data.ttl_seconds)) + '</span>' +
+                '<pre class="msg-payload">' + escapeHtml(data.value || "") + '</pre>'
+              : '<span class="pill stale">未命中</span>')
+          );
+        } else if (op === "set") {
+          if (!key) throw new Error("请输入键");
+          data = await apiRequest("cache", { method: "PUT", body: { key, value, ttl_seconds: ttl } });
+          setCacheResult('<span class="pill live">写入成功</span><span>键 <b>' + escapeHtml(data.key) + '</b></span>');
+        } else if (op === "delete") {
+          if (!key) throw new Error("请输入键");
+          data = await apiRequest("cache", { method: "DELETE", query: { key } });
+          setCacheResult('<span class="pill ' + (data.deleted ? "live" : "stale") + '">' + (data.deleted ? "已删除" : "未找到") + '</span>');
+        } else if (op === "incr") {
+          if (!key) throw new Error("请输入键");
+          data = await apiRequest("cache/incr", { method: "POST", body: { key, delta, ttl_seconds: ttl } });
+          setCacheResult('<span class="pill live">自增结果</span><b>' + escapeHtml(data.value) + '</b>');
+        }
+        loadCache();
+      } catch (error) {
+        setCacheResult('<span class="fail">操作失败：' + escapeHtml(error.message) + '</span>');
+      }
+    }
+
+    async function lockOp(op) {
+      const lockKey = $("lock-key").value.trim();
+      const owner = $("lock-owner").value.trim();
+      const ttl = parseInt($("lock-ttl").value, 10) || 0;
+      setLockResult('<span class="hint">正在处理…</span>');
+      try {
+        let data;
+        if (op === "get") {
+          if (!lockKey) throw new Error("请输入锁键");
+          data = await apiRequest("lock", { query: { lock_key: lockKey } });
+          setLockResult(
+            '<span>锁 <b>' + escapeHtml(data.lock_key) + '</b></span> ' +
+            (data.locked ? '<span class="pill live">已锁定</span>' : '<span class="pill stale">未锁定</span>')
+          );
+        } else if (op === "acquire") {
+          if (!lockKey || !owner) throw new Error("请输入锁键和持有者");
+          if (ttl <= 0) throw new Error("TTL 必须大于 0");
+          data = await apiRequest("lock/acquire", { method: "POST", body: { lock_key: lockKey, owner, ttl_seconds: ttl } });
+          setLockResult(data.acquired
+            ? '<span class="pill live">获取成功</span>'
+            : '<span class="pill stale">获取失败（已被占用或不可用）</span>');
+        } else if (op === "renew") {
+          if (!lockKey || !owner) throw new Error("请输入锁键和持有者");
+          if (ttl <= 0) throw new Error("TTL 必须大于 0");
+          data = await apiRequest("lock/renew", { method: "POST", body: { lock_key: lockKey, owner, ttl_seconds: ttl } });
+          setLockResult(data.renewed
+            ? '<span class="pill live">续期成功</span>'
+            : '<span class="pill stale">续期失败</span>');
+        } else if (op === "release") {
+          if (!lockKey || !owner) throw new Error("请输入锁键和持有者");
+          data = await apiRequest("lock", { method: "DELETE", query: { lock_key: lockKey, owner } });
+          setLockResult(data.released
+            ? '<span class="pill live">释放成功</span>'
+            : '<span class="pill stale">释放失败</span>');
+        }
+        loadLocks();
+      } catch (error) {
+        setLockResult('<span class="fail">操作失败：' + escapeHtml(error.message) + '</span>');
+      }
+    }
+
+    async function refresh() {
+      await refreshStatus();
+      if (currentView() === "cache") loadCache();
+      if (currentView() === "lock") loadLocks();
+    }
+
+    $("cache-refresh").addEventListener("click", loadCache);
+    $("lock-refresh").addEventListener("click", loadLocks);
+    document.addEventListener("click", (event) => {
+      const cacheBtn = event.target.closest("[data-cache-op]");
+      if (cacheBtn) {
+        cacheOp(cacheBtn.getAttribute("data-cache-op"));
+        return;
+      }
+      const lockBtn = event.target.closest("[data-lock-op]");
+      if (lockBtn) {
+        lockOp(lockBtn.getAttribute("data-lock-op"));
+      }
+    });
 
     refresh();
     setInterval(refresh, 2000);

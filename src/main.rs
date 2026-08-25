@@ -421,6 +421,7 @@ async fn main() -> anyhow::Result<()> {
         shutdown.clone(),
     ));
     let address = config.grpc_listen_addr();
+    let cache_max_entries = config.cache_max_entries;
     let interceptor = AuthInterceptor::new(config.auth_token.clone());
     if interceptor.enabled() {
         info!(%address, "gRPC intake service listening (CL_BROKER_AUTH_TOKEN required)");
@@ -441,7 +442,7 @@ async fn main() -> anyhow::Result<()> {
             interceptor.clone(),
         ))
         .add_service(CacheServiceServer::with_interceptor(
-            CacheService::new(db),
+            CacheService::new(db, cache_max_entries),
             interceptor,
         ))
         .serve_with_incoming_shutdown(
@@ -567,7 +568,7 @@ async fn retention_loop(
     shutdown: CancellationToken,
 ) {
     const SWEEP_SECS: u64 = 60;
-    let cache = crate::cache::CacheStore::new(db.clone());
+    let cache = crate::cache::CacheStore::new(config.cache_max_entries);
     let lock = crate::cache::LockStore::new(db.clone());
     let purge_every = (config.purge_interval_hours > 0)
         .then(|| Duration::from_secs(config.purge_interval_hours.saturating_mul(3600)));

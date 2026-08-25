@@ -255,12 +255,18 @@ The consumer receives one `SatwayMessage` on the `Subscribe` stream:
 
 Call `AckMessage` with that `message_id` and `lease`. `success = true` marks the message delivered; `success = false` or a timeout requeues it. This is **at-least-once delivery**: receivers should use `message_id` to make handling idempotent. Pass an `idempotency_key` on `AcceptMessages` to make producer retries safe.
 
-## Cache & lock (SQLite-backed Redis replacement)
+## Cache & lock (Redis replacement)
 
-The broker also serves a small Redis replacement backed by the same SQLite file: a
-string KV cache with TTL and atomic increment, plus distributed locks. It is exposed
+The broker also serves a small Redis replacement: an **in-memory** string KV cache
+with TTL and atomic increment, plus **SQLite-backed** distributed locks. It is exposed
 over gRPC (`dispatcher.v1.CacheService`) and over the status port under `/cache*` and
 `/lock*`. Values are binary-safe bytes; `Incr` treats the stored value as an integer.
+
+The cache lives in process memory (never touching SQLite), so reads and writes are
+fast. Its size is bounded by `CL_BROKER_CACHE_MAX_ENTRIES` (default 100000); when full,
+the least recently used entries are evicted. Cache entries are **not** persisted and
+are lost on broker restart. Locks, by contrast, stay on SQLite so a restart cannot
+silently drop a lease held by a running job.
 
 TTL semantics match Redis: `Ttl` returns `-2` for a missing key, `-1` for a key
 without expiry, and the remaining seconds otherwise. Locks require an `owner` token;
@@ -328,6 +334,7 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
 | `CL_BROKER_PURGE_INTERVAL_HOURS` | `1` | how often idle-topic purge runs; `0` runs it on every 60s sweep |
 | `ACK_TIMEOUT_SECS` | `30` | how long a subscriber may take to `AckMessage` before the message is retried |
 | `CONSUMER_TTL_SECS` | `60` | drop registered consumer metadata that is not seen again; `0` keeps it until `Unregister` |
+| `CL_BROKER_CACHE_MAX_ENTRIES` | `100000` | max in-memory cache entries before LRU eviction |
 | `LOG_MAX_BYTES` | `104857600` | rotate after this many bytes (100 MiB) |
 | `LOG_KEEP_FILES` | `3` | keep this many files, including the current one |
 | `CL_BROKER_LOG_MESSAGES` | `false` | when `true`, print each received message's topic and payload to the console |

@@ -4,6 +4,11 @@
 > 提供 **内存缓存（KV + TTL + 原子自增）** 与 **分布式锁（acquire / renew / release）** 能力，
 > 作为 Redis 的数据库化替代品，供 CIS 等系统通过 gRPC / HTTP 调用。
 
+> **更新：缓存已改为纯内存实现。** `CacheStore` 不再读写 SQLite，改为进程内
+> `HashMap` + TTL + LRU 上限（`CL_BROKER_CACHE_MAX_ENTRIES`，默认 100000）；
+> 缓存不持久化，broker 重启即丢失。分布式锁 `LockStore` 仍持久化在 SQLite
+> `sys_lock` 表，消息队列也仍持久化在 SQLite。
+
 ---
 
 ## 1. 项目现状
@@ -58,18 +63,16 @@
 
 ## 3. 设计决策
 
-### 3.1 存储：SQLite 两张新表（与 CIS 的 PostgreSQL 方案对齐）
+### 3.1 存储：缓存走内存，锁走 SQLite
+
+缓存 `CacheStore` 使用进程内 `Arc<Mutex<HashMap>>` 存储，key 为字符串，value 为
+二进制安全字节 + `value_type` + 过期时间戳 + `last_accessed`。读写完全不走 SQLite，
+因此吞吐不受单文件写锁限制。内存占用由 LRU 上限约束（`CL_BROKER_CACHE_MAX_ENTRIES`，
+默认 100000），超出时先清扫过期项，再逐出最久未访问项。
+
+分布式锁 `LockStore` 仍持久化在 SQLite 的 `sys_lock` 表，与 CIS 的 PostgreSQL 方案对齐：
 
 ```sql
-CREATE TABLE IF NOT EXISTS sys_kv (
-    key         TEXT PRIMARY KEY NOT NULL,
-    value       BLOB NOT NULL,            -- 二进制安全，等价 Redis string
-    value_type  TEXT NOT NULL DEFAULT 'string',  -- string / long，用于 incr 语义
-    expire_at   TEXT,                      -- RFC3339，NULL = 永不过期
-    update_time TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_sys_kv_expire ON sys_kv(expire_at);
-
 CREATE TABLE IF NOT EXISTS sys_lock (
     lock_key    TEXT PRIMARY KEY NOT NULL,
     owner       TEXT NOT NULL,             -- 持有者 UUID
@@ -79,14 +82,13 @@ CREATE TABLE IF NOT EXISTS sys_lock (
 CREATE INDEX IF NOT EXISTS idx_sys_lock_expire ON sys_lock(expire_at);
 ```
 
-与 CIS `doc/remove-redis.md` 中的 `sys_kv` / `sys_lock` 命名一致；时间戳沿用项目
-既有的 RFC3339 字符串约定（SQLite 下字典序 == 时间序，无需存储专用类型）。
+时间戳沿用项目既有的 RFC3339 字符串约定（SQLite 下字典序 == 时间序，无需存储专用类型）。
 
 ### 3.2 原子性
 
-- 缓存写：`INSERT ... ON CONFLICT(key) DO UPDATE`（单条原子 upsert）。
-- 自增：`ON CONFLICT ... DO UPDATE SET value = CAST(CAST(sys_kv.value AS INTEGER) + ? AS BLOB)`
-  单条原子语句，首次插入时写入 TTL，冲突时**不覆盖**已有 TTL（与 CIS `CacheService.incr` 一致）。
+- 缓存写/读/自增：由 `Mutex<HashMap>` 保证互斥，`incr` 在同一临界区内完成
+  「读值 + 加 delta + 写回」，等价 Redis `INCRBY`。首次插入时写入 TTL，
+  后续自增**不覆盖**已有 TTL（与 CIS `CacheService.incr` 一致）。
 - 锁获取：先 `DELETE` 已过期租约，再 `INSERT ... ON CONFLICT(lock_key) DO NOTHING`，
   以主键冲突为互斥事实源（等价 `SET NX`）。
 - 锁释放/续期：`WHERE lock_key=? AND owner=?`，保证只有持有者可操作。
@@ -101,7 +103,9 @@ CREATE INDEX IF NOT EXISTS idx_sys_lock_expire ON sys_lock(expire_at);
 
 ### 3.4 生命周期
 
-- 过期 KV 与锁：读时惰性删除 + `retention_loop` 60 秒清扫一次（`purge_expired`）。
+- 过期 KV：读时惰性删除 + `retention_loop` 60 秒清扫一次（内存 `purge_expired`），
+  超上限时 LRU 逐出。broker 重启后缓存清空，由客户端首次查询时回源重建。
+- 过期锁：读时惰性判断 + `retention_loop` 60 秒清扫一次（SQLite `purge_expired`）。
 - 锁默认不会自动续期，由持有者调用 `renew`（与 Redis SET NX + EX 语义一致）。
 
 ---

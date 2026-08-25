@@ -77,6 +77,12 @@ pub struct Config {
     #[arg(long, env = "CONSUMER_TTL_SECS", default_value_t = 60)]
     pub consumer_ttl_secs: u64,
 
+    /// Maximum number of in-memory cache entries. When the cache grows past
+    /// this, the least recently used entries are evicted. The cache is kept in
+    /// memory and is not persisted to SQLite.
+    #[arg(long, env = "CL_BROKER_CACHE_MAX_ENTRIES", default_value_t = crate::cache::DEFAULT_CACHE_MAX_ENTRIES)]
+    pub cache_max_entries: usize,
+
     /// Rotate the log file after this many bytes. Default 100 MiB.
     #[arg(long, env = "LOG_MAX_BYTES", default_value_t = 100 * 1024 * 1024)]
     pub log_max_bytes: usize,
@@ -163,6 +169,7 @@ impl Config {
             purge_interval_hours: 1,
             ack_timeout_secs: 3,
             consumer_ttl_secs: 0,
+            cache_max_entries: 100_000,
             log_max_bytes: 1024,
             log_keep_files: 1,
             log_messages: false,

@@ -291,7 +291,7 @@ class SatwayClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
-    # ==================== cache & lock (SQLite-backed Redis replacement) ====================
+    # ========= cache (in-memory) & lock (SQLite-backed) Redis replacement ==========
 
     def cache_set(
         self,

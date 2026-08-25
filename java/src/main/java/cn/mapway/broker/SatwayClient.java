@@ -297,7 +297,7 @@ public final class SatwayClient implements AutoCloseable {
         });
     }
 
-    // ==================== cache & lock (SQLite-backed Redis replacement) ====================
+    // ========= cache (in-memory) & lock (SQLite-backed) Redis replacement ==========
 
     /** Store a value. {@code ttlSeconds <= 0} means no expiry. */
     public void cacheSet(String key, byte[] value, long ttlSeconds) {

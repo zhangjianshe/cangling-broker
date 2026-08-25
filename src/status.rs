@@ -112,7 +112,7 @@ pub async fn serve(
 ) -> anyhow::Result<()> {
     let state = StatusState {
         db: db.clone(),
-        cache: CacheStore::new(db.clone()),
+        cache: CacheStore::new(config.cache_max_entries),
         lock: LockStore::new(db),
         subscribers,
         mqtt_clients,
@@ -154,8 +154,10 @@ fn status_routes(state: StatusState) -> Router {
         .route("/topics", get(list_topics).post(configure_topics))
         .route("/messages", get(topic_message).delete(clear_topic_messages))
         .route("/cache", get(cache_get).put(cache_set).post(cache_set).delete(cache_delete))
+        .route("/cache/keys", get(cache_keys))
         .route("/cache/incr", post(cache_incr))
         .route("/lock", get(lock_get).delete(lock_release))
+        .route("/lock/list", get(lock_list))
         .route("/lock/acquire", post(lock_acquire))
         .route("/lock/renew", post(lock_renew))
         .layer(middleware::from_fn_with_state(state.clone(), require_token))
@@ -402,6 +404,19 @@ struct CacheIncrResultBody {
     value: i64,
 }
 
+#[derive(Debug, Serialize)]
+struct CacheEntryBody {
+    key: String,
+    value: String,
+    value_type: String,
+    ttl_seconds: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct CacheListBody {
+    entries: Vec<CacheEntryBody>,
+}
+
 async fn cache_get(
     State(state): State<StatusState>,
     Query(query): Query<CacheQuery>,
@@ -487,6 +502,25 @@ async fn cache_incr(
     }))
 }
 
+async fn cache_keys(State(state): State<StatusState>) -> Result<Json<CacheListBody>, StatusCode> {
+    let entries = state
+        .cache
+        .entries()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(CacheListBody {
+        entries: entries
+            .into_iter()
+            .map(|(key, value, value_type, ttl_seconds)| CacheEntryBody {
+                key,
+                value: String::from_utf8_lossy(&value).into_owned(),
+                value_type,
+                ttl_seconds,
+            })
+            .collect(),
+    }))
+}
+
 #[derive(Debug, Deserialize)]
 struct LockQuery {
     lock_key: String,
@@ -528,6 +562,19 @@ struct LockRenewBody {
 struct LockReleaseBody {
     lock_key: String,
     released: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct LockEntryBody {
+    lock_key: String,
+    owner: String,
+    expire_at: String,
+    create_time: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LockListBody {
+    locks: Vec<LockEntryBody>,
 }
 
 async fn lock_get(
@@ -606,6 +653,25 @@ async fn lock_release(
     Ok(Json(LockReleaseBody {
         lock_key: lock_key.to_string(),
         released,
+    }))
+}
+
+async fn lock_list(State(state): State<StatusState>) -> Result<Json<LockListBody>, StatusCode> {
+    let locks = state
+        .lock
+        .list()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(LockListBody {
+        locks: locks
+            .into_iter()
+            .map(|(lock_key, owner, expire_at, create_time)| LockEntryBody {
+                lock_key,
+                owner,
+                expire_at,
+                create_time,
+            })
+            .collect(),
     }))
 }
 
@@ -1230,8 +1296,12 @@ mod tests {
         assert!(html.contains("function numCell("), "{html}");
         assert!(html.contains("td.zero"), "{html}");
         assert!(html.contains("data-clear-topic"), "{html}");
-        assert!(html.contains("id=\"client-page-size\""), "{html}");
-        assert!(html.contains("id=\"topic-page-size\""), "{html}");
+        assert!(html.contains("data-page-size"), "{html}");
+        assert!(html.contains("sizeKind"), "{html}");
+        assert!(html.contains("data-view=\"cache\""), "{html}");
+        assert!(html.contains("data-view=\"lock\""), "{html}");
+        assert!(html.contains("cache/keys"), "{html}");
+        assert!(html.contains("lock/list"), "{html}");
         assert!(!html.contains("连接时间"), "{html}");
         assert!(html.contains("pad2(date.getMonth() + 1)"), "{html}");
         assert!(!html.contains("toLocaleString"), "{html}");
