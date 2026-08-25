@@ -433,42 +433,52 @@ async fn main() -> anyhow::Result<()> {
     } else {
         info!(%address, "gRPC intake service listening (CL_BROKER_AUTH_TOKEN unset, open)");
     }
-    let grpc_listener = tokio::net::TcpListener::bind(address).await?;
-    Server::builder()
-        .add_service(MessageQueueServer::with_interceptor(
-            QueueService {
-                db: db.clone(),
-                config,
-                subscribers,
-                inflight,
-                grpc_clients: grpc_clients.clone(),
-                shutdown: shutdown.clone(),
-            },
-            interceptor.clone(),
-        ))
-        .add_service(CacheServiceServer::with_interceptor(
-            CacheService::new(cache_store, lock_store),
-            interceptor,
-        ))
-        .serve_with_incoming_shutdown(
-            TrackingIncoming::new(grpc_listener, grpc_clients),
-            async move {
-                wait_for_shutdown().await;
-                info!("shutdown signal received");
-                shutdown.cancel();
-            },
-        )
-        .await?;
-    status.await??;
-    worker.await?;
-    cleaner.await?;
-    if let Some(handle) = mqtt_tcp {
-        handle.await??;
+    let shutdown_result = async {
+        let grpc_listener = tokio::net::TcpListener::bind(address).await?;
+        Server::builder()
+            .add_service(MessageQueueServer::with_interceptor(
+                QueueService {
+                    db: db.clone(),
+                    config,
+                    subscribers,
+                    inflight,
+                    grpc_clients: grpc_clients.clone(),
+                    shutdown: shutdown.clone(),
+                },
+                interceptor.clone(),
+            ))
+            .add_service(CacheServiceServer::with_interceptor(
+                CacheService::new(cache_store, lock_store),
+                interceptor,
+            ))
+            .serve_with_incoming_shutdown(
+                TrackingIncoming::new(grpc_listener, grpc_clients),
+                async move {
+                    wait_for_shutdown().await;
+                    info!("shutdown signal received");
+                    shutdown.cancel();
+                },
+            )
+            .await?;
+        status.await??;
+        worker.await?;
+        cleaner.await?;
+        if let Some(handle) = mqtt_tcp {
+            handle.await??;
+        }
+        if let Some(handle) = mqtt_ws {
+            handle.await??;
+        }
+        Ok::<(), anyhow::Error>(())
     }
-    if let Some(handle) = mqtt_ws {
-        handle.await??;
-    }
+    .await;
+
     db_for_shutdown.close().await;
+
+    if let Err(error) = shutdown_result {
+        error!(%error, "broker shutdown finished with errors");
+        return Err(error);
+    }
     info!("broker stopped");
     Ok(())
 }

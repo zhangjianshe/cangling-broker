@@ -290,9 +290,12 @@ impl Database {
     }
 
     pub async fn close(self) {
-        let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        if let Err(error) = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
             .execute(&self.0)
-            .await;
+            .await
+        {
+            tracing::warn!(%error, "sqlite wal_checkpoint failed during shutdown");
+        }
         self.0.close().await;
     }
 
