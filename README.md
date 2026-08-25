@@ -156,7 +156,7 @@ python python/examples/consumer.py --broker 127.0.0.1:7500 --topic cangling-test
 python python/examples/producer.py --broker 127.0.0.1:7500 --topic cangling-test --text hello --count 1 --token change-me
 ```
 
-CI compiles on **x86_64** (`ubuntu-latest`) and **aarch64** (`ubuntu-24.04-arm`) and caches the Cargo output for the next run. A normal branch push or pull request only compiles. A version tag compiles again, then publishes Docker, Maven Central, and PyPI. Images:
+CI runs only on a `v*` tag push (when you run `./release.sh`). It compiles on **x86_64** (`ubuntu-latest`) and **aarch64** (`ubuntu-24.04-arm`), caches the Cargo output, then publishes Docker, Maven Central, and PyPI. Normal commits, branch pushes, and pull requests do not trigger CI. Images:
 
 - `docker.io/mapway/cangling-broker:latest`
 - `harbor.cangling.cn:22002/cangling/cangling-broker:latest`
@@ -167,7 +167,7 @@ CI compiles on **x86_64** (`ubuntu-latest`) and **aarch64** (`ubuntu-24.04-arm`)
 ./release.sh
 ```
 
-Each run bumps the patch version in `Cargo.toml`, `java/pom.xml`, and `python/pyproject.toml` (`0.1.0` → `0.1.1`), commits `Release v0.1.1`, tags `v0.1.1`, and pushes. That is two Git refs, so GitHub starts two workflows. Do not put `[skip ci]` on the commit: GitHub would skip the tag as well. Compile jobs skip the branch push when the message starts with `Release v`. The **tag** run is the one that compiles and publishes Docker, `cn.mapway:cangling-broker` to Maven Central, and `cangling-broker` to PyPI. Docker images are not published from `main`.
+Each run bumps the patch version in `Cargo.toml`, `java/pom.xml`, and `python/pyproject.toml` (`0.1.0` → `0.1.1`), commits `Release v0.1.1`, tags `v0.1.1`, and pushes both. The workflow triggers only on the `v*` tag push, so the branch commit does not run CI. Do not put `[skip ci]` on the commit: GitHub would skip the tag push as well. The tag run compiles and publishes Docker, `cn.mapway:cangling-broker` to Maven Central, and `cangling-broker` to PyPI. Docker images are not published from `main`.
 
 Set these repository secrets:
 
@@ -196,6 +196,8 @@ curl -s -H 'authorization: Bearer change-me' http://127.0.0.1:7501/status
 ```
 
 `/` is a single HTML page that refreshes from `/status`. `/status` is the JSON and includes `version`, `git`, `built`, and `db_bytes` (on-disk size of `queue.db` plus `-wal`/`-shm`). Each `clients[]` entry includes `version` when the client sent `x-client-version` (Java/Python SDKs do this automatically) or, for MQTT, the protocol version (`3.1` / `3.1.1`). Official SDKs also send `x-client-host` (Docker `HOSTNAME`, or `CL_BROKER_CLIENT_HOST` to override) so the dashboard can tell containers apart when they all NAT through the same gateway IP. `consumers` / `streams` is the number of live `Subscribe` streams. The dashboard card **SQLite** shows the same size. Click a **persistent** topic to open its consumers and browse saved messages (`GET /messages?topic=...&offset=0`, offset `0` is the latest). Ephemeral topics do not store payloads. **清空** on a topic row deletes that topic's messages (`DELETE /messages?topic=...`) and resets its counters.
+
+The header links to three pages: **消息** (status overview, connected clients, topics and per-topic message browsing), **缓存** (cache key lookup / write / delete / increment plus a full key list), and **分布式锁** (lock status / acquire / renew / release plus a full lock list). The cache and lock pages refresh from `GET /cache/keys` and `GET /lock/list`.
 
 Behind a reverse proxy at `/msg/`, open `/msg/?token=change-me`. The page calls `status` next to itself (`/msg/status`), not `/status` on the site root. If nginx strips the prefix (`proxy_pass http://broker:7501/;`), that is enough. If the proxy forwards `/msg/status` unchanged, set `CL_BROKER_WEB_BASE=/msg` so the broker also serves the dashboard and JSON under that prefix.
 
@@ -277,12 +279,14 @@ HTTP (same Bearer token as the rest of the dashboard):
 
 ```bash
 curl -s -H 'authorization: Bearer change-me' 'http://127.0.0.1:7501/cache?key=jobs:count'
+curl -s -H 'authorization: Bearer change-me' 'http://127.0.0.1:7501/cache/keys'
 curl -s -X PUT -H 'authorization: Bearer change-me' -H 'content-type: application/json' \
   -d '{"key":"session:u1","value":"hello","ttl_seconds":300}' http://127.0.0.1:7501/cache
 curl -s -X POST -H 'authorization: Bearer change-me' -H 'content-type: application/json' \
   -d '{"key":"jobs:count","delta":1,"ttl_seconds":60}' http://127.0.0.1:7501/cache/incr
 curl -s -X POST -H 'authorization: Bearer change-me' -H 'content-type: application/json' \
   -d '{"lock_key":"import:dataset","owner":"u1","ttl_seconds":30}' http://127.0.0.1:7501/lock/acquire
+curl -s -H 'authorization: Bearer change-me' 'http://127.0.0.1:7501/lock/list'
 curl -s -X DELETE -H 'authorization: Bearer change-me' \
   'http://127.0.0.1:7501/lock?lock_key=import:dataset&owner=u1'
 ```
@@ -318,7 +322,7 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
 | `CL_BROKER_PORT` | `7500` | gRPC listener `0.0.0.0:<port>` |
-| `CL_BROKER_WEBPORT` | `7501` | HTTP status (`GET /`, `GET /status`, `GET /health`, `GET /messages`) |
+| `CL_BROKER_WEBPORT` | `7501` | HTTP status/dashboard (`GET /`, `GET /status`, `GET /health`, `GET /messages`, `/cache*`, `/lock*`) |
 | `CL_BROKER_WEB_BASE` | unset | optional path prefix (`/msg`) when a proxy forwards `/msg/...` without stripping it. `/` and `/health` stay at the root |
 | `CL_BROKER_MQTT_ENABLED` | `true` | accept MQTT 3.1.1 clients; `false` disables both MQTT listeners |
 | `CL_BROKER_MQTT_PORT` | `7883` | MQTT TCP listener. `0` disables TCP. Unprivileged default; map `1883:7883` or set `1883` if you can bind it |
