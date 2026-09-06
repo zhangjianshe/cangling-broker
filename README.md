@@ -120,7 +120,7 @@ try (SatwayClient client = SatwayClient.connect("127.0.0.1:7500", "change-me", c
 })) {
     client.send("cangling-test", "hello");
     try (Consumer consumer = client.subscribe(
-            SubscribeOptions.topic("cangling-test").name("worker-1").build(),
+            SubscribeOptions.topic("cangling-test").name("worker-1").concurrency(10).build(),
             message -> System.out.println(message.id() + " " + message.payload()))) {
         Thread.currentThread().join();
     }
@@ -128,6 +128,8 @@ try (SatwayClient client = SatwayClient.connect("127.0.0.1:7500", "change-me", c
 ```
 
 `onConnected` also runs after a reconnect, so topic config is applied again when the broker comes back. You can register later with `client.onConnected(...)`; if the channel is already ready, that listener runs immediately.
+
+`SubscribeOptions.concurrency(10)` opens ten parallel subscription streams. Use concurrency greater than one only for `single` topics, and make the message handler thread-safe. Keep the default concurrency of one for `broadcast` topics, where every stream receives a copy.
 
 ### Python client (`cangling_broker`)
 

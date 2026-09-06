@@ -120,7 +120,7 @@ try (SatwayClient client = SatwayClient.connect("127.0.0.1:7500", "change-me", c
 })) {
     client.send("cangling-test", "hello");
     try (Consumer consumer = client.subscribe(
-            SubscribeOptions.topic("cangling-test").name("worker-1").build(),
+            SubscribeOptions.topic("cangling-test").name("worker-1").concurrency(10).build(),
             message -> System.out.println(message.id() + " " + message.payload()))) {
         Thread.currentThread().join();
     }
@@ -128,6 +128,8 @@ try (SatwayClient client = SatwayClient.connect("127.0.0.1:7500", "change-me", c
 ```
 
 `onConnected` 在重连后也会再次执行，因此 broker 恢复后主题配置会重新应用。之后可用 `client.onConnected(...)` 注册；若通道已就绪，该监听器会立即执行。
+
+`SubscribeOptions.concurrency(10)` 会打开十条并行订阅流。并发数大于一只应用于 `single` 主题，且消息处理器必须是线程安全的。`broadcast` 主题应保持默认并发数一，因为每条流都会收到一份消息。
 
 ### Python 客户端（`cangling_broker`）
 

@@ -13,7 +13,7 @@ public final class ConsumerMain {
         try (SatwayClient client = SatwayClient.connect(broker, token, connected ->
                      System.out.println("connected to " + broker));
              Consumer consumer = client.subscribe(
-                     SubscribeOptions.topic(topic).name(name).build(),
+                     SubscribeOptions.topic(topic).name(name).concurrency(10).build(),
                      message -> System.out.println(
                              "received | " + message.id() + " | " + message.topic() + " | " + message.payload()))) {
             System.out.println("subscribed consumer_id=" + consumer.consumerId());

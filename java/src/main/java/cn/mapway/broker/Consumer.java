@@ -5,7 +5,9 @@ import cn.mapway.broker.proto.SubscribeRequest;
 import io.grpc.StatusRuntimeException;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -14,16 +16,22 @@ public final class Consumer implements AutoCloseable {
     private static final Logger LOG = Logger.getLogger(Consumer.class.getName());
 
     private final SatwayClient client;
-    private final Thread worker;
+    private final List<Thread> workers;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final String consumerId;
 
     Consumer(SatwayClient client, SubscribeOptions options, String consumerId, MessageHandler handler) {
         this.client = client;
         this.consumerId = consumerId;
-        this.worker = new Thread(() -> run(options, handler), "cangling-subscribe");
-        this.worker.setDaemon(true);
-        this.worker.start();
+        this.workers = new ArrayList<>(options.concurrency());
+        for (int index = 0; index < options.concurrency(); index++) {
+            Thread worker = new Thread(
+                    () -> run(options, handler),
+                    "cangling-subscribe-" + (index + 1));
+            worker.setDaemon(true);
+            workers.add(worker);
+            worker.start();
+        }
     }
 
     public String consumerId() {
@@ -33,7 +41,9 @@ public final class Consumer implements AutoCloseable {
     @Override
     public void close() {
         closed.set(true);
-        worker.interrupt();
+        for (Thread worker : workers) {
+            worker.interrupt();
+        }
     }
 
     private void run(SubscribeOptions options, MessageHandler handler) {
