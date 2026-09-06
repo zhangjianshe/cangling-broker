@@ -167,3 +167,41 @@ jobs:
             ${{ env.HARBOR_IMAGE }}:${{ github.sha }}
           cache-from: type=gha,scope=cangling-broker-image
           cache-to: type=gha,mode=max,scope=cangling-broker-image
+      - name: Export architecture-specific image archives
+        env:
+          RELEASE_IMAGE: ${{ env.HARBOR_IMAGE }}:${{ steps.meta.outputs.version }}
+        run: |
+          mkdir -p dist
+          docker pull --platform linux/amd64 "$RELEASE_IMAGE"
+          docker image save "$RELEASE_IMAGE" | gzip -1 > dist/cangling-broker-amd64.tar.gz
+          docker pull --platform linux/arm64 "$RELEASE_IMAGE"
+          docker image save "$RELEASE_IMAGE" | gzip -1 > dist/cangling-broker-arm64.tar.gz
+          ls -lh dist/cangling-broker-*.tar.gz
+      - name: Upload amd64 image archive to software site
+        env:
+          CANGLING_TOKEN: ${{ secrets.CANGLING_TOKEN }}
+        run: |
+          curl --fail-with-body --show-error --progress-bar -k -X POST \
+            "https://soft.cangling.cn:22002/api/v1/software/upload" \
+            -H "API-TOKEN: $CANGLING_TOKEN" \
+            -F "token=26deab4218cf40d3a611f87fd4dd9018" \
+            -F "version=latest" \
+            -F "name=cangling-broker-amd64.tar.gz" \
+            -F "summary=Automatic release for version ${{ github.ref_name }}" \
+            -F "os=linux" \
+            -F "arch=amd64" \
+            -F "file=@dist/cangling-broker-amd64.tar.gz"
+      - name: Upload arm64 image archive to software site
+        env:
+          CANGLING_TOKEN: ${{ secrets.CANGLING_TOKEN }}
+        run: |
+          curl --fail-with-body --show-error --progress-bar -k -X POST \
+            "https://soft.cangling.cn:22002/api/v1/software/upload" \
+            -H "API-TOKEN: $CANGLING_TOKEN" \
+            -F "token=26deab4218cf40d3a611f87fd4dd9018" \
+            -F "version=latest" \
+            -F "name=cangling-broker-arm64.tar.gz" \
+            -F "summary=Automatic release for version ${{ github.ref_name }}" \
+            -F "os=linux" \
+            -F "arch=arm64" \
+            -F "file=@dist/cangling-broker-arm64.tar.gz"
