@@ -184,7 +184,7 @@ jobs:
           curl --fail-with-body --show-error --progress-bar -k -X POST \
             "https://soft.cangling.cn:22002/api/v1/software/upload" \
             -H "API-TOKEN: $CANGLING_TOKEN" \
-            -F "token=26deab4218cf40d3a611f87fd4dd9018" \
+            -F "token=a272db551a0842769fe14b01d8f13175" \
             -F "version=latest" \
             -F "name=cangling-broker-amd64.tar.gz" \
             -F "summary=Automatic release for version ${{ github.ref_name }}" \
@@ -198,7 +198,7 @@ jobs:
           curl --fail-with-body --show-error --progress-bar -k -X POST \
             "https://soft.cangling.cn:22002/api/v1/software/upload" \
             -H "API-TOKEN: $CANGLING_TOKEN" \
-            -F "token=26deab4218cf40d3a611f87fd4dd9018" \
+            -F "token=a272db551a0842769fe14b01d8f13175" \
             -F "version=latest" \
             -F "name=cangling-broker-arm64.tar.gz" \
             -F "summary=Automatic release for version ${{ github.ref_name }}" \
