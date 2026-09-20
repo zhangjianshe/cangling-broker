@@ -67,14 +67,18 @@ public final class Consumer implements AutoCloseable {
                     SatwayMessage incoming = stream.next();
                     try {
                         handler.onMessage(toSatwayMessage(incoming));
-                        client.ack(incoming.getMessageId(), incoming.getLease(), true, "");
+                        if (requiresAck(incoming)) {
+                            client.ack(incoming.getMessageId(), incoming.getLease(), true, "");
+                        }
                     } catch (Exception error) {
                         LOG.log(Level.WARNING, "handler failed", error);
-                        client.ack(
-                                incoming.getMessageId(),
-                                incoming.getLease(),
-                                false,
-                                error.getMessage() == null ? "handler failed" : error.getMessage());
+                        if (requiresAck(incoming)) {
+                            client.ack(
+                                    incoming.getMessageId(),
+                                    incoming.getLease(),
+                                    false,
+                                    error.getMessage() == null ? "handler failed" : error.getMessage());
+                        }
                     }
                 }
                 if (running()) {
@@ -103,6 +107,10 @@ public final class Consumer implements AutoCloseable {
 
     private boolean running() {
         return !closed.get() && client.isOpen();
+    }
+
+    private static boolean requiresAck(SatwayMessage message) {
+        return !message.getMessageId().isBlank() && !message.getLease().isBlank();
     }
 
     private static cn.mapway.broker.SatwayMessage toSatwayMessage(SatwayMessage incoming) {
