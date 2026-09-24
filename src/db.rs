@@ -896,16 +896,14 @@ impl Database {
                AND topic NOT IN ({placeholders})
              ORDER BY created_at LIMIT 1"
         );
-        let _ = self.reclaim_stale().await;
-        let mut tx = self.0.begin().await?;
         let now = Utc::now();
         let now_text = now.to_rfc3339();
         let mut query = sqlx::query(&sql).bind(&now_text);
         for topic in skip_topics {
             query = query.bind(topic);
         }
-        let row = query.fetch_optional(&mut *tx).await?;
-        Self::finish_claim(tx, now, visibility, row).await
+        let row = query.fetch_optional(&self.0).await?;
+        self.finish_claim(now, visibility, row).await
     }
 
     async fn claim_next_for_hash(
@@ -913,8 +911,6 @@ impl Database {
         prefix: &str,
         visibility: Duration,
     ) -> anyhow::Result<Option<ClaimedMessage>> {
-        let _ = self.reclaim_stale().await;
-        let mut tx = self.0.begin().await?;
         let now = Utc::now();
         let now_text = now.to_rfc3339();
         let row = if prefix.is_empty() {
@@ -924,7 +920,7 @@ impl Database {
                  ORDER BY created_at LIMIT 1",
             )
             .bind(&now_text)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&self.0)
             .await?
         } else {
             let like = format!("{}/%", escape_like(prefix));
@@ -937,10 +933,10 @@ impl Database {
             .bind(&now_text)
             .bind(prefix)
             .bind(&like)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&self.0)
             .await?
         };
-        Self::finish_claim(tx, now, visibility, row).await
+        self.finish_claim(now, visibility, row).await
     }
 
     async fn claim_next_matching(
@@ -948,7 +944,6 @@ impl Database {
         filter: &str,
         visibility: Duration,
     ) -> anyhow::Result<Option<ClaimedMessage>> {
-        let _ = self.reclaim_stale().await;
         let now_text = Utc::now().to_rfc3339();
         let rows = sqlx::query(
             "SELECT id, topic FROM messages
@@ -964,16 +959,15 @@ impl Database {
         }) else {
             return Ok(None);
         };
-        let mut tx = self.0.begin().await?;
         let now = Utc::now();
         let row = sqlx::query(
             "SELECT id, topic, payload, attributes, created_at FROM messages
              WHERE id = ? AND status = 'pending'",
         )
         .bind(&id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&self.0)
         .await?;
-        Self::finish_claim(tx, now, visibility, row).await
+        self.finish_claim(now, visibility, row).await
     }
 
     async fn claim_ready(
@@ -982,26 +976,23 @@ impl Database {
         sql: &str,
         topic: Option<&str>,
     ) -> anyhow::Result<Option<ClaimedMessage>> {
-        let _ = self.reclaim_stale().await;
-        let mut tx = self.0.begin().await?;
         let now = Utc::now();
         let now_text = now.to_rfc3339();
         let mut query = sqlx::query(sql).bind(&now_text);
         if let Some(topic) = topic {
             query = query.bind(topic);
         }
-        let row = query.fetch_optional(&mut *tx).await?;
-        Self::finish_claim(tx, now, visibility, row).await
+        let row = query.fetch_optional(&self.0).await?;
+        self.finish_claim(now, visibility, row).await
     }
 
     async fn finish_claim(
-        mut tx: sqlx::Transaction<'_, sqlx::Sqlite>,
+        &self,
         now: chrono::DateTime<Utc>,
         visibility: Duration,
         row: Option<sqlx::sqlite::SqliteRow>,
     ) -> anyhow::Result<Option<ClaimedMessage>> {
         let Some(row) = row else {
-            tx.commit().await?;
             return Ok(None);
         };
         let id: String = row.get("id");
@@ -1016,13 +1007,11 @@ impl Database {
             .bind(&lease)
             .bind(&visible_again)
             .bind(&id)
-            .execute(&mut *tx)
+            .execute(&self.0)
             .await?;
         if changed.rows_affected() == 0 {
-            tx.commit().await?;
             return Ok(None);
         }
-        tx.commit().await?;
         Ok(Some(ClaimedMessage {
             id,
             topic: row.get("topic"),
@@ -1448,6 +1437,38 @@ mod tests {
             .await
             .unwrap();
         assert!(skipped.is_none());
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn concurrent_claims_deliver_a_message_to_only_one_worker() {
+        let (db, dir) = temp_db().await;
+        db.enqueue(None, "jobs", b"once", HashMap::new())
+            .await
+            .unwrap();
+
+        let mut workers = Vec::new();
+        for _ in 0..16 {
+            let worker_db = db.clone();
+            workers.push(tokio::spawn(async move {
+                worker_db
+                    .claim_next_for_topic("jobs", Duration::from_secs(30))
+                    .await
+            }));
+        }
+
+        let mut claimed = Vec::new();
+        for worker in workers {
+            if let Some(message) = worker.await.unwrap().unwrap() {
+                claimed.push(message);
+            }
+        }
+        assert_eq!(claimed.len(), 1);
+        db.delivered(&claimed[0].id, &claimed[0].lease)
+            .await
+            .unwrap();
 
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);

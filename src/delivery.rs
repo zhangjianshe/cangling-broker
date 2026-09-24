@@ -161,6 +161,14 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
         "subscriber connected"
     );
     let visibility = Duration::from_secs(config.ack_timeout_secs.max(1));
+    // Consumer liveness does not need to be persisted on every queue poll. With many topics,
+    // doing so turns idle subscribers into a continuous stream of SQLite writers.
+    let heartbeat_every = Duration::from_secs(if config.consumer_ttl_secs == 0 {
+        30
+    } else {
+        config.consumer_ttl_secs.saturating_div(3).clamp(1, 30)
+    });
+    let mut last_heartbeat = tokio::time::Instant::now();
     loop {
         if shutdown.is_cancelled() || tx.is_closed() {
             break;
@@ -176,8 +184,9 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
             }
         };
         let Some(message) = claimed else {
-            if !consumer_id.is_empty() {
+            if !consumer_id.is_empty() && last_heartbeat.elapsed() >= heartbeat_every {
                 let _ = db.touch_consumer(&consumer_id).await;
+                last_heartbeat = tokio::time::Instant::now();
             }
             if !sleep_or_shutdown(&shutdown, config.worker_poll_ms).await {
                 break;

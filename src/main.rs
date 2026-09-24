@@ -589,6 +589,11 @@ async fn retention_loop(
         .then(|| Duration::from_secs(config.purge_interval_hours.saturating_mul(3600)));
     let mut last_idle_purge: Option<tokio::time::Instant> = None;
     loop {
+        match db.reclaim_stale().await {
+            Ok(0) => {}
+            Ok(reclaimed) => info!(reclaimed, "reclaimed messages whose delivery lease expired"),
+            Err(error) => error!(%error, "unable to reclaim expired message leases"),
+        }
         match db.ephemeral_topics().await {
             Ok(topics) => {
                 for topic in topics {
