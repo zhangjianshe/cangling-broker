@@ -425,18 +425,38 @@ idempotency-key table, restored from every shard at startup, and remain enforced
 by SQLite at commit time. Transient SQLite write failures retain the batch and
 retry with bounded exponential backoff instead of discarding acknowledged data.
 
-Distributed validation on 2026-09-26 used three 4-vCPU / 62-GiB x86_64 hosts
-on the same LAN: `192.168.3.121` ran the release broker and `.122` / `.123`
-each ran a native Rust gRPC producer. Messages used 256-byte payloads across 16
-streams, with a 131,072-message bounded queue and 1,024-message SQLite batches.
-The 64,000-message admission run completed in 0.482 seconds wall time, or about
-**132,800 msg/s aggregate**. A sustained 320,000-message run that exceeded the
-memory queue completed producer admission at about **16,900 msg/s aggregate**,
-with disk persistence becoming the limiting stage. Together with the first
-run, all **384,000 acknowledged messages** were present in the 16 SQLite shards
-after the backlog drained and again after graceful shutdown. The broker log had
-no persistence errors; peak observed RSS was approximately 279 MiB. These are
-test-host results, not a production capacity guarantee.
+### 三机架构性能测试
+
+2026-09-26 使用同一局域网中的三台 x86_64 服务器对 Release 版本进行测试，
+每台服务器配置为 4 vCPU、62 GiB 内存。测试拓扑如下：
+
+```text
+192.168.3.122 ── Rust gRPC 压测客户端 ──┐
+                                        ├─→ 192.168.3.121:17500
+192.168.3.123 ── Rust gRPC 压测客户端 ──┘      cangling-broker
+                                                  │
+                                                  ├─ 16 个有界内存队列
+                                                  └─ 16 个 SQLite WAL 分片
+```
+
+测试使用 256 字节消息、16 条并发 gRPC 生产者流、131,072 条有界内存队列和
+每批最多 1,024 条的 SQLite 后台事务。测试端口和数据目录与服务器上的已有服务
+完全隔离。
+
+| 测试场景 | 消息数量 | 完成时间/吞吐 | 主要限制 |
+| --- | ---: | ---: | --- |
+| 内存队列接纳 | 64,000 | 0.482 秒，约 **132,800 msg/s** | gRPC、内存入队和响应 |
+| 超过队列容量的持续写入 | 320,000 | 约 **16,900 msg/s** | SQLite WAL 与磁盘写入 |
+
+第一项衡量生产者收到异步接纳响应的速度，表示短时突发流量处理能力；第二项消息
+总量超过内存队列容量，背压会把速度限制到后台持久化能力，更接近长时间持续写入
+时的吞吐上限。因此不能用 132,800 msg/s 作为磁盘可持续写入能力。
+
+两轮测试共确认 **384,000 条消息**。等待后台队列排空后，16 个 SQLite 分片中
+共存在 384,000 条；向 broker 发送正常关闭信号后再次检查，数量仍为 384,000，
+没有发现消息遗漏。测试期间 broker 没有持久化错误日志，观察到的峰值 RSS 约为
+279 MiB。以上结果反映本次测试服务器和磁盘的性能，不等同于其他部署环境的容量
+保证；网络存储、容器磁盘限速、消息大小、鉴权和消费者处理速度都会改变结果。
 
 A 2026-09-26 release build test used 256-byte persistent messages on local
 storage. One producer stream sustained 12,324–16,887 msg/s across repeated
