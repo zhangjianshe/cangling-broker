@@ -1,6 +1,6 @@
 [package]
 name = "cangling-broker"
-version = "0.1.61"
+version = "0.1.62"
 edition = "2021"
 rust-version = "1.88"
 description = "Durable gRPC message intake with a SQLite-backed dispatch queue"
