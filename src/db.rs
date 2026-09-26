@@ -245,6 +245,19 @@ impl Database {
             .bind(&now)
             .execute(&pool)
             .await?;
+        // Older releases promoted every MQTT subscription, including exact topic names,
+        // to persistent. Only wildcard filters need a durable catalog row; exact,
+        // unconfigured topics must keep the normal implicit/ephemeral policy.
+        sqlx::query(
+            "UPDATE topic_stats
+             SET persistence = 'ephemeral'
+             WHERE configured = 0
+               AND persistence = 'persistent'
+               AND instr(topic, '#') = 0
+               AND instr(topic, '+') = 0",
+        )
+        .execute(&pool)
+        .await?;
         sqlx::query(
             "INSERT OR IGNORE INTO topic_stats (topic, accepted, delivered, failed, delivery, persistence)
              SELECT topic,
@@ -366,20 +379,27 @@ impl Database {
         Ok(config)
     }
 
-    /// Record an MQTT subscribe filter so idle purge will not delete it.
-    /// Child publish topics stay implicit/ephemeral. Explicit ConfigureTopics wins.
+    /// Record an MQTT subscription. Wildcard filters remain in the catalog so idle purge
+    /// cannot remove them; exact, unconfigured topics retain the implicit ephemeral policy.
+    /// Explicit ConfigureTopics always wins.
     pub async fn note_subscribed_topic(&self, topic: &str) -> anyhow::Result<()> {
+        let persistence = if topic.contains('#') || topic.contains('+') {
+            "persistent"
+        } else {
+            "ephemeral"
+        };
         sqlx::query(
             "INSERT INTO topic_stats (topic, delivery, persistence, configured, last_seen_at)
-             VALUES (?, 'broadcast', 'persistent', 0, ?)
+             VALUES (?, 'broadcast', ?, 0, ?)
              ON CONFLICT(topic) DO UPDATE SET
                 last_seen_at = excluded.last_seen_at,
                 persistence = CASE
-                    WHEN IFNULL(topic_stats.configured, 0) = 0 THEN 'persistent'
+                    WHEN IFNULL(topic_stats.configured, 0) = 0 THEN excluded.persistence
                     ELSE topic_stats.persistence
                 END",
         )
         .bind(topic)
+        .bind(persistence)
         .bind(Utc::now().to_rfc3339())
         .execute(&self.0)
         .await?;
@@ -2086,7 +2106,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mqtt_subscribed_topic_is_not_ephemeral() {
+    async fn mqtt_subscription_only_persists_wildcard_filters() {
         let (db, dir) = temp_db().await;
         db.enqueue(None, "jobs", b"early", HashMap::new())
             .await
@@ -2099,7 +2119,7 @@ mod tests {
         db.note_subscribed_topic("jobs").await.unwrap();
         assert_eq!(
             db.topic_config("jobs").await.unwrap().persistence,
-            PersistenceMode::Persistent
+            PersistenceMode::Ephemeral
         );
 
         db.note_subscribed_topic("building/#").await.unwrap();
@@ -2136,7 +2156,7 @@ mod tests {
         let names: Vec<_> = listed.iter().map(|item| item.topic.as_str()).collect();
         assert!(names.contains(&"building/#"));
         assert!(!names.contains(&"building/floor1/temp"));
-        assert!(names.contains(&"jobs"));
+        assert!(!names.contains(&"jobs"));
 
         db.configure_topics(&[TopicConfig {
             topic: "jobs".into(),
