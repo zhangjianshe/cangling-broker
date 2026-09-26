@@ -1069,6 +1069,30 @@
       return topics.filter((item) => fuzzyMatch(item.name, topicNameQuery));
     }
 
+    function clientPeerIp(peer) {
+      const value = String(peer || "").trim();
+      if (!value) return "";
+      if (value.startsWith("[")) {
+        const end = value.indexOf("]");
+        return end > 1 ? value.slice(1, end).toLowerCase() : value.toLowerCase();
+      }
+      const colons = (value.match(/:/g) || []).length;
+      if (colons === 1) {
+        const split = value.lastIndexOf(":");
+        if (/^\d+$/.test(value.slice(split + 1))) return value.slice(0, split).toLowerCase();
+      }
+      return value.toLowerCase();
+    }
+
+    function connectedHostCount(clients) {
+      const hosts = new Set();
+      (clients || []).forEach((client) => {
+        const ip = clientPeerIp(client.peer);
+        if (ip) hosts.add(ip);
+      });
+      return hosts.size;
+    }
+
     function clientFilterHtml() {
       return '<div class="pager-filter"><label><span>连接类型</span>' +
         '<select id="client-type-filter" aria-label="按连接类型筛选">' +
@@ -1088,7 +1112,9 @@
 
     function renderClients(clients) {
       lastClients = clients;
-      $("tab-clients").textContent = "已连接客户端" + (clients.length ? " · " + clients.length : "");
+      const hostCount = connectedHostCount(clients);
+      $("tab-clients").textContent = "已连接客户端：" + clients.length + "/" + hostCount;
+      $("tab-clients").title = "连接数量/主机数量";
       const shown = filteredClients(clients);
       if (!clients.length) {
         selectedClientKey = "";
