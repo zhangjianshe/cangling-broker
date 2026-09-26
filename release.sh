@@ -19,7 +19,10 @@ fi
 echo "running release preflight checks"
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
+# Each database test opens the control database plus 16 SQLite shards. Limiting
+# test concurrency keeps the preflight stable on hosts with nofile=1024.
+release_test_threads="${CL_BROKER_RELEASE_TEST_THREADS:-4}"
+cargo test --locked -- --test-threads "$release_test_threads"
 cargo build --release --locked --bin cangling-broker --example receiver
 mvn -f java/pom.xml -B -q test package
 python3 -m compileall -q python
