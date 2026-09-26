@@ -195,7 +195,9 @@ mod tests {
             .await
             .unwrap();
         let (writer, _writer_task) =
-            QueueWriter::start(db.clone(), 256, 32, Duration::from_millis(1));
+            QueueWriter::start(db.clone(), 256, 32, Duration::from_millis(1))
+                .await
+                .unwrap();
         let ctx = MqttCtx {
             db,
             writer,

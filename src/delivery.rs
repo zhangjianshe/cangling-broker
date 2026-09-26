@@ -439,9 +439,13 @@ mod tests {
             "",
         );
 
+        let (writer, _writer_task) =
+            QueueWriter::start(db.clone(), 256, 32, Duration::from_millis(1))
+                .await
+                .unwrap();
         let ingested = ingest(
             &db,
-            &QueueWriter::start(db.clone(), 256, 32, Duration::from_millis(1)).0,
+            &writer,
             &subscribers,
             "/ibuser/1/dRueErAe",
             b"hello",

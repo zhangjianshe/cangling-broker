@@ -55,7 +55,7 @@ pub struct Config {
     #[arg(long, env = "CL_BROKER_WRITE_BATCH_WAIT_MS", default_value_t = 2)]
     pub write_batch_wait_ms: u64,
 
-    /// Capacity of the in-memory queue in front of the single SQLite writer.
+    /// Total capacity of the bounded in-memory queues in front of the 16 SQLite shard writers.
     #[arg(long, env = "CL_BROKER_WRITE_QUEUE_SIZE", default_value_t = 8192)]
     pub write_queue_size: usize,
 

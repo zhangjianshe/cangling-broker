@@ -60,8 +60,9 @@ pub struct TopicMessagePage {
     pub message: Option<StoredMessage>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EnqueueInput {
+    pub id: String,
     pub idempotency_key: Option<String>,
     pub topic: String,
     pub payload: Vec<u8>,
@@ -69,6 +70,35 @@ pub struct EnqueueInput {
 }
 
 impl Database {
+    pub async fn recent_idempotency_keys(
+        &self,
+        limit_per_shard: usize,
+    ) -> anyhow::Result<Vec<(usize, String, String)>> {
+        let mut entries = Vec::new();
+        for (shard, pool) in self.3.iter().enumerate() {
+            let rows = sqlx::query(
+                "SELECT idempotency_key, id FROM (
+                    SELECT idempotency_key, id, created_at
+                    FROM messages
+                    WHERE idempotency_key IS NOT NULL AND idempotency_key != ''
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                 ) ORDER BY created_at ASC",
+            )
+            .bind(i64::try_from(limit_per_shard).unwrap_or(i64::MAX))
+            .fetch_all(pool)
+            .await?;
+            entries.extend(rows.into_iter().map(|row| {
+                (
+                    shard,
+                    row.get::<String, _>("idempotency_key"),
+                    row.get::<String, _>("id"),
+                )
+            }));
+        }
+        Ok(entries)
+    }
+
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
         if let Some(path) = sqlite_file_path(url) {
             if let Some(parent) = path.parent() {
@@ -722,6 +752,7 @@ impl Database {
     ) -> anyhow::Result<(String, bool)> {
         let mut results = self
             .enqueue_batch(vec![EnqueueInput {
+                id: new_message_id(topic),
                 idempotency_key: idempotency_key
                     .filter(|value| !value.is_empty())
                     .map(ToOwned::to_owned),
@@ -751,7 +782,7 @@ impl Database {
             }
             let mut tx = self.3[shard_index].begin().await?;
             for (index, item) in group {
-                let id = prefixed_message_id(shard_index);
+                let id = item.id;
                 let now = Utc::now().to_rfc3339();
                 let attributes = serde_json::to_string(&item.attributes)?;
                 let result = sqlx::query(
@@ -1480,6 +1511,10 @@ pub(crate) fn topic_shard(topic: &str) -> usize {
 
 fn prefixed_message_id(shard: usize) -> String {
     format!("s{shard:02}-{}", Uuid::new_v4())
+}
+
+pub(crate) fn new_message_id(topic: &str) -> String {
+    prefixed_message_id(topic_shard(topic))
 }
 
 pub(crate) fn message_id_shard(id: &str) -> Option<usize> {

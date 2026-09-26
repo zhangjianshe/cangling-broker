@@ -354,10 +354,10 @@ Phase-one latency:
 | 4 producers, 4 KiB | 20.17 ms | 46.50 ms | 52.00 ms |
 | 4 producers + 4 consumers, 256 B | 50.75 ms | 146.08 ms | 172.22 ms |
 
-`Persistent publish` throughput ends when every publish response has been
-received; a response is returned only after the message has been committed to
-SQLite. Latency is measured from placing a request on the gRPC stream until its
-matching response is received. `Publish, consume and ACK` throughput ends when
+These historical `Persistent publish` results used commit acknowledgements:
+a response was returned only after the message had been committed to SQLite.
+Latency was measured from placing a request on the gRPC stream until its
+matching response was received. `Publish, consume and ACK` throughput ends when
 all messages have been acknowledged successfully by the consumers; its latency
 columns describe the publish side, while the throughput covers the complete
 write-deliver-ACK path.
@@ -411,6 +411,32 @@ Accepted, duplicate, and delivered counters are accumulated in memory and
 flushed to `queue.db` in one transaction every 100 ms. Status reads, cleanup,
 and graceful shutdown force a final flush. Queue depth remains an immediate
 in-memory counter and startup reconciles it from the shard files.
+
+The current high-throughput mode acknowledges persistent publishes as soon as
+their shard's **bounded in-memory queue** accepts them. The shard writer commits
+batches to SQLite in the background and wakes subscribers only after a
+successful commit. Queue admission applies backpressure when
+`CL_BROKER_WRITE_QUEUE_SIZE` is full, and graceful shutdown drains admitted
+commands before closing SQLite. This deliberately uses a Redis-style
+asynchronous durability trade-off: an abrupt process or host failure can lose
+the short, not-yet-committed window. A publish response is therefore not an
+`fsync` guarantee. Producer retries are detected by a bounded in-process recent
+idempotency-key table, restored from every shard at startup, and remain enforced
+by SQLite at commit time. Transient SQLite write failures retain the batch and
+retry with bounded exponential backoff instead of discarding acknowledged data.
+
+Distributed validation on 2026-09-26 used three 4-vCPU / 62-GiB x86_64 hosts
+on the same LAN: `192.168.3.121` ran the release broker and `.122` / `.123`
+each ran a native Rust gRPC producer. Messages used 256-byte payloads across 16
+streams, with a 131,072-message bounded queue and 1,024-message SQLite batches.
+The 64,000-message admission run completed in 0.482 seconds wall time, or about
+**132,800 msg/s aggregate**. A sustained 320,000-message run that exceeded the
+memory queue completed producer admission at about **16,900 msg/s aggregate**,
+with disk persistence becoming the limiting stage. Together with the first
+run, all **384,000 acknowledged messages** were present in the 16 SQLite shards
+after the backlog drained and again after graceful shutdown. The broker log had
+no persistence errors; peak observed RSS was approximately 279 MiB. These are
+test-host results, not a production capacity guarantee.
 
 A 2026-09-26 release build test used 256-byte persistent messages on local
 storage. One producer stream sustained 12,324–16,887 msg/s across repeated

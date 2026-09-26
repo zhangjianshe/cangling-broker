@@ -391,7 +391,8 @@ async fn main() -> anyhow::Result<()> {
         config.write_queue_size,
         config.write_batch_size,
         Duration::from_millis(config.write_batch_wait_ms),
-    );
+    )
+    .await?;
     let shutdown = CancellationToken::new();
     let subscribers = TopicSubscribers::default();
     let inflight = InflightAcks::default();

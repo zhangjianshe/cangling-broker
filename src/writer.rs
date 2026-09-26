@@ -1,19 +1,17 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::db::{message_id_shard, topic_shard, Database, EnqueueInput};
+use crate::db::{message_id_shard, new_message_id, topic_shard, Database, EnqueueInput};
 
-type EnqueueResult = Result<(String, bool), String>;
 type DeliveredResult = Result<bool, String>;
 
 struct EnqueueCommand {
     input: EnqueueInput,
-    response: oneshot::Sender<EnqueueResult>,
 }
 
 struct DeliveredCommand {
@@ -28,13 +26,53 @@ enum WriteCommand {
     Shutdown(oneshot::Sender<()>),
 }
 
-/// Serializes SQLite queue writes and groups publishes into short transactions.
-/// A caller receives success only after the transaction containing its message commits.
+/// Accepts persistent publishes into bounded memory queues and commits them to SQLite in batches.
+/// A caller is acknowledged after queue admission; graceful shutdown drains every admitted command.
 #[derive(Clone)]
 pub struct QueueWriter {
     tx: Arc<Vec<mpsc::Sender<WriteCommand>>>,
+    recent_ids: Arc<Vec<Mutex<RecentIds>>>,
     notifications: QueueNotifications,
     stats_shutdown: watch::Sender<bool>,
+}
+
+struct RecentIds {
+    values: HashMap<String, String>,
+    order: VecDeque<String>,
+    capacity: usize,
+}
+
+impl RecentIds {
+    fn new(capacity: usize) -> Self {
+        Self {
+            values: HashMap::new(),
+            order: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<String> {
+        self.values.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: String, id: String) {
+        if let Some(existing) = self.values.get_mut(&key) {
+            *existing = id;
+            return;
+        }
+        while self.values.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.values.remove(&oldest);
+            }
+        }
+        self.order.push_back(key.clone());
+        self.values.insert(key, id);
+    }
+
+    fn remove(&mut self, key: &str) {
+        self.values.remove(key);
+        self.order.retain(|candidate| candidate != key);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -81,17 +119,27 @@ impl QueueNotifications {
 }
 
 impl QueueWriter {
-    pub fn start(
+    pub async fn start(
         db: Database,
         queue_size: usize,
         batch_size: usize,
         batch_wait: Duration,
-    ) -> (Self, tokio::task::JoinHandle<()>) {
+    ) -> anyhow::Result<(Self, tokio::task::JoinHandle<()>)> {
         let notifications = QueueNotifications::default();
         let (stats_shutdown, mut stats_shutdown_rx) = watch::channel(false);
         let mut senders = Vec::with_capacity(16);
         let mut workers = Vec::with_capacity(16);
         let per_shard_queue = queue_size.div_ceil(16).max(1);
+        let recent_ids_per_shard = per_shard_queue.saturating_mul(4).max(64);
+        let recent_ids: Vec<_> = (0..16)
+            .map(|_| Mutex::new(RecentIds::new(recent_ids_per_shard)))
+            .collect();
+        for (shard, key, id) in db.recent_idempotency_keys(recent_ids_per_shard).await? {
+            recent_ids[shard]
+                .lock()
+                .expect("recent id lock")
+                .insert(key, id);
+        }
         for _ in 0..16 {
             let (tx, rx) = mpsc::channel(per_shard_queue);
             senders.push(tx);
@@ -100,6 +148,7 @@ impl QueueWriter {
                 rx,
                 batch_size.max(1),
                 batch_wait,
+                notifications.clone(),
             )));
         }
         let stats_db = db.clone();
@@ -130,14 +179,15 @@ impl QueueWriter {
             }
             let _ = stats_worker.await;
         });
-        (
+        Ok((
             Self {
                 tx: Arc::new(senders),
+                recent_ids: Arc::new(recent_ids),
                 notifications,
                 stats_shutdown,
             },
             handle,
-        )
+        ))
     }
 
     pub async fn enqueue(
@@ -147,29 +197,35 @@ impl QueueWriter {
         payload: &[u8],
         attributes: HashMap<String, String>,
     ) -> anyhow::Result<(String, bool)> {
-        let (response, receive) = oneshot::channel();
-        self.tx[topic_shard(topic)]
-            .send(WriteCommand::Enqueue(EnqueueCommand {
-                input: EnqueueInput {
-                    idempotency_key: idempotency_key
-                        .filter(|value| !value.is_empty())
-                        .map(ToOwned::to_owned),
-                    topic: topic.to_string(),
-                    payload: payload.to_vec(),
-                    attributes,
-                },
-                response,
-            }))
-            .await
-            .map_err(|_| anyhow::anyhow!("queue writer stopped"))?;
-        let result = receive
-            .await
-            .map_err(|_| anyhow::anyhow!("queue writer stopped"))?
-            .map_err(anyhow::Error::msg)?;
-        if !result.1 {
-            self.notifications.notify(topic);
+        let shard = topic_shard(topic);
+        let key = idempotency_key.filter(|value| !value.is_empty());
+        let id = new_message_id(topic);
+        if let Some(key) = key {
+            let mut recent = self.recent_ids[shard].lock().expect("recent id lock");
+            if let Some(id) = recent.get(key) {
+                return Ok((id, true));
+            }
+            recent.insert(key.to_string(), id.clone());
         }
-        Ok(result)
+        let command = WriteCommand::Enqueue(EnqueueCommand {
+            input: EnqueueInput {
+                id: id.clone(),
+                idempotency_key: key.map(ToOwned::to_owned),
+                topic: topic.to_string(),
+                payload: payload.to_vec(),
+                attributes,
+            },
+        });
+        if self.tx[shard].send(command).await.is_err() {
+            if let Some(key) = key {
+                self.recent_ids[shard]
+                    .lock()
+                    .expect("recent id lock")
+                    .remove(key);
+            }
+            anyhow::bail!("queue writer stopped");
+        }
+        Ok((id, false))
     }
 
     pub fn subscribe(&self, topic: &str) -> watch::Receiver<u64> {
@@ -213,6 +269,7 @@ async fn run_writer(
     mut rx: mpsc::Receiver<WriteCommand>,
     batch_size: usize,
     batch_wait: Duration,
+    notifications: QueueNotifications,
 ) {
     while let Some(command) = rx.recv().await {
         if let WriteCommand::Shutdown(response) = command {
@@ -246,12 +303,17 @@ async fn run_writer(
             }
         }
         if !enqueues.is_empty() {
-            let inputs = enqueues
+            let topics: Vec<String> = enqueues
+                .iter()
+                .map(|command| command.input.topic.clone())
+                .collect();
+            let inputs: Vec<EnqueueInput> = enqueues
                 .iter_mut()
                 .map(|command| {
                     std::mem::replace(
                         &mut command.input,
                         EnqueueInput {
+                            id: String::new(),
                             idempotency_key: None,
                             topic: String::new(),
                             payload: Vec::new(),
@@ -260,16 +322,26 @@ async fn run_writer(
                     )
                 })
                 .collect();
-            match db.enqueue_batch(inputs).await {
-                Ok(results) => {
-                    for (command, result) in enqueues.into_iter().zip(results) {
-                        let _ = command.response.send(Ok(result));
+            let mut retry_wait = Duration::from_millis(10);
+            loop {
+                match db.enqueue_batch(inputs.clone()).await {
+                    Ok(results) => {
+                        for (topic, result) in topics.iter().zip(results) {
+                            if !result.1 {
+                                notifications.notify(topic);
+                            }
+                        }
+                        break;
                     }
-                }
-                Err(error) => {
-                    let error = error.to_string();
-                    for command in enqueues {
-                        let _ = command.response.send(Err(error.clone()));
+                    Err(error) => {
+                        tracing::error!(
+                            %error,
+                            count = inputs.len(),
+                            retry_ms = retry_wait.as_millis(),
+                            "asynchronous queue persistence failed; retrying"
+                        );
+                        tokio::time::sleep(retry_wait).await;
+                        retry_wait = retry_wait.saturating_mul(2).min(Duration::from_secs(1));
                     }
                 }
             }
@@ -321,7 +393,9 @@ mod tests {
         }])
         .await
         .unwrap();
-        let (writer, task) = QueueWriter::start(db.clone(), 256, 64, Duration::from_millis(2));
+        let (writer, task) = QueueWriter::start(db.clone(), 256, 64, Duration::from_millis(2))
+            .await
+            .unwrap();
         let mut notification = writer.subscribe("jobs");
         let sends = (0..64).map(|index| {
             let writer = writer.clone();
@@ -374,6 +448,45 @@ mod tests {
                 .unwrap();
         assert_eq!(accepted, 64);
         assert_eq!(delivered, 1);
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn concurrent_idempotency_is_resolved_before_sqlite_commit() {
+        let dir = std::env::temp_dir().join(format!("cangling-writer-id-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::connect(&format!("sqlite:{}/queue.db", dir.display()))
+            .await
+            .unwrap();
+        let (writer, task) = QueueWriter::start(db.clone(), 64, 64, Duration::from_millis(20))
+            .await
+            .unwrap();
+        let left = writer.enqueue(Some("same-key"), "jobs", b"one", HashMap::new());
+        let right = writer.enqueue(Some("same-key"), "jobs", b"two", HashMap::new());
+        let (left, right) = tokio::join!(left, right);
+        let left = left.unwrap();
+        let right = right.unwrap();
+        assert_eq!(left.0, right.0);
+        assert_ne!(left.1, right.1);
+
+        writer.shutdown().await;
+        task.await.unwrap();
+        let (restarted, restarted_task) =
+            QueueWriter::start(db.clone(), 64, 64, Duration::from_millis(20))
+                .await
+                .unwrap();
+        let retry = restarted
+            .enqueue(Some("same-key"), "jobs", b"retry", HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(retry.0, left.0);
+        assert!(retry.1);
+        restarted.shutdown().await;
+        restarted_task.await.unwrap();
+        let snapshot = db.status_snapshot(None).await.unwrap();
+        let jobs = snapshot.iter().find(|topic| topic.name == "jobs").unwrap();
+        assert_eq!(jobs.pending, 1);
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }

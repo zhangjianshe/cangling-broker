@@ -7,7 +7,8 @@ option java_package = "cn.mapway.broker.proto";
 option java_outer_classname = "QueueProto";
 
 service MessageQueue {
-  // Client streams publishes; server streams one response per request after SQLite commit.
+  // Client streams publishes; server responds after bounded in-memory queue admission.
+  // Persistent topics are committed to SQLite asynchronously.
   rpc AcceptMessages(stream AcceptMessageRequest) returns (stream AcceptMessageResponse);
 
   // Optional metadata about a consumer. Delivery is on Subscribe, not this call.
