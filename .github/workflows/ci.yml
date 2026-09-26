@@ -106,6 +106,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ matrix.name }}-release
