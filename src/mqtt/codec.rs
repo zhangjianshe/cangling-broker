@@ -593,8 +593,14 @@ mod tests {
     fn two_packets_in_one_buffer() {
         let mut buf = encode(&Packet::PingReq);
         buf.extend_from_slice(&encode(&Packet::PingResp));
-        assert!(matches!(decode_one(&mut buf).unwrap(), Some(Packet::PingReq)));
-        assert!(matches!(decode_one(&mut buf).unwrap(), Some(Packet::PingResp)));
+        assert!(matches!(
+            decode_one(&mut buf).unwrap(),
+            Some(Packet::PingReq)
+        ));
+        assert!(matches!(
+            decode_one(&mut buf).unwrap(),
+            Some(Packet::PingResp)
+        ));
         assert!(buf.is_empty());
     }
 }

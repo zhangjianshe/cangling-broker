@@ -45,7 +45,9 @@ impl Interceptor for ClientInterceptor {
             request.metadata_mut().insert("x-client-host", host.clone());
         }
         if let Some(token) = &self.token {
-            request.metadata_mut().insert("authorization", token.clone());
+            request
+                .metadata_mut()
+                .insert("authorization", token.clone());
         }
         Ok(request)
     }
@@ -147,7 +149,5 @@ async fn main() {
         }
     }
 
-    let _ = client
-        .unregister(UnregisterRequest { consumer_id })
-        .await;
+    let _ = client.unregister(UnregisterRequest { consumer_id }).await;
 }

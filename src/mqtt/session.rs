@@ -71,7 +71,11 @@ pub async fn run_tcp(stream: TcpStream, peer: String, ctx: MqttCtx) -> anyhow::R
     run_session(Outgoing::Tcp(writer), rx, peer, "mqtt", ctx).await
 }
 
-pub async fn run_ws(socket: axum::extract::ws::WebSocket, peer: String, ctx: MqttCtx) -> anyhow::Result<()> {
+pub async fn run_ws(
+    socket: axum::extract::ws::WebSocket,
+    peer: String,
+    ctx: MqttCtx,
+) -> anyhow::Result<()> {
     let (sink, stream) = socket.split();
     let (tx, rx) = mpsc::channel(PACKET_CHAN);
     tokio::spawn(ws_read_loop(stream, tx));
@@ -123,8 +127,11 @@ async fn ws_read_loop(
         }
         match stream.next().await {
             Some(Ok(axum::extract::ws::Message::Binary(data))) => buf.extend_from_slice(&data),
-            Some(Ok(axum::extract::ws::Message::Text(text))) => buf.extend_from_slice(text.as_bytes()),
-            Some(Ok(axum::extract::ws::Message::Ping(_) | axum::extract::ws::Message::Pong(_))) => {}
+            Some(Ok(axum::extract::ws::Message::Text(text))) => {
+                buf.extend_from_slice(text.as_bytes())
+            }
+            Some(Ok(axum::extract::ws::Message::Ping(_) | axum::extract::ws::Message::Pong(_))) => {
+            }
             Some(Ok(axum::extract::ws::Message::Close(_))) | None | Some(Err(_)) => break,
         }
     }
@@ -218,7 +225,14 @@ async fn run_session(
     let ingest_client = client_id.clone();
     let ingest_write = write_tx.clone();
     tokio::spawn(async move {
-        ingest_loop(ingest_rx, ingest_write, ingest_ctx, ingest_client, ingest_cancel).await;
+        ingest_loop(
+            ingest_rx,
+            ingest_write,
+            ingest_ctx,
+            ingest_client,
+            ingest_cancel,
+        )
+        .await;
     });
     let result = session_loop(
         packets,
@@ -379,7 +393,9 @@ async fn handle_packet(
         },
         Packet::PubAck { packet_id } => {
             if let Some((message_id, lease)) = state.inflight_pub.remove(&packet_id) {
-                let _ = ctx.inflight.complete(&message_id, &lease, true, String::new());
+                let _ = ctx
+                    .inflight
+                    .complete(&message_id, &lease, true, String::new());
             }
         }
         Packet::PubRel { packet_id } => {
@@ -419,8 +435,12 @@ async fn handle_packet(
         }
         Packet::Disconnect => return Ok(true),
         Packet::Connect(_) => anyhow::bail!("duplicate CONNECT"),
-        Packet::PubRec { .. } | Packet::PubComp { .. } | Packet::ConnAck(_) | Packet::SubAck(_)
-        | Packet::UnsubAck { .. } | Packet::PingResp => {}
+        Packet::PubRec { .. }
+        | Packet::PubComp { .. }
+        | Packet::ConnAck(_)
+        | Packet::SubAck(_)
+        | Packet::UnsubAck { .. }
+        | Packet::PingResp => {}
     }
     Ok(false)
 }
@@ -441,6 +461,7 @@ async fn ingest_and_ack(
     attributes.insert("mqtt_client_id".into(), client_id.to_string());
     delivery::ingest(
         &ctx.db,
+        &ctx.writer,
         &ctx.subscribers,
         topic,
         &publish.payload,
@@ -492,6 +513,7 @@ async fn subscribe_topic(
         .insert(topic.to_string(), topic_cancel.clone());
     delivery::spawn_subscribe_loop(SubscribeLoop {
         db: ctx.db.clone(),
+        writer: ctx.writer.clone(),
         config: ctx.config.clone(),
         subscribers: ctx.subscribers.clone(),
         inflight: ctx.inflight.clone(),
@@ -614,7 +636,11 @@ async fn sleep_or_pending(duration: Option<Duration>) {
 }
 
 #[cfg(test)]
-pub fn authorized_for_test(expected: Option<&str>, username: Option<&str>, password: Option<&str>) -> bool {
+pub fn authorized_for_test(
+    expected: Option<&str>,
+    username: Option<&str>,
+    password: Option<&str>,
+) -> bool {
     mqtt_authorized(
         expected,
         &codec::Connect {

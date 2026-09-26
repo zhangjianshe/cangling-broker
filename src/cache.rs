@@ -25,8 +25,9 @@ use crate::proto::{
     cache_service_server::CacheService as CacheServiceTrait, CacheDeleteRequest,
     CacheDeleteResponse, CacheExpireRequest, CacheExpireResponse, CacheGetRequest,
     CacheGetResponse, CacheIncrRequest, CacheIncrResponse, CacheSetRequest, CacheSetResponse,
-    CacheTtlRequest, CacheTtlResponse, LockAcquireRequest, LockAcquireResponse, LockReleaseRequest,
-    LockReleaseResponse, LockRenewRequest, LockRenewResponse, LockIsLockedRequest, LockIsLockedResponse,
+    CacheTtlRequest, CacheTtlResponse, LockAcquireRequest, LockAcquireResponse,
+    LockIsLockedRequest, LockIsLockedResponse, LockReleaseRequest, LockReleaseResponse,
+    LockRenewRequest, LockRenewResponse,
 };
 
 const TYPE_STRING: &str = "string";
@@ -165,9 +166,8 @@ impl CacheStore {
         }
         match map.entry(key.to_string()) {
             Entry::Occupied(mut slot) => {
-                let current = parse_i64(&slot.get().value).ok_or_else(|| {
-                    anyhow::anyhow!("cache value is not a number for key {key}")
-                })?;
+                let current = parse_i64(&slot.get().value)
+                    .ok_or_else(|| anyhow::anyhow!("cache value is not a number for key {key}"))?;
                 let next = current + delta;
                 slot.get_mut().value = next.to_string().into_bytes();
                 slot.get_mut().value_type = TYPE_LONG.to_string();
@@ -269,7 +269,12 @@ impl LockStore {
     }
 
     /// Try to acquire `lock_key` for `owner` with a `ttl_secs` lease.
-    pub async fn acquire(&self, lock_key: &str, owner: &str, ttl_secs: i64) -> anyhow::Result<bool> {
+    pub async fn acquire(
+        &self,
+        lock_key: &str,
+        owner: &str,
+        ttl_secs: i64,
+    ) -> anyhow::Result<bool> {
         // Clear a lease that already expired so a dead holder never blocks.
         let _ = sqlx::query("DELETE FROM sys_lock WHERE lock_key = ? AND expire_at <= ?")
             .bind(lock_key)
@@ -292,14 +297,13 @@ impl LockStore {
 
     /// Extend the lease of a lock held by `owner`.
     pub async fn renew(&self, lock_key: &str, owner: &str, ttl_secs: i64) -> anyhow::Result<bool> {
-        let result = sqlx::query(
-            "UPDATE sys_lock SET expire_at = ? WHERE lock_key = ? AND owner = ?",
-        )
-        .bind((Utc::now() + Duration::seconds(ttl_secs)).to_rfc3339())
-        .bind(lock_key)
-        .bind(owner)
-        .execute(&self.db.0)
-        .await?;
+        let result =
+            sqlx::query("UPDATE sys_lock SET expire_at = ? WHERE lock_key = ? AND owner = ?")
+                .bind((Utc::now() + Duration::seconds(ttl_secs)).to_rfc3339())
+                .bind(lock_key)
+                .bind(owner)
+                .execute(&self.db.0)
+                .await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -321,7 +325,9 @@ impl LockStore {
         let Some(row) = row else {
             return Ok(false);
         };
-        Ok(!is_expired(Some(row.get::<String, _>("expire_at").as_str())))
+        Ok(!is_expired(Some(
+            row.get::<String, _>("expire_at").as_str(),
+        )))
     }
 
     pub async fn purge_expired(&self) -> anyhow::Result<u64> {
@@ -386,6 +392,7 @@ impl CacheService {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn require_key(value: &str) -> Result<&str, Status> {
     let value = value.trim();
     if value.is_empty() {
@@ -404,7 +411,12 @@ impl CacheServiceTrait for CacheService {
         let request = request.into_inner();
         let key = require_key(&request.key)?;
         self.cache
-            .set(key, &request.value, &request.value_type, request.ttl_seconds)
+            .set(
+                key,
+                &request.value,
+                &request.value_type,
+                request.ttl_seconds,
+            )
             .await
             .map_err(|error| {
                 tracing::error!(%error, key, "cache set failed");
@@ -472,10 +484,14 @@ impl CacheServiceTrait for CacheService {
     ) -> Result<Response<CacheExpireResponse>, Status> {
         let request = request.into_inner();
         let key = require_key(&request.key)?;
-        let ok = self.cache.expire(key, request.ttl_seconds).await.map_err(|error| {
-            tracing::error!(%error, key, "cache expire failed");
-            Status::internal("cache expire failed")
-        })?;
+        let ok = self
+            .cache
+            .expire(key, request.ttl_seconds)
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, key, "cache expire failed");
+                Status::internal("cache expire failed")
+            })?;
         tracing::info!(key, ok, "cache expire");
         Ok(Response::new(CacheExpireResponse { ok }))
     }
@@ -553,14 +569,10 @@ impl CacheServiceTrait for CacheService {
         if owner.is_empty() {
             return Err(Status::invalid_argument("owner is required"));
         }
-        let released = self
-            .lock
-            .release(lock_key, owner)
-            .await
-            .map_err(|error| {
-                tracing::error!(%error, lock_key, "lock release failed");
-                Status::internal("lock release failed")
-            })?;
+        let released = self.lock.release(lock_key, owner).await.map_err(|error| {
+            tracing::error!(%error, lock_key, "lock release failed");
+            Status::internal("lock release failed")
+        })?;
         tracing::info!(lock_key, owner, released, "lock release");
         Ok(Response::new(LockReleaseResponse { released }))
     }
@@ -603,7 +615,10 @@ mod tests {
         let (cache, _lock, dir) = stores().await;
         cache.set("k", b"hello", "string", 0).await.unwrap();
         let entry = cache.get("k").await.unwrap();
-        assert_eq!(entry.as_ref().map(|(v, _)| v.as_slice()), Some(&b"hello"[..]));
+        assert_eq!(
+            entry.as_ref().map(|(v, _)| v.as_slice()),
+            Some(&b"hello"[..])
+        );
         assert_eq!(entry.as_ref().map(|(_, t)| t.as_str()), Some("string"));
         assert!(cache.delete("k").await.unwrap());
         assert!(!cache.delete("k").await.unwrap());

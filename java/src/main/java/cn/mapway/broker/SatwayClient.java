@@ -3,6 +3,7 @@ package cn.mapway.broker;
 import cn.mapway.broker.proto.AcceptMessageRequest;
 import cn.mapway.broker.proto.AcceptMessageResponse;
 import cn.mapway.broker.proto.AckMessageRequest;
+import cn.mapway.broker.proto.AckMessagesRequest;
 import cn.mapway.broker.proto.CacheDeleteRequest;
 import cn.mapway.broker.proto.CacheExpireRequest;
 import cn.mapway.broker.proto.CacheGetRequest;
@@ -48,6 +49,7 @@ import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -73,6 +75,8 @@ public final class SatwayClient implements AutoCloseable {
     private final Thread reconnect;
     private final List<Consumer> consumers = new CopyOnWriteArrayList<>();
     private final List<ConnectionListener> connectionListeners = new CopyOnWriteArrayList<>();
+    private final LinkedBlockingQueue<AckMessageRequest> ackQueue = new LinkedBlockingQueue<>(8192);
+    private final Thread ackWorker;
 
     private SatwayClient(ManagedChannel channel, ConnectionListener onConnected) {
         this.channel = channel;
@@ -85,6 +89,9 @@ public final class SatwayClient implements AutoCloseable {
         this.reconnect = new Thread(this::maintainConnection, "satway-reconnect");
         this.reconnect.setDaemon(true);
         this.reconnect.start();
+        this.ackWorker = new Thread(this::runAckBatches, "cangling-ack");
+        this.ackWorker.setDaemon(true);
+        this.ackWorker.start();
     }
 
     /**
@@ -240,11 +247,20 @@ public final class SatwayClient implements AutoCloseable {
 
     @Override
     public void close() {
-        if (!open.compareAndSet(true, false)) {
+        if (!open.get()) {
             return;
         }
         for (Consumer consumer : consumers) {
             consumer.close();
+        }
+        ackWorker.interrupt();
+        try {
+            ackWorker.join(1_000);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        if (!open.compareAndSet(true, false)) {
+            return;
         }
         reconnect.interrupt();
         channel.shutdownNow();
@@ -284,17 +300,47 @@ public final class SatwayClient implements AutoCloseable {
     }
 
     void ack(String messageId, String lease, boolean success, String error) {
-        callWithReconnect("ack", () -> {
-            blockingStub()
-                    .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
-                    .ackMessage(AckMessageRequest.newBuilder()
-                            .setMessageId(messageId)
-                            .setLease(lease)
-                            .setSuccess(success)
-                            .setError(error == null ? "" : error)
-                            .build());
-            return null;
-        });
+        AckMessageRequest request = AckMessageRequest.newBuilder()
+                .setMessageId(messageId)
+                .setLease(lease)
+                .setSuccess(success)
+                .setError(error == null ? "" : error)
+                .build();
+        try {
+            ackQueue.put(request);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("ack interrupted", interrupted);
+        }
+    }
+
+    private void runAckBatches() {
+        while (open.get() || !ackQueue.isEmpty()) {
+            try {
+                AckMessageRequest first = ackQueue.poll(2, TimeUnit.MILLISECONDS);
+                if (first == null) {
+                    continue;
+                }
+                List<AckMessageRequest> batch = new java.util.ArrayList<>(64);
+                batch.add(first);
+                ackQueue.drainTo(batch, 63);
+                callWithReconnect("ack batch", () -> {
+                    blockingStub()
+                            .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                            .ackMessages(AckMessagesRequest.newBuilder()
+                                    .addAllAcknowledgements(batch)
+                                    .build());
+                    return null;
+                });
+            } catch (InterruptedException interrupted) {
+                // close() uses interruption to force an immediate final drain.
+                if (!open.get() && ackQueue.isEmpty()) {
+                    return;
+                }
+            } catch (RuntimeException error) {
+                LOG.log(Level.WARNING, "ack batch failed", error);
+            }
+        }
     }
 
     // ========= cache (in-memory) & lock (SQLite-backed) Redis replacement ==========

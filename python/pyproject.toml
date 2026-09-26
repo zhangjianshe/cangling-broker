@@ -5,14 +5,13 @@ description = "Python producer and consumer for cangling-broker"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "zhangjianshe", email = "zhangjianshe@gmail.com" }]
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 dependencies = [
     "grpcio>=1.83.0",
     "protobuf>=5.28.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: Apache Software License",
 ]
 urls.Homepage = "https://github.com/zhangjianshe/cangling-broker"
 urls.Repository = "https://github.com/zhangjianshe/cangling-broker"

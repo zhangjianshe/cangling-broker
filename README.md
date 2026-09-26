@@ -197,7 +197,7 @@ curl -s http://127.0.0.1:7501/health
 curl -s -H 'authorization: Bearer change-me' http://127.0.0.1:7501/status
 ```
 
-`/` is a single HTML page that refreshes from `/status`. `/status` is the JSON and includes `version`, `git`, `built`, and `db_bytes` (on-disk size of `queue.db` plus `-wal`/`-shm`). Each `clients[]` entry includes `version` when the client sent `x-client-version` (Java/Python SDKs do this automatically) or, for MQTT, the protocol version (`3.1` / `3.1.1`). Official SDKs also send `x-client-host` (Docker `HOSTNAME`, or `CL_BROKER_CLIENT_HOST` to override) so the dashboard can tell containers apart when they all NAT through the same gateway IP. `consumers` / `streams` is the number of live `Subscribe` streams. The dashboard card **SQLite** shows the same size. Click a **persistent** topic to open its consumers and browse saved messages (`GET /messages?topic=...&offset=0`, offset `0` is the latest). Ephemeral topics do not store payloads. **清空** on a topic row deletes that topic's messages (`DELETE /messages?topic=...`) and resets its counters.
+`/` is a single HTML page that refreshes from `/status`. `/status` is the JSON and includes `version`, `git`, `built`, and `db_bytes` (the control database plus all 16 message shards and their WAL/SHM sidecars). Each `clients[]` entry includes `version` when the client sent `x-client-version` (Java/Python SDKs do this automatically) or, for MQTT, the protocol version (`3.1` / `3.1.1`). Official SDKs also send `x-client-host` (Docker `HOSTNAME`, or use `CL_BROKER_CLIENT_HOST` to override) so the dashboard can tell containers apart when they all NAT through the same gateway IP. `consumers` / `streams` is the number of live `Subscribe` streams. The dashboard card **SQLite** shows the same size. Click a **persistent** topic to open its consumers and browse saved messages (`GET /messages?topic=...&offset=0`, offset `0` is the latest). Ephemeral topics do not store payloads. **清空** on a topic row deletes that topic's messages (`DELETE /messages?topic=...`) and resets its counters.
 
 The header links to three pages: **消息** (status overview, connected clients, topics and per-topic message browsing), **缓存** (cache key lookup / write / delete / increment plus a full key list), and **分布式锁** (lock status / acquire / renew / release plus a full lock list). The cache and lock pages refresh from `GET /cache/keys` and `GET /lock/list`.
 
@@ -215,7 +215,7 @@ cd .test
 ../.venv/bin/python test_client.py --text hello --count 1
 ```
 
-On a **single** topic, each message is claimed by one live stream. On a **broadcast** topic, every live stream gets a copy; the message is delivered when all of them ack. If a subscriber disconnects or does not `AckMessage` before `ACK_TIMEOUT_SECS`, that delivery is retried. Use `message_id` to make handling idempotent. Delivery is at-least-once.
+On a **single** topic, each message is claimed by one live stream. On a **broadcast** topic, every live stream gets a copy; the message is delivered when all of them ack. If a subscriber disconnects or does not acknowledge before `ACK_TIMEOUT_SECS`, that delivery is retried. Current Java and Python SDKs combine acknowledgements for up to 2 ms / 64 messages and call `AckMessages`; `AckMessage` remains compatible with older clients. Use `message_id` to make handling idempotent. Delivery is at-least-once.
 
 ### Topic delivery mode
 
@@ -319,6 +319,113 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
             lock.renew(30)
 ```
 
+## Performance benchmark
+
+The baseline and the phase-one optimized implementation were measured on
+**2026-09-26**. It measures the broker and its SQLite persistence path on one
+host; it is not a capacity guarantee for a different disk, network, container
+limit, or message-retention policy.
+
+Test environment:
+
+- Intel Core i9-14900HX, 24 physical / 32 logical CPUs, 31 GiB RAM
+- local NVMe-backed ext4 filesystem
+- `cargo build --release --locked --bin cangling-broker`; identical host and test harness
+- MQTT disabled; authentication disabled; `WORKER_POLL_MS=5`
+- `single + persistent` topics, unique idempotency key per message
+- long-lived bidirectional gRPC producer streams, 16 in-flight messages per stream
+- three rounds per case; the table reports the median result
+
+| Workload | Streams | Payload | v0.1.55 baseline | Phase one | Change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Persistent publish | 1 producer | 256 B | 903 msg/s | 2,071 msg/s | +129% |
+| Persistent publish | 4 producers | 256 B | 1,415 msg/s | 2,674 msg/s | +89% |
+| Persistent publish | 16 producers | 256 B | 1,846 msg/s | 3,153 msg/s | +71% |
+| Persistent publish | 4 producers | 4 KiB | 1,312 msg/s | 2,384 msg/s | +82% |
+| Publish, consume and ACK | 4 producers + 4 consumers | 256 B | 351 msg/s | 729 msg/s | +108% |
+
+Phase-one latency:
+
+| Workload | P50 | P95 | P99 |
+| --- | ---: | ---: | ---: |
+| 1 producer, 256 B | 5.85 ms | 15.24 ms | 37.15 ms |
+| 4 producers, 256 B | 17.18 ms | 48.54 ms | 54.24 ms |
+| 16 producers, 256 B | 52.06 ms | 98.96 ms | 112.18 ms |
+| 4 producers, 4 KiB | 20.17 ms | 46.50 ms | 52.00 ms |
+| 4 producers + 4 consumers, 256 B | 50.75 ms | 146.08 ms | 172.22 ms |
+
+`Persistent publish` throughput ends when every publish response has been
+received; a response is returned only after the message has been committed to
+SQLite. Latency is measured from placing a request on the gRPC stream until its
+matching response is received. `Publish, consume and ACK` throughput ends when
+all messages have been acknowledged successfully by the consumers; its latency
+columns describe the publish side, while the throughput covers the complete
+write-deliver-ACK path.
+
+Phase one adds a bounded concurrent intake per gRPC stream, a single bounded
+SQLite writer, short batched transactions for enqueue and delivery completion,
+atomic exact-topic claims, an in-memory topic configuration cache, and
+configurable consumer prefetch. Publish responses are still returned only after
+the containing transaction commits, so the durability contract is unchanged.
+The three optimized rounds accepted 67,500 messages with 0 failed and 0
+duplicate messages. The active SQLite main/WAL/SHM footprint at the end was
+approximately 152 MB, compared with approximately 405 MB after the similarly
+sized baseline run; this is a transient WAL observation, not a per-message
+storage-size guarantee.
+
+Four streams remain a balanced default for latency-sensitive workloads on this
+machine.
+
+Phase two adds a backward-compatible `AckMessages` RPC and asynchronous ACK
+coalescing to both official SDKs (up to 64 acknowledgements or 2 ms), topic
+notifications for committed messages, and in-memory incremental pending /
+processing counters rebuilt from SQLite at startup. Persistent subscribers now
+wake immediately after commit instead of polling SQLite continuously; the
+30-second query is only a recovery safety net. `/status` no longer executes a
+full `GROUP BY topic, status` over `messages`.
+
+A release-mode A/B run on the same host preloaded 10,000 persistent 256-byte
+messages, then drained them with four Python consumers. The old one-unary-RPC-
+per-message path completed at **253.9 msg/s**; the phase-two SDK completed at
+**275.3 msg/s** (**+8.4%**) with `pending=0`, `processing=0`, and 10,000
+delivered. Publish-only intake in those runs was 11,828–14,936 msg/s. This A/B
+isolates acknowledgement protocol overhead; it is intentionally separate from
+the simultaneous producer/consumer phase-one workload above.
+
+Persistent messages use **16 fixed SQLite shards** named `queue-00.db` through
+`queue-15.db`. A stable FNV-1a hash of the exact topic selects the shard, so one
+topic remains ordered and always returns to the same file after restart or
+upgrade. Each shard has an independent bounded writer and WAL; the configured
+write queue capacity is divided across them rather than multiplied by 16.
+Exact-topic operations touch one shard. Wildcard subscriptions rotate fairly
+across all shards. New message IDs contain the shard prefix (`s07-...`) so ACKs
+route without a lookup.
+
+On the first sharded startup, rows from the legacy `queue.db.messages` table are
+copied and verified before a `message-shards-v1` migration marker is written.
+The legacy rows are deliberately retained as a rollback copy and are no longer
+used by the running broker; no automatic destructive cleanup is performed.
+
+The shard commit path does not synchronously update the control database.
+Accepted, duplicate, and delivered counters are accumulated in memory and
+flushed to `queue.db` in one transaction every 100 ms. Status reads, cleanup,
+and graceful shutdown force a final flush. Queue depth remains an immediate
+in-memory counter and startup reconciles it from the shard files.
+
+A 2026-09-26 release build test used 256-byte persistent messages on local
+storage. One producer stream sustained 12,324–16,887 msg/s across repeated
+32,000-message runs. With 16 simultaneous streams, one shared shard sustained
+3,317 msg/s while 16 independently routed shards sustained 5,050 msg/s
+(+52%). The result shows that sharding helps under equal producer concurrency,
+but extra streams and multiple WAL writers do not scale linearly on one physical
+disk. Measure again on the deployment volume before choosing producer
+parallelism.
+
+For deployment sizing, rerun the same workload on the target volume and with
+production authentication, network latency, retention settings, payload sizes,
+and consumer processing time. In particular, network filesystems and
+write-limited container volumes can behave very differently from local NVMe.
+
 ## Configuration
 
 | Environment variable | Default | Purpose |
@@ -330,9 +437,14 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
 | `CL_BROKER_MQTT_PORT` | `7883` | MQTT TCP listener. `0` disables TCP. Unprivileged default; map `1883:7883` or set `1883` if you can bind it |
 | `CL_BROKER_MQTT_WSPORT` | `8083` | MQTT WebSocket listener (`/mqtt`). `0` attaches `GET /mqtt` to the status port |
 | `CL_BROKER_AUTH_TOKEN` | unset | shared secret; when set, gRPC, `/` `/status`, and MQTT `CONNECT` require it. `/health` stays open |
-| `CL_BROKER_DATA` | unset (image: `/data`) | data dir; SQLite is `<dir>/queue.db`, logs are `<dir>/logs` |
+| `CL_BROKER_DATA` | unset (image: `/data`) | data dir; control DB is `<dir>/queue.db`, message shards are `<dir>/queue-00.db` … `queue-15.db`, logs are `<dir>/logs` |
 | `DOWNSTREAM_URL` | unset | optional HTTP POST fallback when a topic has no live `Subscribe` stream |
 | `WORKER_POLL_MS` | `500` | queue polling interval |
+| `CL_BROKER_WRITE_BATCH_SIZE` | `128` | maximum persistent enqueue/completion operations grouped for a SQLite writer cycle |
+| `CL_BROKER_WRITE_BATCH_WAIT_MS` | `2` | maximum time used to collect a write batch |
+| `CL_BROKER_WRITE_QUEUE_SIZE` | `8192` | bounded in-memory queue capacity before producer backpressure |
+| `CL_BROKER_INGEST_INFLIGHT` | `128` | maximum concurrently processed publishes per gRPC producer stream; responses remain ordered |
+| `CL_BROKER_CONSUMER_PREFETCH` | `32` | maximum unacknowledged persistent messages per subscription; set `1` for strict serial delivery |
 | `MAX_DELIVERY_ATTEMPTS` | `10` | attempts before a message is marked failed |
 | `MESSAGE_RETENTION_DAYS` | `10` | delete messages older than this (any status, by `created_at`); `0` keeps them forever |
 | `CL_BROKER_DELIVERED_RETENTION_HOURS` | `24` | delete delivered messages whose `delivered_at` is older than this; `0` disables. Pending, failed, and dropped rows stay until `MESSAGE_RETENTION_DAYS` |
@@ -383,7 +495,7 @@ A gRPC `AcceptMessages` publish is delivered to MQTT subscribers on that topic, 
 
 ## 数据库 ER
 
-三张表落在同一个 SQLite 文件（`<data>/queue.db`）。没有声明 `FOREIGN KEY`，逻辑外键是 `topic`。列、默认值和索引与 `src/db.rs` 里 `Database::connect` 的 `CREATE TABLE` / `CREATE INDEX` 一致。
+`topic_stats`、`consumers` 和管理表位于 `<data>/queue.db`；`messages` 表位于固定的 16 个 `queue-NN.db` 分片中。没有声明跨库 `FOREIGN KEY`，逻辑外键是 `topic`。列、默认值和索引以 `src/db.rs` 为准。
 
 `topic_stats.topic` 可以是精确名，也可以是 MQTT 订约 filter（`building/#`、`sensor/+/temp`）。`messages.topic` 永远是精确发布名。通配符订约会单独占一行 `topic_stats`（`persistence=persistent`，`configured=0`），这样 idle purge 不会删掉已订约的 filter；发布出来的子主题（如 `building/floor1/temp`）仍按 ephemeral 处理，空闲后可被回收。
 
@@ -401,13 +513,15 @@ erDiagram
         TEXT delivery "NOT NULL DEFAULT broadcast"
         TEXT persistence "NOT NULL DEFAULT ephemeral"
         INTEGER dropped "NOT NULL DEFAULT 0 无在线流时丢弃"
+        INTEGER pending "NOT NULL DEFAULT 0 启动时校准的等待数"
+        INTEGER processing "NOT NULL DEFAULT 0 启动时校准的处理中数量"
         TEXT last_seen_at "可空 最近收消息或订约"
         INTEGER configured "NOT NULL DEFAULT 0 1=ConfigureTopics 0=隐式或 MQTT 订约"
     }
 
     messages {
         TEXT id PK "NOT NULL 消息 UUID"
-        TEXT idempotency_key UK "可空 全局唯一幂等键"
+        TEXT idempotency_key UK "可空 分片内唯一幂等键"
         TEXT topic FK "NOT NULL 精确发布主题"
         BLOB payload "NOT NULL 消息体"
         TEXT attributes "NOT NULL JSON"
@@ -443,4 +557,4 @@ erDiagram
 | `idx_consumers_topic_seen` | `consumers(topic, last_seen_at)` |
 | `messages.idempotency_key` | `UNIQUE` |
 
-`consumers` 只存 gRPC `Register` 元数据。投递走内存里的 `Subscribe` / MQTT 会话；MQTT 订约本身写入 `topic_stats`，不写 `consumers`。`messages.idempotency_key` 全局唯一，用于 `AcceptMessages` 去重。隐式 ephemeral 且空闲超过 `CL_BROKER_EPHEMERAL_IDLE_HOURS` 的行会被 purge 删掉；`configured=1` 和 MQTT 订约的 persistent filter 会留下。已投递且 `delivered_at` 超过 `CL_BROKER_DELIVERED_RETENTION_HOURS` 的消息行会被删掉；未投递的行仍按 `MESSAGE_RETENTION_DAYS` 清理。
+`consumers` 只存 gRPC `Register` 元数据。投递走内存里的 `Subscribe` / MQTT 会话；MQTT 订约本身写入 `topic_stats`，不写 `consumers`。`messages.idempotency_key` 在 topic 所在分片内唯一，用于 `AcceptMessages` 去重；生产者重试时必须保持同一个 topic。隐式 ephemeral 且空闲超过 `CL_BROKER_EPHEMERAL_IDLE_HOURS` 的行会被 purge 删掉；`configured=1` 和 MQTT 订约的 persistent filter 会留下。已投递且 `delivered_at` 超过 `CL_BROKER_DELIVERED_RETENTION_HOURS` 的消息行会被删掉；未投递的行仍按 `MESSAGE_RETENTION_DAYS` 清理。

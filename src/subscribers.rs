@@ -30,6 +30,7 @@ struct LiveEntry {
 pub struct TopicSubscribers(Arc<Mutex<HashMap<String, HashMap<String, LiveEntry>>>>);
 
 impl TopicSubscribers {
+    #[allow(clippy::too_many_arguments)]
     pub fn add(
         &self,
         topic: &str,
@@ -105,7 +106,12 @@ impl TopicSubscribers {
     }
 
     pub fn topics(&self) -> Vec<String> {
-        self.0.lock().expect("subscriber map").keys().cloned().collect()
+        self.0
+            .lock()
+            .expect("subscriber map")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     pub fn sessions(&self) -> Vec<SessionInfo> {
@@ -116,11 +122,7 @@ impl TopicSubscribers {
             .values()
             .flat_map(|topic| topic.values().map(|entry| entry.info.clone()))
             .collect();
-        sessions.sort_by(|left, right| {
-            left.topic
-                .cmp(&right.topic)
-                .then(left.id.cmp(&right.id))
-        });
+        sessions.sort_by(|left, right| left.topic.cmp(&right.topic).then(left.id.cmp(&right.id)));
         sessions
     }
 
@@ -133,8 +135,7 @@ impl TopicSubscribers {
                 continue;
             }
             for (id, entry) in sessions {
-                seen.entry(id.clone())
-                    .or_insert_with(|| entry.tx.clone());
+                seen.entry(id.clone()).or_insert_with(|| entry.tx.clone());
             }
         }
         seen.into_iter().collect()
@@ -157,13 +158,10 @@ pub struct InflightAcks(Arc<Mutex<HashMap<String, PendingAck>>>);
 impl InflightAcks {
     pub fn register(&self, message_id: String, lease: String) -> oneshot::Receiver<AckDecision> {
         let (tx, rx) = oneshot::channel();
-        self.0.lock().expect("inflight map").insert(
-            lease,
-            PendingAck {
-                message_id,
-                tx,
-            },
-        );
+        self.0
+            .lock()
+            .expect("inflight map")
+            .insert(lease, PendingAck { message_id, tx });
         rx
     }
 
@@ -190,6 +188,7 @@ pub struct SubscriptionGuard {
 }
 
 impl SubscriptionGuard {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         subscribers: TopicSubscribers,
         topic: String,
@@ -251,7 +250,15 @@ mod tests {
     fn hash_filter_covers_child_topics() {
         let subscribers = TopicSubscribers::default();
         let (tx, _rx) = mpsc::channel(1);
-        subscribers.add("sensor/#", "mqtt:c1", tx, "127.0.0.1:1", "mqtt", "3.1.1", "");
+        subscribers.add(
+            "sensor/#",
+            "mqtt:c1",
+            tx,
+            "127.0.0.1:1",
+            "mqtt",
+            "3.1.1",
+            "",
+        );
         assert!(subscribers.covers("sensor"));
         assert!(subscribers.covers("sensor/temp"));
         assert!(subscribers.covers("sensor/a/b"));

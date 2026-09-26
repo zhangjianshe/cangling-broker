@@ -8,8 +8,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -100,6 +100,7 @@ fn consumer_cutoff(ttl_secs: u64) -> Option<String> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     listener: tokio::net::TcpListener,
     db: Database,
@@ -129,10 +130,10 @@ pub async fn serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-        .with_graceful_shutdown(async move {
-            shutdown.cancelled().await;
-        })
-        .await?;
+    .with_graceful_shutdown(async move {
+        shutdown.cancelled().await;
+    })
+    .await?;
     Ok(())
 }
 
@@ -155,7 +156,13 @@ fn status_routes(state: StatusState) -> Router {
         .route("/status", get(status))
         .route("/topics", get(list_topics).post(configure_topics))
         .route("/messages", get(topic_message).delete(clear_topic_messages))
-        .route("/cache", get(cache_get).put(cache_set).post(cache_set).delete(cache_delete))
+        .route(
+            "/cache",
+            get(cache_get)
+                .put(cache_set)
+                .post(cache_set)
+                .delete(cache_delete),
+        )
         .route("/cache/keys", get(cache_keys))
         .route("/cache/incr", post(cache_incr))
         .route("/lock", get(lock_get).delete(lock_release))
@@ -199,8 +206,10 @@ async fn require_token(
         .headers()
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
-    if auth::tokens_match(expected, auth::http_token(authorization, request.uri().query()).as_deref())
-    {
+    if auth::tokens_match(
+        expected,
+        auth::http_token(authorization, request.uri().query()).as_deref(),
+    ) {
         return Ok(next.run(request).await);
     }
     Err(StatusCode::UNAUTHORIZED)
@@ -718,7 +727,7 @@ fn to_message_body(message: crate::db::StoredMessage) -> MessageBody {
 
 fn encode_base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let n = (u32::from(chunk[0]) << 16)
             | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
@@ -871,11 +880,8 @@ fn connected_clients(
             claimed.insert((session.id.as_str(), session.topic.as_str()));
             subscriptions.push(to_subscription(session, &registered));
         }
-        subscriptions.sort_by(|left, right| {
-            left.topic
-                .cmp(&right.topic)
-                .then(left.id.cmp(&right.id))
-        });
+        subscriptions
+            .sort_by(|left, right| left.topic.cmp(&right.topic).then(left.id.cmp(&right.id)));
         let last_seen_at = subscriptions
             .iter()
             .map(|item| item.last_seen_at.as_str())
@@ -903,11 +909,8 @@ fn connected_clients(
             claimed.insert((session.id.as_str(), session.topic.as_str()));
             subscriptions.push(to_subscription(session, &registered));
         }
-        subscriptions.sort_by(|left, right| {
-            left.topic
-                .cmp(&right.topic)
-                .then(left.id.cmp(&right.id))
-        });
+        subscriptions
+            .sort_by(|left, right| left.topic.cmp(&right.topic).then(left.id.cmp(&right.id)));
         let last_seen_at = subscriptions
             .iter()
             .map(|item| item.last_seen_at.as_str())
@@ -939,41 +942,45 @@ fn connected_clients(
             .1
             .push(subscription);
     }
-    clients.extend(by_identity.into_iter().map(|(_, (peer, mut subscriptions))| {
-            subscriptions.sort_by(|left, right| {
-                left.topic
-                    .cmp(&right.topic)
-                    .then(left.name.cmp(&right.name))
-                    .then(left.id.cmp(&right.id))
-            });
-            let connected_at = subscriptions
-                .iter()
-                .map(|item| item.connected_at.as_str())
-                .min()
-                .unwrap_or("")
-                .to_string();
-            let last_seen_at = subscriptions
-                .iter()
-                .map(|item| item.last_seen_at.as_str())
-                .max()
-                .unwrap_or("")
-                .to_string();
-            let protocol = subscriptions
-                .first()
-                .map(|item| item.protocol)
-                .unwrap_or("grpc");
-            ClientInfo {
-                peer,
-                protocol,
-                client_id: String::new(),
-                version: first_value("", &subscriptions, |item| item.version.as_str()),
-                host: first_value("", &subscriptions, |item| item.host.as_str()),
-                streams: subscriptions.len(),
-                connected_at,
-                last_seen_at,
-                subscriptions,
-            }
-        }));
+    clients.extend(
+        by_identity
+            .into_iter()
+            .map(|(_, (peer, mut subscriptions))| {
+                subscriptions.sort_by(|left, right| {
+                    left.topic
+                        .cmp(&right.topic)
+                        .then(left.name.cmp(&right.name))
+                        .then(left.id.cmp(&right.id))
+                });
+                let connected_at = subscriptions
+                    .iter()
+                    .map(|item| item.connected_at.as_str())
+                    .min()
+                    .unwrap_or("")
+                    .to_string();
+                let last_seen_at = subscriptions
+                    .iter()
+                    .map(|item| item.last_seen_at.as_str())
+                    .max()
+                    .unwrap_or("")
+                    .to_string();
+                let protocol = subscriptions
+                    .first()
+                    .map(|item| item.protocol)
+                    .unwrap_or("grpc");
+                ClientInfo {
+                    peer,
+                    protocol,
+                    client_id: String::new(),
+                    version: first_value("", &subscriptions, |item| item.version.as_str()),
+                    host: first_value("", &subscriptions, |item| item.host.as_str()),
+                    streams: subscriptions.len(),
+                    connected_at,
+                    last_seen_at,
+                    subscriptions,
+                }
+            }),
+    );
     clients.sort_by(|left, right| {
         left.host
             .cmp(&right.host)
@@ -1002,10 +1009,7 @@ fn to_subscription(
     let version = if !session.version.is_empty() {
         session.version.clone()
     } else {
-        attributes
-            .get("version")
-            .cloned()
-            .unwrap_or_default()
+        attributes.get("version").cloned().unwrap_or_default()
     };
     let host = if !session.host.is_empty() {
         session.host.clone()
@@ -1104,10 +1108,7 @@ mod tests {
         assert_eq!(clients[1].last_seen_at, "2026-08-16T00:01:00Z");
         assert_eq!(clients[1].subscriptions[0].name, "java-s0");
         assert_eq!(
-            clients[1].subscriptions[0]
-                .attributes
-                .get("host")
-                .unwrap(),
+            clients[1].subscriptions[0].attributes.get("host").unwrap(),
             "worker-1"
         );
         assert_eq!(clients[1].subscriptions[1].topic, "logs");
@@ -1201,17 +1202,30 @@ mod tests {
         }];
         merge_live_sessions(&mut topics, &sessions);
         assert_eq!(topics.len(), 2);
-        let live = topics.iter().find(|topic| topic.name == "building/#").unwrap();
+        let live = topics
+            .iter()
+            .find(|topic| topic.name == "building/#")
+            .unwrap();
         assert_eq!(live.delivery, "broadcast");
         assert_eq!(live.persistence, "persistent");
         assert_eq!(live.consumers.len(), 1);
         assert!(live.consumers[0].live);
         assert_eq!(live.consumers[0].name, "browser-1");
         assert_eq!(
-            live.consumers[0].attributes.get("protocol").map(String::as_str),
+            live.consumers[0]
+                .attributes
+                .get("protocol")
+                .map(String::as_str),
             Some("mqtt-ws")
         );
-        assert_eq!(topics.iter().find(|topic| topic.name == "jobs").unwrap().accepted, 3);
+        assert_eq!(
+            topics
+                .iter()
+                .find(|topic| topic.name == "jobs")
+                .unwrap()
+                .accepted,
+            3
+        );
 
         let mut published = vec![TopicSnapshot {
             name: "/ibuser/1/dRueErAe".into(),

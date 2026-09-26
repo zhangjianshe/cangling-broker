@@ -59,6 +59,11 @@ class MessageQueueStub:
                 request_serializer=queue__pb2.AckMessageRequest.SerializeToString,
                 response_deserializer=queue__pb2.AckMessageResponse.FromString,
                 _registered_method=True)
+        self.AckMessages = channel.unary_unary(
+                '/dispatcher.v1.MessageQueue/AckMessages',
+                request_serializer=queue__pb2.AckMessagesRequest.SerializeToString,
+                response_deserializer=queue__pb2.AckMessagesResponse.FromString,
+                _registered_method=True)
         self.ConfigureTopics = channel.unary_unary(
                 '/dispatcher.v1.MessageQueue/ConfigureTopics',
                 request_serializer=queue__pb2.ConfigureTopicsRequest.SerializeToString,
@@ -110,6 +115,14 @@ class MessageQueueServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def AckMessages(self, request, context):
+        """Confirm or reject several delivered messages in one round trip. Older
+        clients may continue to use AckMessage.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ConfigureTopics(self, request, context):
         """Create or replace delivery and persistence for many topics at once.
         delivery is "single" (competing consumers) or "broadcast" (every live stream).
@@ -155,6 +168,11 @@ def add_MessageQueueServicer_to_server(servicer, server):
                     servicer.AckMessage,
                     request_deserializer=queue__pb2.AckMessageRequest.FromString,
                     response_serializer=queue__pb2.AckMessageResponse.SerializeToString,
+            ),
+            'AckMessages': grpc.unary_unary_rpc_method_handler(
+                    servicer.AckMessages,
+                    request_deserializer=queue__pb2.AckMessagesRequest.FromString,
+                    response_serializer=queue__pb2.AckMessagesResponse.SerializeToString,
             ),
             'ConfigureTopics': grpc.unary_unary_rpc_method_handler(
                     servicer.ConfigureTopics,
@@ -313,6 +331,33 @@ class MessageQueue:
             _registered_method=True)
 
     @staticmethod
+    def AckMessages(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.MessageQueue/AckMessages',
+            queue__pb2.AckMessagesRequest.SerializeToString,
+            queue__pb2.AckMessagesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def ConfigureTopics(request,
             target,
             options=(),
@@ -368,9 +413,10 @@ class MessageQueue:
 
 
 class CacheServiceStub:
-    """CacheService is a SQLite-backed Redis replacement: string KV cache with TTL
-    plus distributed locks. Values are binary-safe bytes; Incr treats the stored
-    value as a signed integer.
+    """CacheService is a Redis replacement: an in-memory string KV cache with TTL
+    plus SQLite-backed distributed locks. Cache values are binary-safe bytes and
+    never touch SQLite; Incr treats the stored value as a signed integer. Locks
+    stay on SQLite so a broker restart cannot drop a held lease.
     """
 
     def __init__(self, channel):
@@ -432,9 +478,10 @@ class CacheServiceStub:
 
 
 class CacheServiceServicer:
-    """CacheService is a SQLite-backed Redis replacement: string KV cache with TTL
-    plus distributed locks. Values are binary-safe bytes; Incr treats the stored
-    value as a signed integer.
+    """CacheService is a Redis replacement: an in-memory string KV cache with TTL
+    plus SQLite-backed distributed locks. Cache values are binary-safe bytes and
+    never touch SQLite; Incr treats the stored value as a signed integer. Locks
+    stay on SQLite so a broker restart cannot drop a held lease.
     """
 
     def Set(self, request, context):
@@ -559,9 +606,10 @@ def add_CacheServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class CacheService:
-    """CacheService is a SQLite-backed Redis replacement: string KV cache with TTL
-    plus distributed locks. Values are binary-safe bytes; Incr treats the stored
-    value as a signed integer.
+    """CacheService is a Redis replacement: an in-memory string KV cache with TTL
+    plus SQLite-backed distributed locks. Cache values are binary-safe bytes and
+    never touch SQLite; Incr treats the stored value as a signed integer. Locks
+    stay on SQLite so a broker restart cannot drop a held lease.
     """
 
     @staticmethod

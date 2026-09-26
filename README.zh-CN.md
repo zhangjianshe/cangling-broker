@@ -197,7 +197,7 @@ curl -s http://127.0.0.1:7501/health
 curl -s -H 'authorization: Bearer change-me' http://127.0.0.1:7501/status
 ```
 
-`/` 是单个 HTML 页面，从 `/status` 刷新。`/status` 是 JSON，包含 `version`、`git`、`built` 以及 `db_bytes`（`queue.db` 加上 `-wal`/`-shm` 的磁盘占用）。每个 `clients[]` 条目在客户端发送了 `x-client-version` 时包含 `version`（Java/Python SDK 会自动发送）；对 MQTT 则是协议版本（`3.1` / `3.1.1`）。官方 SDK 也会发送 `x-client-host`（Docker `HOSTNAME`，或用 `CL_BROKER_CLIENT_HOST` 覆盖），这样当容器都经同一网关 IP 做 NAT 时，仪表盘能区分它们。`consumers` / `streams` 是存活的 `Subscribe` 流数量。仪表盘卡片 **SQLite** 显示同样的占用大小。点击 **persistent** 主题可打开其消费者并浏览已保存消息（`GET /messages?topic=...&offset=0`，offset `0` 为最新）。即弃主题不保存消息体。主题行上的 **清空** 会删除该主题的消息（`DELETE /messages?topic=...`）并重置其计数。
+`/` 是单个 HTML 页面，从 `/status` 刷新。`/status` 是 JSON，包含 `version`、`git`、`built` 以及 `db_bytes`（管理库、16 个消息分片及全部 WAL/SHM 的磁盘占用）。每个 `clients[]` 条目在客户端发送了 `x-client-version` 时包含 `version`（Java/Python SDK 会自动发送）；对 MQTT 则是协议版本（`3.1` / `3.1.1`）。官方 SDK 也会发送 `x-client-host`（Docker `HOSTNAME`，或用 `CL_BROKER_CLIENT_HOST` 覆盖），这样当容器都经同一网关 IP 做 NAT 时，仪表盘能区分它们。`consumers` / `streams` 是存活的 `Subscribe` 流数量。仪表盘卡片 **SQLite** 显示同样的占用大小。点击 **persistent** 主题可打开其消费者并浏览已保存消息（`GET /messages?topic=...&offset=0`，offset `0` 为最新）。即弃主题不保存消息体。主题行上的 **清空** 会删除该主题的消息（`DELETE /messages?topic=...`）并重置其计数。
 
 页头现在链接到三个页面：**消息**（状态概览、已连接客户端、主题及按主题浏览消息）、**缓存**（缓存的按键查询 / 写入 / 删除 / 自增，以及完整键列表）与 **分布式锁**（锁状态 / 获取 / 续期 / 释放，以及完整锁列表）。缓存与锁页面分别从 `GET /cache/keys` 与 `GET /lock/list` 刷新。
 
@@ -215,7 +215,23 @@ cd .test
 ../.venv/bin/python test_client.py --text hello --count 1
 ```
 
-在 **single** 主题上，每条消息被一个在线流认领。在 **broadcast** 主题上，每个在线流都收到一份；消息在所有流都 ack 后才算投递完成。如果订阅者断开，或在 `ACK_TIMEOUT_SECS` 之前没有 `AckMessage`，该投递会被重试。用 `message_id` 保证处理幂等。投递是至少一次（at-least-once）。
+在 **single** 主题上，每条消息被一个在线流认领。在 **broadcast** 主题上，每个在线流都收到一份；消息在所有流都 ack 后才算投递完成。如果订阅者断开，或在 `ACK_TIMEOUT_SECS` 之前没有确认，该投递会被重试。当前 Java/Python SDK 会在最多 2ms 或 64 条消息内合并确认并调用 `AckMessages`；旧客户端仍可使用 `AckMessage`。用 `message_id` 保证处理幂等。投递是至少一次（at-least-once）。
+
+### 第二阶段性能优化
+
+- 新增向后兼容的 `AckMessages` 批量确认接口，Java/Python SDK 异步合并 ACK。
+- 持久化消息提交后按 topic 主动唤醒订阅者；30 秒轮询仅作为异常恢复兜底。
+- pending/processing 改为内存增量统计，启动时从 SQLite 校准；`/status` 不再对整张 `messages` 表执行 `GROUP BY topic,status`。
+
+2026-09-26 在同一台 release 测试机预装 10,000 条 256B 持久化消息，再由 4 个 Python 消费者清空：旧版逐条 unary ACK 为 **253.9 msg/s**，批量 ACK 为 **275.3 msg/s**，提升 **8.4%**；最终 delivered=10,000、pending=0、processing=0。该 A/B 测试专门隔离 ACK 协议开销，与 README 英文版中生产和消费同时进行的第一阶段压测不是同一种负载。
+
+持久化消息固定使用 **16 个 SQLite 分片**：`queue-00.db`～`queue-15.db`。精确 topic 通过稳定的 FNV-1a 哈希定位，因此重启和升级后仍进入同一个分片，并保持单 topic 顺序。每个分片有独立的有界批量写队列和 WAL；总队列容量在 16 个分片间分配，不会放大 16 倍。精确 topic 只访问一个文件，通配订阅轮转查询全部分片。新消息 ID 带 `s07-...` 形式的分片前缀，ACK 可直接定位。
+
+首次升级会把旧 `queue.db.messages` 内容复制到分片、逐条验证，再写入 `message-shards-v1` 标记。旧数据作为回滚副本保留，不再参与运行；系统不会自动执行破坏性删除。
+
+分片提交热路径不再同步更新管理库。accepted、duplicate 和 delivered 统计先在内存中聚合，每 100ms 用一个事务批量刷新到 `queue.db`；状态查询、清理任务和正常关闭会强制执行最终刷新。队列深度仍是即时内存计数，启动时从全部分片重新校准。
+
+2026-09-26 使用 Release 构建、256B 持久化消息和本地磁盘复测：单条生产流在多次 32,000 条测试中达到 12,324～16,887 msg/s；保持 16 条并发生产流不变时，全部写入同一分片为 3,317 msg/s，分别写入 16 个分片为 5,050 msg/s，提升 52%。这说明相同生产并发下分片有效，但同一物理磁盘上的多 WAL 写入和额外流调度不会线性扩展，部署前仍应在目标存储卷上复测。
 
 ### 主题投递模式
 
@@ -322,9 +338,14 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
 | `CL_BROKER_MQTT_PORT` | `7883` | MQTT TCP 监听。`0` 禁用 TCP。默认是非特权端口；映射 `1883:7883`，或能绑定就设 `1883` |
 | `CL_BROKER_MQTT_WSPORT` | `8083` | MQTT WebSocket 监听（`/mqtt`）。`0` 把 `GET /mqtt` 挂到状态端口 |
 | `CL_BROKER_AUTH_TOKEN` | 不设置 | 共享密钥；设置后，gRPC、`/` `/status` 与 MQTT `CONNECT` 都需要它。`/health` 保持开放 |
-| `CL_BROKER_DATA` | 不设置（镜像：`/data`） | 数据目录；SQLite 是 `<dir>/queue.db`，日志是 `<dir>/logs` |
+| `CL_BROKER_DATA` | 不设置（镜像：`/data`） | 数据目录；管理库为 `<dir>/queue.db`，消息库为 `queue-00.db`～`queue-15.db`，日志在 `<dir>/logs` |
 | `DOWNSTREAM_URL` | 不设置 | 主题没有在线 `Subscribe` 流时的可选 HTTP POST 回退 |
 | `WORKER_POLL_MS` | `500` | 队列轮询间隔 |
+| `CL_BROKER_WRITE_BATCH_SIZE` | `128` | 单写入器一次合并的持久化入队/完成操作上限 |
+| `CL_BROKER_WRITE_BATCH_WAIT_MS` | `2` | 收集一批写操作的最长等待毫秒数 |
+| `CL_BROKER_WRITE_QUEUE_SIZE` | `8192` | 触发生产者背压前的内存写队列容量 |
+| `CL_BROKER_INGEST_INFLIGHT` | `128` | 每条 gRPC 生产流并发处理的发布上限；响应保持顺序 |
+| `CL_BROKER_CONSUMER_PREFETCH` | `32` | 每个订阅允许的未确认持久化消息数；严格串行投递可设为 `1` |
 | `MAX_DELIVERY_ATTEMPTS` | `10` | 消息标记为失败前的尝试次数 |
 | `MESSAGE_RETENTION_DAYS` | `10` | 删除超过此天数的消息（任意状态，按 `created_at`）；`0` 永久保留 |
 | `CL_BROKER_DELIVERED_RETENTION_HOURS` | `24` | 删除 `delivered_at` 超过此时长的已投递消息；`0` 禁用。pending、failed、dropped 行仍按 `MESSAGE_RETENTION_DAYS` 保留 |
@@ -375,7 +396,7 @@ gRPC `AcceptMessages` 的发布会投递给该主题的 MQTT 订阅者，反之�
 
 ## 数据库 ER
 
-三张表落在同一个 SQLite 文件（`<data>/queue.db`）。没有声明 `FOREIGN KEY`，逻辑外键是 `topic`。列、默认值和索引与 `src/db.rs` 里 `Database::connect` 的 `CREATE TABLE` / `CREATE INDEX` 一致。
+`topic_stats`、`consumers` 和管理表位于 `<data>/queue.db`；`messages` 表位于固定的 16 个 `queue-NN.db` 分片中。没有声明跨库 `FOREIGN KEY`，逻辑外键是 `topic`。列、默认值和索引以 `src/db.rs` 为准。
 
 `topic_stats.topic` 可以是精确名，也可以是 MQTT 订约 filter（`building/#`、`sensor/+/temp`）。`messages.topic` 永远是精确发布名。通配符订约会单独占一行 `topic_stats`（`persistence=persistent`，`configured=0`），这样 idle purge 不会删掉已订约的 filter；发布出来的子主题（如 `building/floor1/temp`）仍按 ephemeral 处理，空闲后可被回收。
 
@@ -393,13 +414,15 @@ erDiagram
         TEXT delivery "NOT NULL DEFAULT broadcast"
         TEXT persistence "NOT NULL DEFAULT ephemeral"
         INTEGER dropped "NOT NULL DEFAULT 0 无在线流时丢弃"
+        INTEGER pending "NOT NULL DEFAULT 0 启动时校准的等待数"
+        INTEGER processing "NOT NULL DEFAULT 0 启动时校准的处理中数量"
         TEXT last_seen_at "可空 最近收消息或订约"
         INTEGER configured "NOT NULL DEFAULT 0 1=ConfigureTopics 0=隐式或 MQTT 订约"
     }
 
     messages {
         TEXT id PK "NOT NULL 消息 UUID"
-        TEXT idempotency_key UK "可空 全局唯一幂等键"
+        TEXT idempotency_key UK "可空 分片内唯一幂等键"
         TEXT topic FK "NOT NULL 精确发布主题"
         BLOB payload "NOT NULL 消息体"
         TEXT attributes "NOT NULL JSON"
@@ -435,4 +458,4 @@ erDiagram
 | `idx_consumers_topic_seen` | `consumers(topic, last_seen_at)` |
 | `messages.idempotency_key` | `UNIQUE` |
 
-`consumers` 只存 gRPC `Register` 元数据。投递走内存里的 `Subscribe` / MQTT 会话；MQTT 订约本身写入 `topic_stats`，不写 `consumers`。`messages.idempotency_key` 全局唯一，用于 `AcceptMessages` 去重。隐式 ephemeral 且空闲超过 `CL_BROKER_EPHEMERAL_IDLE_HOURS` 的行会被 purge 删掉；`configured=1` 和 MQTT 订约的 persistent filter 会留下。已投递且 `delivered_at` 超过 `CL_BROKER_DELIVERED_RETENTION_HOURS` 的消息行会被删掉；未投递的行仍按 `MESSAGE_RETENTION_DAYS` 清理。
+`consumers` 只存 gRPC `Register` 元数据。投递走内存里的 `Subscribe` / MQTT 会话；MQTT 订约本身写入 `topic_stats`，不写 `consumers`。`messages.idempotency_key` 在 topic 所在分片内唯一，用于 `AcceptMessages` 去重；生产者重试时必须保持同一个 topic。隐式 ephemeral 且空闲超过 `CL_BROKER_EPHEMERAL_IDLE_HOURS` 的行会被 purge 删掉；`configured=1` 和 MQTT 订约的 persistent filter 会留下。已投递且 `delivered_at` 超过 `CL_BROKER_DELIVERED_RETENTION_HOURS` 的消息行会被删掉；未投递的行仍按 `MESSAGE_RETENTION_DAYS` 清理。

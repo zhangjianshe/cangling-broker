@@ -34,10 +34,15 @@ pub fn format_wall_time(value: &str) -> String {
 
 pub fn init(config: &Config) -> anyhow::Result<Option<WorkerGuard>> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let stdout = fmt::layer().with_timer(CompactUtc).with_writer(std::io::stdout);
+    let stdout = fmt::layer()
+        .with_timer(CompactUtc)
+        .with_writer(std::io::stdout);
 
     let Some(dir) = config.log_dir() else {
-        tracing_subscriber::registry().with(filter).with(stdout).init();
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(stdout)
+            .init();
         return Ok(None);
     };
 

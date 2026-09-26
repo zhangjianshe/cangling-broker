@@ -16,6 +16,14 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
+echo "running release preflight checks"
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --release --locked --bin cangling-broker --example receiver
+mvn -f java/pom.xml -B -q test package
+python3 -m compileall -q python
+
 current="$(sed -n 's/^version = "\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"/\1/p' Cargo.toml | head -n1)"
 if [[ -z "$current" ]]; then
   echo "could not read version from Cargo.toml" >&2
@@ -56,6 +64,9 @@ if py_old not in py_text:
     raise SystemExit(f"python/pyproject.toml is missing {py_old!r}")
 py.write_text(py_text.replace(py_old, f'version = "{new}"', 1))
 PY
+
+# Verify the manually synchronized Cargo.lock before creating release history.
+cargo check --locked
 
 git add Cargo.toml Cargo.lock java/pom.xml python/pyproject.toml
 # Do not put [skip ci] here: GitHub would also skip the tag push that must compile and publish.

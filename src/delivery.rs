@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use chrono::Utc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use uuid::Uuid;
@@ -12,6 +12,7 @@ use crate::{
     model::{DeliveryMode, PersistenceMode},
     proto::SatwayMessage,
     subscribers::{InflightAcks, StreamSender, SubscriptionGuard, TopicSubscribers},
+    writer::QueueWriter,
 };
 
 pub const PROTOCOL_GRPC: &str = "grpc";
@@ -34,8 +35,10 @@ pub enum Ingested {
     Dropped { message_id: String },
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn ingest(
     db: &Database,
+    writer: &QueueWriter,
     subscribers: &TopicSubscribers,
     topic: &str,
     payload: &[u8],
@@ -51,10 +54,17 @@ pub async fn ingest(
         .await
         .unwrap_or_else(|_| crate::model::TopicConfig::implicit(topic));
     if settings.persistence == PersistenceMode::Ephemeral {
-        return fanout_ephemeral(db, subscribers, topic, payload, attributes, settings.delivery)
-            .await;
+        return fanout_ephemeral(
+            db,
+            subscribers,
+            topic,
+            payload,
+            attributes,
+            settings.delivery,
+        )
+        .await;
     }
-    let (message_id, duplicate) = db
+    let (message_id, duplicate) = writer
         .enqueue(idempotency_key, topic, payload, attributes)
         .await?;
     Ok(Ingested::Queued {
@@ -90,11 +100,13 @@ async fn fanout_ephemeral(
     };
     let mut sent = 0usize;
     for (_, sender) in senders {
-        match tokio::time::timeout(Duration::from_millis(200), sender.send(Ok(outgoing.clone())))
-            .await
+        if let Ok(Ok(())) = tokio::time::timeout(
+            Duration::from_millis(200),
+            sender.send(Ok(outgoing.clone())),
+        )
+        .await
         {
-            Ok(Ok(())) => sent += 1,
-            _ => {}
+            sent += 1;
         }
     }
     if sent == 0 {
@@ -110,6 +122,7 @@ async fn fanout_ephemeral(
 
 pub struct SubscribeLoop {
     pub db: Database,
+    pub writer: QueueWriter,
     pub config: Arc<Config>,
     pub subscribers: TopicSubscribers,
     pub inflight: InflightAcks,
@@ -131,6 +144,7 @@ pub fn spawn_subscribe_loop(loop_args: SubscribeLoop) {
 pub async fn run_subscribe_loop(args: SubscribeLoop) {
     let SubscribeLoop {
         db,
+        writer,
         config,
         subscribers,
         inflight,
@@ -169,10 +183,21 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
         config.consumer_ttl_secs.saturating_div(3).clamp(1, 30)
     });
     let mut last_heartbeat = tokio::time::Instant::now();
+    let mut notification = writer.subscribe(&topic);
+    let permits = Arc::new(Semaphore::new(config.consumer_prefetch.max(1)));
+    let mut deliveries = tokio::task::JoinSet::new();
     loop {
+        while deliveries.try_join_next().is_some() {}
         if shutdown.is_cancelled() || tx.is_closed() {
             break;
         }
+        let permit = tokio::select! {
+            _ = shutdown.cancelled() => break,
+            permit = permits.clone().acquire_owned() => match permit {
+                Ok(permit) => permit,
+                Err(_) => break,
+            }
+        };
         let claimed = match db.claim_next_for_filter(&topic, visibility).await {
             Ok(claimed) => claimed,
             Err(error) => {
@@ -180,16 +205,23 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
                 if !sleep_or_shutdown(&shutdown, config.worker_poll_ms).await {
                     break;
                 }
+                drop(permit);
                 continue;
             }
         };
         let Some(message) = claimed else {
+            drop(permit);
             if !consumer_id.is_empty() && last_heartbeat.elapsed() >= heartbeat_every {
                 let _ = db.touch_consumer(&consumer_id).await;
                 last_heartbeat = tokio::time::Instant::now();
             }
-            if !sleep_or_shutdown(&shutdown, config.worker_poll_ms).await {
-                break;
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                changed = notification.changed() => {
+                    if changed.is_err() { break; }
+                }
+                // Safety net for messages inserted by an older broker or direct DB tooling.
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {}
             }
             continue;
         };
@@ -239,6 +271,7 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
             if let Err(error) = db.delivered(&message.id, &message.lease).await {
                 error!(%error, "could not mark delivery");
             }
+            drop(permit);
             continue;
         }
         if waits.is_empty() {
@@ -263,77 +296,78 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
             if tx.is_closed() {
                 break;
             }
+            drop(permit);
             continue;
         }
-        let mut all_ok = true;
-        let mut last_error = "ack timeout or subscriber gone".to_string();
-        for ack in waits {
-            tokio::select! {
-                _ = shutdown.cancelled() => {
-                    all_ok = false;
-                    last_error = "broker shutting down".into();
-                }
-                timed = tokio::time::timeout(visibility, ack) => {
-                    match timed {
-                        Ok(Ok(decision)) if decision.success => {}
-                        Ok(Ok(decision)) => {
-                            all_ok = false;
-                            last_error = if decision.error.is_empty() {
-                                "nack".into()
-                            } else {
-                                decision.error
-                            };
-                        }
-                        Ok(Err(_)) | Err(_) => {
-                            all_ok = false;
+        let delivery_db = db.clone();
+        let delivery_writer = writer.clone();
+        let delivery_inflight = inflight.clone();
+        let delivery_shutdown = shutdown.clone();
+        let max_attempts = config.max_delivery_attempts;
+        deliveries.spawn(async move {
+            let _permit = permit;
+            let mut all_ok = true;
+            let mut last_error = "ack timeout or subscriber gone".to_string();
+            for ack in waits {
+                tokio::select! {
+                    _ = delivery_shutdown.cancelled() => {
+                        all_ok = false;
+                        last_error = "broker shutting down".into();
+                    }
+                    timed = tokio::time::timeout(visibility, ack) => {
+                        match timed {
+                            Ok(Ok(decision)) if decision.success => {}
+                            Ok(Ok(decision)) => {
+                                all_ok = false;
+                                last_error = if decision.error.is_empty() {
+                                    "nack".into()
+                                } else {
+                                    decision.error
+                                };
+                            }
+                            Ok(Err(_)) | Err(_) => all_ok = false,
                         }
                     }
                 }
+                if delivery_shutdown.is_cancelled() {
+                    break;
+                }
             }
-            if shutdown.is_cancelled() {
-                break;
+            for lease in &leases {
+                delivery_inflight.cancel(lease);
             }
-        }
-        for lease in &leases {
-            inflight.cancel(lease);
-        }
-        if shutdown.is_cancelled() {
-            break;
-        }
-        if all_ok {
-            if let Err(error) = db.delivered(&message.id, &message.lease).await {
-                error!(%error, "could not mark delivery");
+            if delivery_shutdown.is_cancelled() {
+                return;
+            }
+            if all_ok {
+                if let Err(error) = delivery_writer.delivered(&message.id, &message.lease).await {
+                    error!(%error, "could not mark delivery");
+                }
             } else {
-                info!(id = %message.id, topic = %topic, "message delivered");
+                let _ = delivery_db
+                    .failed(&message.id, &message.lease, &last_error, max_attempts)
+                    .await;
             }
-        } else {
-            let _ = db
-                .failed(
-                    &message.id,
-                    &message.lease,
-                    &last_error,
-                    config.max_delivery_attempts,
-                )
-                .await;
-        }
+        });
     }
+    while deliveries.join_next().await.is_some() {}
     drop(guard);
-    if !crate::topic::is_wildcard_filter(&topic) && !subscribers.covers(&topic) {
-        if db
+    if !crate::topic::is_wildcard_filter(&topic)
+        && !subscribers.covers(&topic)
+        && db
             .topic_persistence(&topic)
             .await
             .ok()
             .is_some_and(|mode| mode == PersistenceMode::Ephemeral)
-        {
-            match db.drop_pending(&topic).await {
-                Ok(0) => {}
-                Ok(dropped) => info!(
-                    topic = %topic,
-                    dropped,
-                    "dropped ephemeral messages after last subscriber left"
-                ),
-                Err(error) => error!(%error, topic = %topic, "could not drop ephemeral messages"),
-            }
+    {
+        match db.drop_pending(&topic).await {
+            Ok(0) => {}
+            Ok(dropped) => info!(
+                topic = %topic,
+                dropped,
+                "dropped ephemeral messages after last subscriber left"
+            ),
+            Err(error) => error!(%error, topic = %topic, "could not drop ephemeral messages"),
         }
     }
     info!(topic = %topic, protocol, "subscriber disconnected");
@@ -359,7 +393,10 @@ pub fn attrs_to_map(value: &serde_json::Value) -> HashMap<String, String> {
 }
 
 /// Keep the outgoing channel open for the life of an MQTT connection.
-pub fn outgoing_channel() -> (StreamSender, tokio::sync::mpsc::Receiver<Result<SatwayMessage, tonic::Status>>) {
+pub fn outgoing_channel() -> (
+    StreamSender,
+    tokio::sync::mpsc::Receiver<Result<SatwayMessage, tonic::Status>>,
+) {
     mpsc::channel(1024)
 }
 
@@ -404,6 +441,7 @@ mod tests {
 
         let ingested = ingest(
             &db,
+            &QueueWriter::start(db.clone(), 256, 32, Duration::from_millis(1)).0,
             &subscribers,
             "/ibuser/1/dRueErAe",
             b"hello",
@@ -413,7 +451,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(ingested, Ingested::Queued { duplicate: false, .. }));
+        assert!(matches!(
+            ingested,
+            Ingested::Queued {
+                duplicate: false,
+                ..
+            }
+        ));
 
         let message = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await

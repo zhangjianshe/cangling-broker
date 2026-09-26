@@ -21,6 +21,7 @@ pub struct GrpcClientInfo {
     pub host: String,
 }
 
+#[derive(Default)]
 struct RegistryInner {
     clients: HashMap<u64, GrpcClientInfo>,
 }
@@ -31,35 +32,27 @@ pub struct GrpcClientRegistry {
     inner: Arc<Mutex<RegistryInner>>,
 }
 
-impl Default for RegistryInner {
-    fn default() -> Self {
-        Self {
-            clients: HashMap::new(),
-        }
-    }
-}
-
 impl GrpcClientRegistry {
     pub fn insert(&self, peer: String) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
-        self.inner
-            .lock()
-            .expect("grpc registry")
-            .clients
-            .insert(
-                id,
-                GrpcClientInfo {
-                    peer,
-                    connected_at: chrono::Utc::now().to_rfc3339(),
-                    version: String::new(),
-                    host: String::new(),
-                },
-            );
+        self.inner.lock().expect("grpc registry").clients.insert(
+            id,
+            GrpcClientInfo {
+                peer,
+                connected_at: chrono::Utc::now().to_rfc3339(),
+                version: String::new(),
+                host: String::new(),
+            },
+        );
         id
     }
 
     pub fn remove(&self, id: u64) {
-        self.inner.lock().expect("grpc registry").clients.remove(&id);
+        self.inner
+            .lock()
+            .expect("grpc registry")
+            .clients
+            .remove(&id);
     }
 
     pub fn touch(&self, peer: &str, version: &str, host: &str) {
@@ -89,11 +82,7 @@ impl GrpcClientRegistry {
             .values()
             .cloned()
             .collect();
-        clients.sort_by(|left, right| {
-            left.peer
-                .cmp(&right.peer)
-                .then(left.host.cmp(&right.host))
-        });
+        clients.sort_by(|left, right| left.peer.cmp(&right.peer).then(left.host.cmp(&right.host)));
         clients
     }
 }

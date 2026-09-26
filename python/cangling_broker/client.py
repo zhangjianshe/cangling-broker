@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import logging
 import os
+import queue
 import socket
 import threading
 import time
@@ -109,6 +110,7 @@ class SatwayClient:
         self._open = True
         self._consumers: list[Consumer] = []
         self._lock = threading.Lock()
+        self._acks = _AckBatcher(self)
 
     @classmethod
     def connect(cls, broker: str, token: str | None = None) -> SatwayClient:
@@ -276,6 +278,7 @@ class SatwayClient:
         return consumer
 
     def close(self) -> None:
+        self._acks.close()
         with self._lock:
             if not self._open:
                 return
@@ -477,19 +480,17 @@ class SatwayClient:
         return self._open
 
     def _ack(self, message_id: str, lease: str, success: bool, error: str = "") -> None:
+        self._acks.submit(message_id, lease, success, error)
+
+    def _ack_batch(self, acknowledgements: list[queue_pb2.AckMessageRequest]) -> None:
         def once() -> None:
-            self._stub.AckMessage(
-                queue_pb2.AckMessageRequest(
-                    message_id=message_id,
-                    lease=lease,
-                    success=success,
-                    error=error or "",
-                ),
+            self._stub.AckMessages(
+                queue_pb2.AckMessagesRequest(acknowledgements=acknowledgements),
                 timeout=RPC_DEADLINE_SECS,
                 metadata=self._metadata,
             )
 
-        self._call_with_reconnect("ack", once)
+        self._call_with_reconnect("ack batch", once)
 
     def _ensure_registered(self, options: SubscribeOptions, consumer_id: str) -> None:
         if not consumer_id:
@@ -523,6 +524,52 @@ class SatwayClient:
                 time.sleep(backoff)
                 backoff = min(backoff * 2, MAX_BACKOFF_SECS)
 
+
+class _AckBatcher:
+    """Combines consumer acknowledgements into one RPC without delaying handlers."""
+
+    _STOP = object()
+
+    def __init__(self, client: SatwayClient):
+        self._client = client
+        self._queue: queue.Queue = queue.Queue(maxsize=8192)
+        self._thread = threading.Thread(target=self._run, name="cangling-ack", daemon=True)
+        self._thread.start()
+
+    def submit(self, message_id: str, lease: str, success: bool, error: str) -> None:
+        self._queue.put(queue_pb2.AckMessageRequest(
+            message_id=message_id,
+            lease=lease,
+            success=success,
+            error=error or "",
+        ))
+
+    def close(self) -> None:
+        self._queue.put(self._STOP)
+        self._thread.join(timeout=RPC_DEADLINE_SECS + 1)
+
+    def _run(self) -> None:
+        stopping = False
+        while not stopping:
+            first = self._queue.get()
+            if first is self._STOP:
+                return
+            batch = [first]
+            deadline = time.monotonic() + 0.002
+            while len(batch) < 64:
+                timeout = max(0.0, deadline - time.monotonic())
+                try:
+                    item = self._queue.get(timeout=timeout)
+                except queue.Empty:
+                    break
+                if item is self._STOP:
+                    stopping = True
+                    break
+                batch.append(item)
+            try:
+                self._client._ack_batch(batch)
+            except Exception:
+                LOG.exception("ack batch failed")
 
 class Consumer:
     def __init__(

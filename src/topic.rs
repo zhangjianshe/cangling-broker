@@ -54,6 +54,7 @@ pub fn is_wildcard_filter(filter: &str) -> bool {
 }
 
 /// `Some("")` for `#`, `Some("a/b")` for `a/b/#`. `None` if this is not a trailing-`#` filter.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn multi_level_prefix(filter: &str) -> Option<&str> {
     if filter == "#" {
         return Some("");

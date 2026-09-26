@@ -10,40 +10,44 @@ mod mqtt;
 mod status;
 mod subscribers;
 mod topic;
+mod writer;
 
 use std::{pin::Pin, sync::Arc, time::Duration};
 
-use clap::Parser;
 use auth::AuthInterceptor;
 use cache::CacheService;
+use clap::Parser;
 use config::Config;
 use db::Database;
 use delivery::{Ingested, PROTOCOL_GRPC};
+use futures_util::StreamExt;
 use grpc_conn::{GrpcClientRegistry, TrackingIncoming};
 use subscribers::{InflightAcks, TopicSubscribers};
 use tokio::sync::mpsc;
-use tokio_stream::{wrappers::ReceiverStream, StreamExt};
+use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::{transport::Server, Request, Response, Status, Streaming};
 use tracing::{error, info, warn};
 use uuid::Uuid;
+use writer::QueueWriter;
 
 pub mod proto {
     tonic::include_proto!("dispatcher.v1");
 }
+use crate::model::{DeliveryMode, PersistenceMode, TopicConfig};
 use proto::{
     cache_service_server::CacheServiceServer,
     message_queue_server::{MessageQueue, MessageQueueServer},
     AcceptMessageRequest, AcceptMessageResponse, AckMessageRequest, AckMessageResponse,
-    ConfigureTopicsRequest, ConfigureTopicsResponse, ListTopicsRequest, ListTopicsResponse,
-    RegisterRequest, RegisterResponse, SatwayMessage, SubscribeRequest, TopicConfig as ProtoTopicConfig,
-    UnregisterRequest, UnregisterResponse,
+    AckMessagesRequest, AckMessagesResponse, ConfigureTopicsRequest, ConfigureTopicsResponse,
+    ListTopicsRequest, ListTopicsResponse, RegisterRequest, RegisterResponse, SatwayMessage,
+    SubscribeRequest, TopicConfig as ProtoTopicConfig, UnregisterRequest, UnregisterResponse,
 };
-use crate::model::{DeliveryMode, PersistenceMode, TopicConfig};
 
 #[derive(Clone)]
 struct QueueService {
     db: Database,
+    writer: QueueWriter,
     config: Arc<Config>,
     subscribers: TopicSubscribers,
     inflight: InflightAcks,
@@ -87,37 +91,32 @@ impl MessageQueue for QueueService {
             &auth::metadata_client_version(request.metadata()),
             &auth::metadata_client_host(request.metadata()),
         );
-        let mut inbound = request.into_inner();
-        let (tx, rx) = mpsc::channel(16);
+        let inbound = request.into_inner();
+        let ingest_inflight = self.config.ingest_inflight.max(1);
+        let (tx, rx) = mpsc::channel(ingest_inflight);
         let db = self.db.clone();
+        let writer = self.writer.clone();
         let subscribers = self.subscribers.clone();
         let log_messages = self.config.log_messages;
-        tokio::spawn(async move {
-            while let Some(message) = inbound.next().await {
-                let message = match message {
-                    Ok(message) => message,
-                    Err(error) => {
-                        let _ = tx.send(Err(error)).await;
-                        break;
-                    }
-                };
+        let responses = inbound
+            .map(move |message| {
+                let db = db.clone();
+                let writer = writer.clone();
+                let subscribers = subscribers.clone();
+                async move {
+                let message = message?;
                 if message.topic.trim().is_empty() {
-                    let _ = tx
-                        .send(Err(Status::invalid_argument("topic is required")))
-                        .await;
-                    continue;
+                    return Err(Status::invalid_argument("topic is required"));
                 }
                 if message.payload.is_empty() {
-                    let _ = tx
-                        .send(Err(Status::invalid_argument("payload is required")))
-                        .await;
-                    continue;
+                    return Err(Status::invalid_argument("payload is required"));
                 }
-                let topic = message.topic.trim();
+                let topic = message.topic.trim().to_string();
                 match crate::delivery::ingest(
                     &db,
+                    &writer,
                     &subscribers,
-                    topic,
+                    &topic,
                     &message.payload,
                     message.attributes,
                     Some(&message.idempotency_key),
@@ -127,36 +126,26 @@ impl MessageQueue for QueueService {
                 {
                     Ok(Ingested::Dropped { message_id }) => {
                         info!(topic, id = %message_id, "ephemeral message dropped: no live subscriber");
-                        if tx
-                            .send(Ok(AcceptMessageResponse {
-                                message_id,
-                                duplicate: false,
-                            }))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
+                        Ok(AcceptMessageResponse { message_id, duplicate: false })
                     }
                     Ok(Ingested::Queued {
                         message_id,
                         duplicate,
-                    }) => {
-                        if tx
-                            .send(Ok(AcceptMessageResponse { message_id, duplicate }))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
+                    }) => Ok(AcceptMessageResponse { message_id, duplicate }),
                     Err(error) => {
                         error!(%error, "queue write failed");
-                        let _ = tx
-                            .send(Err(Status::internal("could not persist message")))
-                            .await;
-                        break;
+                        Err(Status::internal("could not persist message"))
                     }
+                }
+                }
+            })
+            .buffered(ingest_inflight);
+        tokio::spawn(async move {
+            tokio::pin!(responses);
+            while let Some(response) = responses.next().await {
+                let failed = response.is_err();
+                if tx.send(response).await.is_err() || failed {
+                    break;
                 }
             }
         });
@@ -238,7 +227,8 @@ impl MessageQueue for QueueService {
         if !consumer_id.is_empty() {
             let _ = self.db.touch_consumer(&consumer_id).await;
             if version.is_empty() {
-                if let Ok(Some(stored)) = self.db.consumer_attribute(&consumer_id, "version").await {
+                if let Ok(Some(stored)) = self.db.consumer_attribute(&consumer_id, "version").await
+                {
                     version = stored;
                 }
             }
@@ -256,6 +246,7 @@ impl MessageQueue for QueueService {
         let (tx, rx) = mpsc::channel(16);
         crate::delivery::spawn_subscribe_loop(crate::delivery::SubscribeLoop {
             db: self.db.clone(),
+            writer: self.writer.clone(),
             config: self.config.clone(),
             subscribers: self.subscribers.clone(),
             inflight: self.inflight.clone(),
@@ -331,12 +322,39 @@ impl MessageQueue for QueueService {
     ) -> Result<Response<AckMessageResponse>, Status> {
         let ack = request.into_inner();
         if ack.message_id.is_empty() || ack.lease.is_empty() {
-            return Err(Status::invalid_argument("message_id and lease are required"));
+            return Err(Status::invalid_argument(
+                "message_id and lease are required",
+            ));
         }
         let accepted = self
             .inflight
             .complete(&ack.message_id, &ack.lease, ack.success, ack.error);
         Ok(Response::new(AckMessageResponse { accepted }))
+    }
+
+    async fn ack_messages(
+        &self,
+        request: Request<AckMessagesRequest>,
+    ) -> Result<Response<AckMessagesResponse>, Status> {
+        let request = request.into_inner();
+        if request.acknowledgements.is_empty() {
+            return Err(Status::invalid_argument("acknowledgements are required"));
+        }
+        let mut accepted = 0u32;
+        for ack in request.acknowledgements {
+            if ack.message_id.is_empty() || ack.lease.is_empty() {
+                return Err(Status::invalid_argument(
+                    "message_id and lease are required",
+                ));
+            }
+            if self
+                .inflight
+                .complete(&ack.message_id, &ack.lease, ack.success, ack.error)
+            {
+                accepted = accepted.saturating_add(1);
+            }
+        }
+        Ok(Response::new(AckMessagesResponse { accepted }))
     }
 }
 
@@ -350,6 +368,14 @@ async fn main() -> anyhow::Result<()> {
         built = crate::logging::format_wall_time(env!("BUILD_TIME")),
         "cangling-broker starting"
     );
+    info!(
+        write_batch_size = config.write_batch_size,
+        write_batch_wait_ms = config.write_batch_wait_ms,
+        write_queue_size = config.write_queue_size,
+        ingest_inflight = config.ingest_inflight,
+        consumer_prefetch = config.consumer_prefetch,
+        "queue performance settings"
+    );
     if let Some(dir) = config.log_dir() {
         info!(
             dir = %dir.display(),
@@ -360,6 +386,12 @@ async fn main() -> anyhow::Result<()> {
     }
     let db = Database::connect(&config.database_url()).await?;
     let db_for_shutdown = db.clone();
+    let (queue_writer, queue_writer_task) = QueueWriter::start(
+        db.clone(),
+        config.write_queue_size,
+        config.write_batch_size,
+        Duration::from_millis(config.write_batch_wait_ms),
+    );
     let shutdown = CancellationToken::new();
     let subscribers = TopicSubscribers::default();
     let inflight = InflightAcks::default();
@@ -369,6 +401,7 @@ async fn main() -> anyhow::Result<()> {
     info!(address = %status_addr, "HTTP status listening");
     let mqtt_ctx = mqtt::MqttCtx {
         db: db.clone(),
+        writer: queue_writer.clone(),
         config: config.clone(),
         subscribers: subscribers.clone(),
         inflight: inflight.clone(),
@@ -439,6 +472,7 @@ async fn main() -> anyhow::Result<()> {
             .add_service(MessageQueueServer::with_interceptor(
                 QueueService {
                     db: db.clone(),
+                    writer: queue_writer.clone(),
                     config,
                     subscribers,
                     inflight,
@@ -473,6 +507,8 @@ async fn main() -> anyhow::Result<()> {
     }
     .await;
 
+    queue_writer.shutdown().await;
+    let _ = queue_writer_task.await;
     db_for_shutdown.close().await;
 
     if let Err(error) = shutdown_result {
@@ -493,7 +529,6 @@ async fn wait_for_shutdown() {
             _ = ctrl_c => {}
             _ = sigterm.recv() => {}
         }
-        return;
     }
     #[cfg(not(unix))]
     {
@@ -649,8 +684,8 @@ async fn retention_loop(
                 })
                 .unwrap_or(true);
         if due_idle_purge {
-            let cutoff = chrono::Utc::now()
-                - chrono::Duration::hours(config.ephemeral_idle_hours as i64);
+            let cutoff =
+                chrono::Utc::now() - chrono::Duration::hours(config.ephemeral_idle_hours as i64);
             let keep = subscribers.topics();
             match db.purge_idle_ephemeral(&cutoff.to_rfc3339(), &keep).await {
                 Ok(0) => {}

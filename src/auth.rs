@@ -100,7 +100,10 @@ pub fn apply_client_metadata(
 }
 
 pub fn metadata_token(metadata: &MetadataMap) -> Option<String> {
-    if let Some(value) = metadata.get(METADATA_AUTHORIZATION).and_then(|v| v.to_str().ok()) {
+    if let Some(value) = metadata
+        .get(METADATA_AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
         let token = bearer_or_raw(value);
         if !token.is_empty() {
             return Some(token.to_string());
@@ -159,10 +162,7 @@ mod tests {
     fn reads_client_version_header() {
         let mut metadata = MetadataMap::new();
         assert_eq!(metadata_client_version(&metadata), "");
-        metadata.insert(
-            METADATA_X_CLIENT_VERSION,
-            "java/0.1.29".parse().unwrap(),
-        );
+        metadata.insert(METADATA_X_CLIENT_VERSION, "java/0.1.29".parse().unwrap());
         metadata.insert(METADATA_X_CLIENT_HOST, "worker-a".parse().unwrap());
         assert_eq!(metadata_client_version(&metadata), "java/0.1.29");
         assert_eq!(metadata_client_host(&metadata), "worker-a");

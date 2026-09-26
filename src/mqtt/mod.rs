@@ -1,7 +1,10 @@
 mod codec;
 mod session;
 
-use std::{collections::HashMap, sync::{Arc, Mutex}};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use axum::{
     extract::{ws::WebSocketUpgrade, ConnectInfo, State},
@@ -17,11 +20,13 @@ use crate::{
     config::Config,
     db::Database,
     subscribers::{InflightAcks, TopicSubscribers},
+    writer::QueueWriter,
 };
 
 #[derive(Clone)]
 pub struct MqttCtx {
     pub db: Database,
+    pub writer: QueueWriter,
     pub config: Arc<Config>,
     pub subscribers: TopicSubscribers,
     pub inflight: InflightAcks,
@@ -73,7 +78,10 @@ impl ClientRegistry {
 
     pub fn remove_if(&self, client_id: &str, token: &CancellationToken) {
         let mut registry = self.0.lock().expect("mqtt registry");
-        if registry.get(client_id).is_some_and(|stored| stored.token == *token) {
+        if registry
+            .get(client_id)
+            .is_some_and(|stored| stored.token == *token)
+        {
             registry.remove(client_id);
         }
     }
@@ -174,7 +182,10 @@ mod tests {
         },
     };
     use std::time::Duration;
-    use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpStream,
+    };
     use uuid::Uuid;
 
     async fn temp_ctx() -> (MqttCtx, std::path::PathBuf) {
@@ -183,8 +194,11 @@ mod tests {
         let db = Database::connect(&format!("sqlite:{}/queue.db", dir.display()))
             .await
             .unwrap();
+        let (writer, _writer_task) =
+            QueueWriter::start(db.clone(), 256, 32, Duration::from_millis(1));
         let ctx = MqttCtx {
             db,
+            writer,
             config: Arc::new(Config::test_default()),
             subscribers: TopicSubscribers::default(),
             inflight: InflightAcks::default(),
@@ -248,7 +262,11 @@ mod tests {
         assert!(session::authorized_for_test(None, None, None));
         assert!(session::authorized_for_test(Some("tok"), None, Some("tok")));
         assert!(session::authorized_for_test(Some("tok"), Some("tok"), None));
-        assert!(!session::authorized_for_test(Some("tok"), Some("no"), Some("no")));
+        assert!(!session::authorized_for_test(
+            Some("tok"),
+            Some("no"),
+            Some("no")
+        ));
         assert!(!session::authorized_for_test(Some("tok"), None, None));
     }
 
@@ -389,7 +407,10 @@ mod tests {
             other => panic!("{other:?}"),
         }
         let late = tokio::time::timeout(Duration::from_millis(150), read_packet(&mut sub)).await;
-        assert!(late.is_err(), "hash filter must not receive unrelated topics");
+        assert!(
+            late.is_err(),
+            "hash filter must not receive unrelated topics"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -605,7 +626,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(80)).await;
 
         let config = ctx.db.topic_config("keep/#").await.unwrap();
-        assert_eq!(config.persistence, crate::model::PersistenceMode::Persistent);
+        assert_eq!(
+            config.persistence,
+            crate::model::PersistenceMode::Persistent
+        );
         assert_eq!(
             ctx.db.topic_config("keep/child").await.unwrap().persistence,
             crate::model::PersistenceMode::Ephemeral
@@ -683,8 +707,12 @@ mod tests {
         )
         .await;
         assert!(matches!(read_packet(&mut late).await, Packet::SubAck(_)));
-        let late_msg = tokio::time::timeout(Duration::from_millis(150), read_packet(&mut late)).await;
-        assert!(late_msg.is_err(), "ephemeral publish must not wait for a later subscriber");
+        let late_msg =
+            tokio::time::timeout(Duration::from_millis(150), read_packet(&mut late)).await;
+        assert!(
+            late_msg.is_err(),
+            "ephemeral publish must not wait for a later subscriber"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -692,9 +720,11 @@ mod tests {
     async fn ingest_queues_for_live_mqtt_topic() {
         let (ctx, dir) = temp_ctx().await;
         let (tx, _rx) = delivery_channel();
-        ctx.subscribers.add("jobs", "mqtt:c1", tx, "127.0.0.1:1", "mqtt", "3.1.1", "");
+        ctx.subscribers
+            .add("jobs", "mqtt:c1", tx, "127.0.0.1:1", "mqtt", "3.1.1", "");
         let ingested = crate::delivery::ingest(
             &ctx.db,
+            &ctx.writer,
             &ctx.subscribers,
             "jobs",
             b"x",

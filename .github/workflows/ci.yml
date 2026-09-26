@@ -110,6 +110,10 @@ jobs:
         with:
           shared-key: ${{ matrix.name }}-release
           cache-on-failure: true
+      - name: Test broker
+        run: cargo test --locked
+      - name: Lint broker
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Compile broker
         run: cargo build --release --locked --bin cangling-broker
       - name: Compile receiver example

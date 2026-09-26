@@ -23,6 +23,10 @@ service MessageQueue {
   // Confirm or reject a message received from Subscribe.
   rpc AckMessage(AckMessageRequest) returns (AckMessageResponse);
 
+  // Confirm or reject several delivered messages in one round trip. Older
+  // clients may continue to use AckMessage.
+  rpc AckMessages(AckMessagesRequest) returns (AckMessagesResponse);
+
   // Create or replace delivery and persistence for many topics at once.
   // delivery is "single" (competing consumers) or "broadcast" (every live stream).
   // persistence is "persistent" (store and deliver later) or "ephemeral"
@@ -93,6 +97,14 @@ message AckMessageRequest {
 
 message AckMessageResponse {
   bool accepted = 1;
+}
+
+message AckMessagesRequest {
+  repeated AckMessageRequest acknowledgements = 1;
+}
+
+message AckMessagesResponse {
+  uint32 accepted = 1;
 }
 
 message TopicConfig {

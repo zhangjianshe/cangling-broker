@@ -47,6 +47,26 @@ pub struct Config {
     #[arg(long, env = "WORKER_POLL_MS", default_value_t = 500)]
     pub worker_poll_ms: u64,
 
+    /// Maximum persistent publishes committed in one SQLite transaction.
+    #[arg(long, env = "CL_BROKER_WRITE_BATCH_SIZE", default_value_t = 128)]
+    pub write_batch_size: usize,
+
+    /// Maximum time to collect a persistent publish batch before committing it.
+    #[arg(long, env = "CL_BROKER_WRITE_BATCH_WAIT_MS", default_value_t = 2)]
+    pub write_batch_wait_ms: u64,
+
+    /// Capacity of the in-memory queue in front of the single SQLite writer.
+    #[arg(long, env = "CL_BROKER_WRITE_QUEUE_SIZE", default_value_t = 8192)]
+    pub write_queue_size: usize,
+
+    /// Maximum publishes processed concurrently on one gRPC producer stream.
+    #[arg(long, env = "CL_BROKER_INGEST_INFLIGHT", default_value_t = 128)]
+    pub ingest_inflight: usize,
+
+    /// Maximum unacknowledged persistent messages sent on one subscription.
+    #[arg(long, env = "CL_BROKER_CONSUMER_PREFETCH", default_value_t = 32)]
+    pub consumer_prefetch: usize,
+
     #[arg(long, env = "MAX_DELIVERY_ATTEMPTS", default_value_t = 10)]
     pub max_delivery_attempts: i64,
 
@@ -57,7 +77,11 @@ pub struct Config {
     /// Delete delivered messages whose `delivered_at` is older than this many
     /// hours. Pending, processing, failed, and dropped rows are left alone.
     /// 0 disables. Independent of `MESSAGE_RETENTION_DAYS`.
-    #[arg(long, env = "CL_BROKER_DELIVERED_RETENTION_HOURS", default_value_t = 24)]
+    #[arg(
+        long,
+        env = "CL_BROKER_DELIVERED_RETENTION_HOURS",
+        default_value_t = 24
+    )]
     pub delivered_retention_hours: u64,
 
     /// Delete unconfigured ephemeral topic rows that have not received a
@@ -162,6 +186,11 @@ impl Config {
             data_dir: None,
             downstream_url: None,
             worker_poll_ms: 20,
+            write_batch_size: 32,
+            write_batch_wait_ms: 1,
+            write_queue_size: 256,
+            ingest_inflight: 32,
+            consumer_prefetch: 8,
             max_delivery_attempts: 10,
             message_retention_days: 0,
             delivered_retention_hours: 0,
