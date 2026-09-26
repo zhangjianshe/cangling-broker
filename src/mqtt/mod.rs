@@ -8,6 +8,7 @@ use std::{
 
 use axum::{
     extract::{ws::WebSocketUpgrade, ConnectInfo, State},
+    http::HeaderMap,
     response::IntoResponse,
     routing::get,
     Router,
@@ -156,18 +157,55 @@ pub async fn serve_ws(listener: TcpListener, ctx: MqttCtx) -> anyhow::Result<()>
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
+    headers: HeaderMap,
     peer: Option<ConnectInfo<std::net::SocketAddr>>,
     State(ctx): State<MqttCtx>,
 ) -> impl IntoResponse {
-    let peer = peer
-        .map(|ConnectInfo(addr)| addr.to_string())
-        .unwrap_or_else(|| "mqtt-ws".into());
+    let peer = websocket_peer(&headers, peer.map(|ConnectInfo(addr)| addr));
     ws.protocols(["mqtt", "mqttv3.1"])
         .on_upgrade(move |socket| async move {
             if let Err(error) = session::run_ws(socket, peer, ctx).await {
                 warn!(%error, "mqtt websocket session ended");
             }
         })
+}
+
+/// MQTT WebSocket is normally exposed by an internal reverse proxy. Trust its
+/// forwarding headers by default so the dashboard records the browser's
+/// address rather than the proxy container address. Invalid or absent headers
+/// fall back to the actual TCP peer.
+fn websocket_peer(headers: &HeaderMap, socket_peer: Option<std::net::SocketAddr>) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .and_then(normalize_forwarded_ip)
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|value| value.to_str().ok())
+                .and_then(normalize_forwarded_ip)
+        })
+        .unwrap_or_else(|| {
+            socket_peer
+                .map(|addr| addr.to_string())
+                .unwrap_or_else(|| "mqtt-ws".into())
+        })
+}
+
+fn normalize_forwarded_ip(value: &str) -> Option<String> {
+    let value = value.trim().trim_matches('"');
+    if let Ok(addr) = value.parse::<std::net::SocketAddr>() {
+        return Some(addr.ip().to_string());
+    }
+    let unbracketed = value
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(value);
+    unbracketed
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .map(|ip| ip.to_string())
 }
 
 #[cfg(test)]
@@ -187,6 +225,33 @@ mod tests {
         net::TcpStream,
     };
     use uuid::Uuid;
+
+    #[test]
+    fn websocket_peer_prefers_first_forwarded_address() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "203.0.113.9, 172.19.0.8".parse().unwrap(),
+        );
+        headers.insert("x-real-ip", "198.51.100.7".parse().unwrap());
+        let socket_peer = "172.19.0.8:43102".parse().unwrap();
+
+        assert_eq!(websocket_peer(&headers, Some(socket_peer)), "203.0.113.9");
+    }
+
+    #[test]
+    fn websocket_peer_uses_real_ip_then_socket_peer() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-real-ip", "2001:db8::8".parse().unwrap());
+        let socket_peer = "172.19.0.8:43102".parse().unwrap();
+
+        assert_eq!(websocket_peer(&headers, Some(socket_peer)), "2001:db8::8");
+        headers.insert("x-real-ip", "not-an-ip".parse().unwrap());
+        assert_eq!(
+            websocket_peer(&headers, Some(socket_peer)),
+            "172.19.0.8:43102"
+        );
+    }
 
     async fn temp_ctx() -> (MqttCtx, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("cangling-broker-mqtt-{}", Uuid::new_v4()));

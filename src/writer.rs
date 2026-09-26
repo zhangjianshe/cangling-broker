@@ -155,11 +155,18 @@ impl QueueWriter {
         let stats_worker = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(100));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut trend_interval = tokio::time::interval(Duration::from_secs(10));
+            trend_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         if let Err(error) = stats_db.flush_topic_stats().await {
                             tracing::warn!(%error, "periodic topic stats flush failed");
+                        }
+                    }
+                    _ = trend_interval.tick() => {
+                        if let Err(error) = stats_db.flush_message_trends().await {
+                            tracing::warn!(%error, "periodic message trends flush failed");
                         }
                     }
                     changed = stats_shutdown_rx.changed() => {
@@ -171,6 +178,9 @@ impl QueueWriter {
             }
             if let Err(error) = stats_db.flush_topic_stats().await {
                 tracing::warn!(%error, "final topic stats flush failed");
+            }
+            if let Err(error) = stats_db.flush_message_trends().await {
+                tracing::warn!(%error, "final message trends flush failed");
             }
         });
         let handle = tokio::spawn(async move {

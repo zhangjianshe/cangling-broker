@@ -29,6 +29,7 @@ pub struct Database(
     Arc<Vec<SqlitePool>>,
     Arc<AtomicUsize>,
     Arc<Mutex<HashMap<String, TopicStatsDelta>>>,
+    Arc<Mutex<HashMap<String, MessageTrendDelta>>>,
 );
 
 const MESSAGE_SHARDS: usize = 16;
@@ -38,6 +39,19 @@ struct TopicStatsDelta {
     accepted: i64,
     duplicates: i64,
     delivered: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MessageTrendDelta {
+    accepted: i64,
+    delivered: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MessageTrendPoint {
+    pub minute: String,
+    pub accepted: i64,
+    pub delivered: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +218,16 @@ impl Database {
         .execute(&pool)
         .await
         .context("creating SQLite topic stats schema")?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS message_trend_minute (
+                minute TEXT PRIMARY KEY NOT NULL,
+                accepted INTEGER NOT NULL DEFAULT 0,
+                delivered INTEGER NOT NULL DEFAULT 0
+            ) WITHOUT ROWID",
+        )
+        .execute(&pool)
+        .await
+        .context("creating minute message trend schema")?;
         let _ = sqlx::query(
             "ALTER TABLE topic_stats ADD COLUMN delivery TEXT NOT NULL DEFAULT 'single'",
         )
@@ -350,6 +374,7 @@ impl Database {
             Arc::new(shards),
             Arc::new(AtomicUsize::new(0)),
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
         ))
     }
 
@@ -460,6 +485,9 @@ impl Database {
         if let Err(error) = self.flush_topic_stats().await {
             tracing::warn!(%error, "topic stats flush failed during shutdown");
         }
+        if let Err(error) = self.flush_message_trends().await {
+            tracing::warn!(%error, "message trends flush failed during shutdown");
+        }
         if let Err(error) = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
             .execute(&self.0)
             .await
@@ -501,6 +529,7 @@ impl Database {
             .bind(Utc::now().to_rfc3339())
             .execute(&self.0)
             .await?;
+        self.record_message_trend(accepted, delivered);
         Ok(())
     }
 
@@ -510,6 +539,109 @@ impl Database {
         entry.accepted += delta.accepted;
         entry.duplicates += delta.duplicates;
         entry.delivered += delta.delivered;
+        self.record_message_trend(delta.accepted, delta.delivered);
+    }
+
+    fn record_message_trend(&self, accepted: i64, delivered: i64) {
+        if accepted == 0 && delivered == 0 {
+            return;
+        }
+        let minute = Utc::now().format("%Y-%m-%dT%H:%M:00Z").to_string();
+        let mut trends = self.6.lock().expect("message trend delta cache");
+        let trend = trends.entry(minute).or_default();
+        trend.accepted += accepted;
+        trend.delivered += delivered;
+    }
+
+    pub(crate) async fn flush_message_trends(&self) -> anyhow::Result<usize> {
+        let pending = {
+            let mut guard = self.6.lock().expect("message trend delta cache");
+            std::mem::take(&mut *guard)
+        };
+        if pending.is_empty() {
+            return Ok(0);
+        }
+        let result = async {
+            let mut tx = self.0.begin().await?;
+            for (minute, delta) in &pending {
+                sqlx::query(
+                    "INSERT INTO message_trend_minute (minute, accepted, delivered)
+                     VALUES (?, ?, ?)
+                     ON CONFLICT(minute) DO UPDATE SET
+                        accepted = message_trend_minute.accepted + excluded.accepted,
+                        delivered = message_trend_minute.delivered + excluded.delivered",
+                )
+                .bind(minute)
+                .bind(delta.accepted)
+                .bind(delta.delivered)
+                .execute(&mut *tx)
+                .await?;
+            }
+            let cutoff = (Utc::now() - chrono::Duration::days(7))
+                .format("%Y-%m-%dT%H:%M:00Z")
+                .to_string();
+            sqlx::query("DELETE FROM message_trend_minute WHERE minute < ?")
+                .bind(cutoff)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = result {
+            let mut guard = self.6.lock().expect("message trend delta cache");
+            for (minute, delta) in pending {
+                let entry = guard.entry(minute).or_default();
+                entry.accepted += delta.accepted;
+                entry.delivered += delta.delivered;
+            }
+            return Err(error);
+        }
+        Ok(pending.len())
+    }
+
+    pub async fn message_trends(&self, minutes: u32) -> anyhow::Result<Vec<MessageTrendPoint>> {
+        let minutes = minutes.clamp(10, 1440);
+        let cutoff = (Utc::now() - chrono::Duration::minutes(i64::from(minutes - 1)))
+            .format("%Y-%m-%dT%H:%M:00Z")
+            .to_string();
+        let rows = sqlx::query(
+            "SELECT minute, accepted, delivered FROM message_trend_minute
+             WHERE minute >= ? ORDER BY minute",
+        )
+        .bind(&cutoff)
+        .fetch_all(&self.0)
+        .await?;
+        let mut points: HashMap<String, MessageTrendPoint> = rows
+            .into_iter()
+            .map(|row| {
+                let minute: String = row.get("minute");
+                (
+                    minute.clone(),
+                    MessageTrendPoint {
+                        minute,
+                        accepted: row.get("accepted"),
+                        delivered: row.get("delivered"),
+                    },
+                )
+            })
+            .collect();
+        let pending = self.6.lock().expect("message trend delta cache").clone();
+        for (minute, delta) in pending {
+            if minute < cutoff {
+                continue;
+            }
+            let point = points.entry(minute.clone()).or_insert(MessageTrendPoint {
+                minute,
+                accepted: 0,
+                delivered: 0,
+            });
+            point.accepted += delta.accepted;
+            point.delivered += delta.delivered;
+        }
+        let mut points: Vec<_> = points.into_values().collect();
+        points.sort_unstable_by(|left, right| left.minute.cmp(&right.minute));
+        Ok(points)
     }
 
     pub(crate) async fn flush_topic_stats(&self) -> anyhow::Result<usize> {
@@ -2202,6 +2334,36 @@ mod tests {
         let configured = db.topic_config("fresh").await.unwrap();
         assert_eq!(configured.delivery, DeliveryMode::Single);
         assert_eq!(configured.persistence, PersistenceMode::Persistent);
+
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn message_trends_aggregate_accepts_and_deliveries_by_minute() {
+        let (db, dir) = temp_db().await;
+        db.enqueue(None, "jobs", b"payload", HashMap::new())
+            .await
+            .unwrap();
+        let claimed = db
+            .claim_next_for_topic("jobs", Duration::from_secs(30))
+            .await
+            .unwrap()
+            .unwrap();
+        db.delivered(&claimed.id, &claimed.lease).await.unwrap();
+        db.record_live_fanout("live").await.unwrap();
+
+        let live = db.message_trends(60).await.unwrap();
+        assert_eq!(live.iter().map(|point| point.accepted).sum::<i64>(), 2);
+        assert_eq!(live.iter().map(|point| point.delivered).sum::<i64>(), 2);
+
+        db.flush_message_trends().await.unwrap();
+        let persisted = db.message_trends(60).await.unwrap();
+        assert_eq!(persisted.iter().map(|point| point.accepted).sum::<i64>(), 2);
+        assert_eq!(
+            persisted.iter().map(|point| point.delivered).sum::<i64>(),
+            2
+        );
 
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);

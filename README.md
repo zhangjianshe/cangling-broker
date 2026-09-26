@@ -199,6 +199,8 @@ curl -s -H 'authorization: Bearer change-me' http://127.0.0.1:7501/status
 
 `/` is a single HTML page that refreshes from `/status`. `/status` is the JSON and includes `version`, `git`, `built`, and `db_bytes` (the control database plus all 16 message shards and their WAL/SHM sidecars). Each `clients[]` entry includes `version` when the client sent `x-client-version` (Java/Python SDKs do this automatically) or, for MQTT, the protocol version (`3.1` / `3.1.1`). Official SDKs also send `x-client-host` (Docker `HOSTNAME`, or use `CL_BROKER_CLIENT_HOST` to override) so the dashboard can tell containers apart when they all NAT through the same gateway IP. `consumers` / `streams` is the number of live `Subscribe` streams. The dashboard card **SQLite** shows the same size. Click a **persistent** topic to open its consumers and browse saved messages (`GET /messages?topic=...&offset=0`, offset `0` is the latest). Ephemeral topics do not store payloads. **清空** on a topic row deletes that topic's messages (`DELETE /messages?topic=...`) and resets its counters.
 
+Dashboard 的 **消息趋势** TAB 按分钟绘制“接收”和“分发”两条折线，可选择最近 1、3、6、24 小时。接口为 `GET /message-trends?minutes=180`，`minutes` 被限制在 10–1440。热路径只在内存中累加计数，后台每 10 秒批量 UPSERT 当前分钟数据；查询时会合并尚未落库的增量，因此无需为了页面的 2 秒状态刷新频繁写 SQLite。分钟数据保留 7 天，每分钟固定一行，不扫描 16 个消息分片。
+
 The header links to three pages: **消息** (status overview, connected clients, topics and per-topic message browsing), **缓存** (cache key lookup / write / delete / increment plus a full key list), and **分布式锁** (lock status / acquire / renew / release plus a full lock list). The cache and lock pages refresh from `GET /cache/keys` and `GET /lock/list`.
 
 Behind a reverse proxy at `/msg/`, open `/msg/?token=change-me`. The page calls `status` next to itself (`/msg/status`), not `/status` on the site root. If nginx strips the prefix (`proxy_pass http://broker:7501/;`), that is enough. If the proxy forwards `/msg/status` unchanged, set `CL_BROKER_WEB_BASE=/msg` so the broker also serves the dashboard and JSON under that prefix.
@@ -570,11 +572,58 @@ client.subscribe("cangling-test");
 client.publish("cangling-test", "hello");
 ```
 
+### MQTT WebSocket 反向代理与真实客户端 IP
+
+cangling-broker 默认信任 MQTT WebSocket 握手中的代理地址头：优先读取
+`X-Forwarded-For` 的第一个有效 IP，其次读取 `X-Real-IP`；两个请求头都不存在或
+内容无效时，回退为与 broker 建立 TCP 连接的对端地址。该默认行为面向 broker
+只暴露在内部容器网络、由受控 Nginx 代理访问的部署方式。不要将 WebSocket 端口
+直接暴露给不可信客户端并同时依赖这些请求头做安全鉴权；这些头只用于连接信息展示。
+
+Nginx 代理 MQTT WebSocket 时必须显式传递真实地址。若系统同时使用带 `/ib`
+前缀和不带前缀的入口，两个 location 都应配置：
+
+```nginx
+location ^~ /ib/events/mqtt {
+    proxy_pass http://cis_mqtt/mqtt;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+location ^~ /events/mqtt {
+    proxy_pass http://cis_mqtt/mqtt;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+如果 Nginx 前面还有负载均衡器，需要先在 Nginx 中仅信任负载均衡器网段，并恢复
+真实 `$remote_addr`，避免把外部伪造的 `X-Forwarded-For` 继续向后传递：
+
+```nginx
+set_real_ip_from 10.0.0.0/8;       # 改为实际可信代理网段
+real_ip_header X-Forwarded-For;
+real_ip_recursive on;
+```
+
+代理头通常只携带客户端 IP，不携带可靠的源端口，因此 Dashboard 中 MQTT-WS 的
+“地址”可能只显示 IP；未经过反向代理的连接仍显示 `IP:端口`。
+
 A gRPC `AcceptMessages` publish is delivered to MQTT subscribers on that topic, and the other way around.
 
 ## 数据库 ER
 
-`topic_stats`、`consumers` 和管理表位于 `<data>/queue.db`；`messages` 表位于固定的 16 个 `queue-NN.db` 分片中。没有声明跨库 `FOREIGN KEY`，逻辑外键是 `topic`。列、默认值和索引以 `src/db.rs` 为准。
+`topic_stats`、`message_trend_minute`、`consumers` 和管理表位于 `<data>/queue.db`；`messages` 表位于固定的 16 个 `queue-NN.db` 分片中。没有声明跨库 `FOREIGN KEY`，逻辑外键是 `topic`。列、默认值和索引以 `src/db.rs` 为准。`message_trend_minute` 以 UTC 分钟为主键，仅保存全局 `accepted`、`delivered` 聚合计数。
 
 `topic_stats.topic` 可以是精确名，也可以是 MQTT 订约 filter（`building/#`、`sensor/+/temp`）。`messages.topic` 永远是精确发布名。只有包含 `#` 或 `+` 的通配符订约会单独占一行 `topic_stats`（`persistence=persistent`，`configured=0`），这样 idle purge 不会删掉已订约的 filter；精确订约以及发布出来的子主题（如 `/ibuser/1/task-id`、`building/floor1/temp`）仍按 ephemeral 处理，空闲后可被回收。
 

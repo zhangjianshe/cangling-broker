@@ -154,6 +154,7 @@ fn status_routes(state: StatusState) -> Router {
         .route("/", get(page))
         .route("/health", get(health))
         .route("/status", get(status))
+        .route("/message-trends", get(message_trends))
         .route("/topics", get(list_topics).post(configure_topics))
         .route("/messages", get(topic_message).delete(clear_topic_messages))
         .route(
@@ -221,6 +222,23 @@ async fn page(State(state): State<StatusState>) -> Html<String> {
 
 async fn health() -> Json<Health> {
     Json(Health { ok: true })
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageTrendQuery {
+    minutes: Option<u32>,
+}
+
+async fn message_trends(
+    State(state): State<StatusState>,
+    Query(query): Query<MessageTrendQuery>,
+) -> Result<Json<Vec<crate::db::MessageTrendPoint>>, StatusCode> {
+    state
+        .db
+        .message_trends(query.minutes.unwrap_or(180))
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1295,6 +1313,10 @@ mod tests {
         assert!(!html.contains(r#"fetch("/status""#), "{html}");
         assert!(html.contains("data-tab=\"clients\""), "{html}");
         assert!(html.contains("data-tab=\"topics\""), "{html}");
+        assert!(html.contains("data-tab=\"trends\""), "{html}");
+        assert!(html.contains("message-trends"), "{html}");
+        assert!(html.contains("trend-accepted"), "{html}");
+        assert!(html.contains("trend-delivered"), "{html}");
         assert!(html.contains("withPagers("), "{html}");
         assert!(html.contains("client.version"), "{html}");
         assert!(html.contains("client.host"), "{html}");

@@ -246,6 +246,26 @@
       border-bottom-color: var(--accent-emphasis);
       font-weight: 600;
     }
+    .trend-panel {
+      background: var(--bg-2);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      padding: 16px;
+    }
+    .trend-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .trend-head h2 { color: var(--text); margin: 0; }
+    .trend-controls { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+    .trend-controls select { background: var(--bg-3); color: var(--text); border: 1px solid var(--line); padding: 6px 8px; }
+    .trend-legend { display: flex; gap: 18px; margin-bottom: 8px; color: var(--muted); font-size: 13px; }
+    .trend-legend span::before { content: ""; display: inline-block; width: 18px; height: 3px; margin-right: 7px; vertical-align: middle; }
+    .trend-legend .accepted::before { background: var(--accent-emphasis); }
+    .trend-legend .delivered::before { background: var(--live); }
+    .trend-chart { width: 100%; min-height: 330px; overflow: hidden; }
+    .trend-chart svg { display: block; width: 100%; height: 330px; }
+    .trend-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 4 4; }
+    .trend-axis-label { fill: var(--muted); font-size: 12px; }
+    .trend-accepted { fill: none; stroke: var(--accent-emphasis); stroke-width: 2.5; }
+    .trend-delivered { fill: none; stroke: var(--live); stroke-width: 2.5; }
     table { width: 100%; border-collapse: collapse; background: var(--bg-2); }
     th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
     th { color: var(--muted); font-weight: 700; }
@@ -476,6 +496,13 @@
       margin: 10px 0;
       color: var(--muted);
     }
+    .pager.has-filter {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(260px, 420px) minmax(0, 1fr);
+    }
+    .pager.has-filter .btns { justify-self: start; }
+    .pager.has-filter .pager-filter { justify-self: center; width: 100%; }
+    .pager.has-filter .pager-summary { justify-self: end; text-align: right; }
     .pager.top { margin-top: 0; }
     .pager.bottom { margin-bottom: 0; }
     .pager .btns { display: flex; align-items: center; gap: 8px; }
@@ -499,14 +526,14 @@
       border-color: var(--accent-emphasis);
       box-shadow: 0 0 0 3px var(--bg-active);
     }
-    .table-tools {
+    .pager-filter {
       display: flex;
-      flex-wrap: wrap;
       align-items: center;
-      gap: 10px 16px;
-      margin-bottom: 10px;
+      justify-content: center;
+      gap: 8px;
+      min-width: 0;
     }
-    .table-tools label {
+    .pager-filter label {
       display: flex;
       flex-wrap: nowrap;
       align-items: center;
@@ -515,32 +542,34 @@
       flex: 0 0 auto;
       color: var(--muted);
     }
-    .table-tools label span {
+    .pager-filter label span {
       flex: 0 0 auto;
       white-space: nowrap;
     }
-    .table-tools select,
-    .table-tools input {
+    .pager-filter select,
+    .pager-filter input {
       background: var(--bg-input);
       border: 1px solid var(--line);
       color: var(--text);
       padding: 9px 11px;
       outline: none;
     }
-    .table-tools select { flex: 0 0 auto; }
+    .pager-filter select { flex: 0 0 auto; }
     #topic-name-filter {
       width: 250px;
       min-width: 250px;
       flex: 0 0 250px;
     }
-    .table-tools select:focus,
-    .table-tools input:focus {
+    .pager-filter select:focus,
+    .pager-filter input:focus {
       border-color: var(--accent-emphasis);
       box-shadow: 0 0 0 3px var(--bg-active);
     }
     @media (max-width: 720px) {
       header { height: auto; padding: 12px 16px; }
       .page { padding: 16px; }
+      .pager.has-filter { display: flex; }
+      .pager.has-filter .pager-filter { order: 3; flex: 1 0 100%; }
     }
   </style>
 </head>
@@ -571,27 +600,30 @@
     <div class="tabs" role="tablist">
       <button type="button" role="tab" id="tab-clients" data-tab="clients" aria-controls="panel-clients" aria-selected="true" class="active">已连接客户端</button>
       <button type="button" role="tab" id="tab-topics" data-tab="topics" aria-controls="panel-topics" aria-selected="false">主题</button>
+      <button type="button" role="tab" id="tab-trends" data-tab="trends" aria-controls="panel-trends" aria-selected="false">消息趋势</button>
     </div>
     <section id="panel-clients" role="tabpanel" aria-labelledby="tab-clients">
-      <div class="table-tools">
-        <label><span>连接类型</span>
-          <select id="client-type-filter" aria-label="按连接类型筛选">
-            <option value="">全部</option>
-            <option value="grpc">gRPC</option>
-            <option value="mqtt">MQTT</option>
-            <option value="mqtt-ws">MQTT-WS</option>
-          </select>
-        </label>
-      </div>
       <div id="clients"></div>
     </section>
     <section id="panel-topics" role="tabpanel" aria-labelledby="tab-topics" hidden>
-      <div class="table-tools">
-        <label><span>主题名</span>
-          <input id="topic-name-filter" type="search" placeholder="模糊搜索，空格分隔多个词" aria-label="模糊搜索主题名">
-        </label>
-      </div>
       <div id="topics"></div>
+    </section>
+    <section id="panel-trends" role="tabpanel" aria-labelledby="tab-trends" hidden>
+      <div class="trend-panel">
+        <div class="trend-head">
+          <h2>每分钟消息数量</h2>
+          <label class="trend-controls"><span>时间范围</span>
+            <select id="trend-minutes" aria-label="消息趋势时间范围">
+              <option value="60">最近 1 小时</option>
+              <option value="180" selected>最近 3 小时</option>
+              <option value="360">最近 6 小时</option>
+              <option value="1440">最近 24 小时</option>
+            </select>
+          </label>
+        </div>
+        <div class="trend-legend"><span class="accepted">接收</span><span class="delivered">分发</span></div>
+        <div id="message-trend-chart" class="trend-chart"><div class="empty">正在加载消息趋势…</div></div>
+      </div>
     </section>
   </div>
   </section>
@@ -687,10 +719,10 @@
     function currentTab() {
       const parts = location.hash.replace(/^#/, "").split("/");
       const tab = parts[1];
-      if (tab === "topics" || tab === "clients") return tab;
+      if (tab === "topics" || tab === "clients" || tab === "trends") return tab;
       try {
         const saved = localStorage.getItem(TAB_KEY);
-        if (saved === "topics" || saved === "clients") return saved;
+        if (saved === "topics" || saved === "clients" || saved === "trends") return saved;
       } catch (_) {}
       return "clients";
     }
@@ -703,6 +735,7 @@
       });
       $("panel-clients").hidden = tab !== "clients";
       $("panel-topics").hidden = tab !== "topics";
+      $("panel-trends").hidden = tab !== "trends";
     }
 
     function writeHash(view, tab) {
@@ -711,10 +744,11 @@
     }
 
     function setTab(name) {
-      const tab = name === "topics" ? "topics" : "clients";
+      const tab = name === "topics" || name === "trends" ? name : "clients";
       try { localStorage.setItem(TAB_KEY, tab); } catch (_) {}
       applyTab(tab);
       writeHash(currentView(), tab);
+      if (tab === "trends") loadMessageTrends(true);
     }
 
     function setView(name) {
@@ -775,6 +809,10 @@
     let lastClients = [];
     let lastCache = [];
     let lastLocks = [];
+    let lastTrendLoadedAt = 0;
+    let trendLoading = false;
+    let lastTrendPoints = [];
+    let lastTrendMinutes = 180;
     let selectedClientKey = "";
     let selectedTopicName = "";
     let clientTypeFilter = "";
@@ -1031,17 +1069,36 @@
       return topics.filter((item) => fuzzyMatch(item.name, topicNameQuery));
     }
 
+    function clientFilterHtml() {
+      return '<div class="pager-filter"><label><span>连接类型</span>' +
+        '<select id="client-type-filter" aria-label="按连接类型筛选">' +
+        '<option value=""' + (clientTypeFilter ? "" : " selected") + '>全部</option>' +
+        '<option value="grpc"' + (clientTypeFilter === "grpc" ? " selected" : "") + '>gRPC</option>' +
+        '<option value="mqtt"' + (clientTypeFilter === "mqtt" ? " selected" : "") + '>MQTT</option>' +
+        '<option value="mqtt-ws"' + (clientTypeFilter === "mqtt-ws" ? " selected" : "") + '>MQTT-WS</option>' +
+        '</select></label></div>';
+    }
+
+    function topicFilterHtml() {
+      return '<div class="pager-filter"><label><span>主题名</span>' +
+        '<input id="topic-name-filter" type="search" value="' + escapeHtml(topicNameQuery) +
+        '" placeholder="模糊搜索，空格分隔多个词" aria-label="模糊搜索主题名">' +
+        '</label></div>';
+    }
+
     function renderClients(clients) {
       lastClients = clients;
       $("tab-clients").textContent = "已连接客户端" + (clients.length ? " · " + clients.length : "");
       const shown = filteredClients(clients);
       if (!clients.length) {
         selectedClientKey = "";
-        $("clients").innerHTML = '<div class="empty">暂无已连接客户端</div>';
+        $("clients").innerHTML = pagerBar(0, 0, 0, 1, 1, "client-page", "top", clientFilterHtml()) +
+          '<div class="empty">暂无已连接客户端</div>';
         return;
       }
       if (!shown.length) {
-        $("clients").innerHTML = '<div class="empty">无匹配该连接类型的客户端</div>';
+        $("clients").innerHTML = pagerBar(0, 0, 0, 1, 1, "client-page", "top", clientFilterHtml()) +
+          '<div class="empty">无匹配该连接类型的客户端</div>';
         return;
       }
       if (selectedClientKey && !shown.some((item) => clientKey(item) === selectedClientKey)) {
@@ -1072,7 +1129,7 @@
         "<th class=\"seq\">序号</th><th>主机</th><th>地址</th><th>类型</th><th>客户端</th><th>版本</th><th>订阅数</th><th>连接时长</th>" +
         "</tr></thead><tbody>" + rows + "</tbody></table></div>";
       $("clients").innerHTML =
-        withPagers(table, from, to, shown.length, clientPage + 1, pages, "client-page") +
+        withPagers(table, from, to, shown.length, clientPage + 1, pages, "client-page", clientFilterHtml()) +
         clientDetailHtml();
     }
 
@@ -1112,10 +1169,10 @@
       return 10;
     }
 
-    function pagerBar(from, to, total, page, pages, kind, pos) {
+    function pagerBar(from, to, total, page, pages, kind, pos, filterHtml) {
       const sizeKind = kind.replace(/-page$/, "");
       const size = pageSizeOf(sizeKind);
-      return '<div class="pager ' + (pos || "") + '">' +
+      return '<div class="pager ' + (pos || "") + (filterHtml ? " has-filter" : "") + '">' +
         '<span class="btns">' +
         '<button type="button" data-' + kind + '="prev"' + (page <= 1 ? " disabled" : "") + ">上一页</button>" +
         '<button type="button" data-' + kind + '="next"' + (page >= pages ? " disabled" : "") + ">下一页</button>" +
@@ -1123,12 +1180,13 @@
         '<input type="number" min="1" max="200" value="' + size +
         '" data-page-size="' + sizeKind + '" aria-label="每页条数"></label>' +
         "</span>" +
-        "<span>第 " + from + "–" + to + " 条，共 " + total +
+        (filterHtml || "") +
+        '<span class="pager-summary">第 ' + from + "–" + to + " 条，共 " + total +
         " 条 · 第 " + page + "/" + pages + " 页</span></div>";
     }
 
-    function withPagers(tableHtml, from, to, total, page, pages, kind) {
-      return pagerBar(from, to, total, page, pages, kind, "top") +
+    function withPagers(tableHtml, from, to, total, page, pages, kind, filterHtml) {
+      return pagerBar(from, to, total, page, pages, kind, "top", filterHtml) +
         tableHtml +
         pagerBar(from, to, total, page, pages, kind, "bottom");
     }
@@ -1208,12 +1266,14 @@
       $("tab-topics").textContent = "主题" + (topics.length ? " · " + topics.length : "");
       const shown = filteredTopics(topics);
       if (!topics.length) {
-        $("topics").innerHTML = '<div class="empty">暂无主题</div>';
+        $("topics").innerHTML = pagerBar(0, 0, 0, 1, 1, "topic-page", "top", topicFilterHtml()) +
+          '<div class="empty">暂无主题</div>';
         fillTopicModal();
         return;
       }
       if (!shown.length) {
-        $("topics").innerHTML = '<div class="empty">无匹配主题</div>';
+        $("topics").innerHTML = pagerBar(0, 0, 0, 1, 1, "topic-page", "top", topicFilterHtml()) +
+          '<div class="empty">无匹配主题</div>';
         fillTopicModal();
         return;
       }
@@ -1225,7 +1285,7 @@
       const to = Math.min(shown.length, start + topicPageSize);
       $("topics").innerHTML = withPagers(
         topicsTable(shown.slice(start, start + topicPageSize), start),
-        from, to, shown.length, topicPage + 1, pages, "topic-page"
+        from, to, shown.length, topicPage + 1, pages, "topic-page", topicFilterHtml()
       );
       fillTopicModal();
     }
@@ -1345,15 +1405,23 @@
       }
     });
 
-    $("client-type-filter").addEventListener("change", (event) => {
-      clientTypeFilter = event.target.value || "";
-      clientPage = 0;
-      renderClients(lastClients);
-    });
-    $("topic-name-filter").addEventListener("input", (event) => {
+    document.addEventListener("input", (event) => {
+      if (event.target.id !== "topic-name-filter") return;
       topicNameQuery = event.target.value || "";
       topicPage = 0;
       renderTopics(lastTopics);
+      const input = $("topic-name-filter");
+      if (input) {
+        input.focus();
+        input.setSelectionRange(topicNameQuery.length, topicNameQuery.length);
+      }
+    });
+
+    document.addEventListener("change", (event) => {
+      if (event.target.id !== "client-type-filter") return;
+      clientTypeFilter = event.target.value || "";
+      clientPage = 0;
+      renderClients(lastClients);
     });
 
     function parsePageSize(value) {
@@ -1536,6 +1604,73 @@
       }
     }
 
+    function renderMessageTrends(points, minutes) {
+      lastTrendPoints = points || [];
+      lastTrendMinutes = minutes;
+      const byMinute = new Map((points || []).map((point) => [point.minute, point]));
+      const now = new Date();
+      now.setUTCSeconds(0, 0);
+      const series = [];
+      for (let index = minutes - 1; index >= 0; index--) {
+        const date = new Date(now.getTime() - index * 60000);
+        const key = date.toISOString().replace(/\.000Z$/, "Z");
+        const point = byMinute.get(key) || {};
+        series.push({ date, accepted: Number(point.accepted) || 0, delivered: Number(point.delivered) || 0 });
+      }
+      const chart = $("message-trend-chart");
+      const width = Math.max(640, Math.floor(chart.clientWidth || 1000));
+      const height = 330, left = 64, right = 18, top = 16, bottom = 42;
+      const plotWidth = width - left - right, plotHeight = height - top - bottom;
+      const rawMax = Math.max(1, ...series.map((point) => Math.max(point.accepted, point.delivered)));
+      const magnitude = Math.pow(10, Math.max(0, Math.floor(Math.log10(rawMax))));
+      const yMax = Math.ceil(rawMax / magnitude) * magnitude;
+      const x = (index) => left + (series.length <= 1 ? 0 : index * plotWidth / (series.length - 1));
+      const y = (value) => top + plotHeight - value * plotHeight / yMax;
+      const path = (field) => series.map((point, index) =>
+        (index ? "L" : "M") + x(index).toFixed(1) + " " + y(point[field]).toFixed(1)).join(" ");
+      let grid = "";
+      for (let index = 0; index <= 4; index++) {
+        const value = Math.round(yMax * (4 - index) / 4);
+        const py = top + plotHeight * index / 4;
+        grid += '<line class="trend-grid" x1="' + left + '" y1="' + py + '" x2="' + (width - right) + '" y2="' + py + '"></line>' +
+          '<text class="trend-axis-label" x="' + (left - 10) + '" y="' + (py + 4) + '" text-anchor="end">' + String(value) + '</text>';
+      }
+      let labels = "";
+      for (let index = 0; index <= 5; index++) {
+        const position = Math.round((series.length - 1) * index / 5);
+        const date = series[position].date;
+        labels += '<text class="trend-axis-label" x="' + x(position) + '" y="' + (height - 14) + '" text-anchor="middle">' +
+          pad2(date.getHours()) + ':' + pad2(date.getMinutes()) + '</text>';
+      }
+      chart.innerHTML = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="每分钟接收和分发消息折线图">' +
+        grid + labels + '<path class="trend-accepted" d="' + path("accepted") + '"></path>' +
+        '<path class="trend-delivered" d="' + path("delivered") + '"></path></svg>';
+    }
+
+    let trendResizeTimer = 0;
+    window.addEventListener("resize", () => {
+      if (currentTab() !== "trends" || !lastTrendPoints.length) return;
+      clearTimeout(trendResizeTimer);
+      trendResizeTimer = setTimeout(() => renderMessageTrends(lastTrendPoints, lastTrendMinutes), 100);
+    });
+
+    async function loadMessageTrends(force) {
+      if (trendLoading || currentTab() !== "trends") return;
+      const now = Date.now();
+      if (!force && now - lastTrendLoadedAt < 10000) return;
+      trendLoading = true;
+      try {
+        const minutes = parseInt($("trend-minutes").value, 10) || 180;
+        const data = await apiRequest("message-trends", { query: { minutes } });
+        renderMessageTrends(data || [], minutes);
+        lastTrendLoadedAt = Date.now();
+      } catch (error) {
+        $("message-trend-chart").innerHTML = '<div class="empty">无法加载消息趋势：' + escapeHtml(error.message) + '</div>';
+      } finally {
+        trendLoading = false;
+      }
+    }
+
     async function cacheOp(op) {
       const key = $("cache-key").value.trim();
       const value = $("cache-value").value;
@@ -1616,12 +1751,14 @@
 
     async function refresh() {
       await refreshStatus();
+      if (currentView() === "messages" && currentTab() === "trends") loadMessageTrends(false);
       if (currentView() === "cache") loadCache();
       if (currentView() === "lock") loadLocks();
     }
 
     $("cache-refresh").addEventListener("click", loadCache);
     $("lock-refresh").addEventListener("click", loadLocks);
+    $("trend-minutes").addEventListener("change", () => loadMessageTrends(true));
     document.addEventListener("click", (event) => {
       const cacheBtn = event.target.closest("[data-cache-op]");
       if (cacheBtn) {
