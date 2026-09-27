@@ -1312,6 +1312,8 @@ mod tests {
         assert!(html.contains("apiUrl(\"status\")"), "{html}");
         assert!(!html.contains(r#"fetch("/status""#), "{html}");
         assert!(html.contains("data-tab=\"clients\""), "{html}");
+        assert!(html.contains("data-tab=\"summary\""), "{html}");
+        assert!(html.contains("id=\"panel-summary\""), "{html}");
         assert!(html.contains("data-tab=\"topics\""), "{html}");
         assert!(html.contains("data-tab=\"trends\""), "{html}");
         assert!(html.contains("message-trends"), "{html}");
@@ -1338,6 +1340,11 @@ mod tests {
         assert!(html.contains("sizeKind"), "{html}");
         assert!(html.contains("data-view=\"cache\""), "{html}");
         assert!(html.contains("data-view=\"lock\""), "{html}");
+        assert!(html.contains("data-view=\"about\""), "{html}");
+        assert!(html.contains("id=\"about-version\""), "{html}");
+        assert!(html.contains("id=\"about-built\""), "{html}");
+        assert!(html.contains("id=\"about-git\""), "{html}");
+        assert!(html.contains("Copyright © imagebot.cn"), "{html}");
         assert!(html.contains("cache/keys"), "{html}");
         assert!(html.contains("lock/list"), "{html}");
         assert!(html.contains("renderCache("), "{html}");
