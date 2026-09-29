@@ -7,9 +7,11 @@ mod grpc_conn;
 mod logging;
 mod model;
 mod mqtt;
+mod password_policy;
 mod status;
 mod subscribers;
 mod topic;
+mod web_auth;
 mod writer;
 
 use std::{pin::Pin, sync::Arc, time::Duration};
@@ -17,7 +19,7 @@ use std::{pin::Pin, sync::Arc, time::Duration};
 use auth::AuthInterceptor;
 use cache::CacheService;
 use clap::Parser;
-use config::Config;
+use config::{Command, Config};
 use db::Database;
 use delivery::{Ingested, PROTOCOL_GRPC};
 use futures_util::StreamExt;
@@ -360,8 +362,16 @@ impl MessageQueue for QueueService {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = Arc::new(Config::parse());
+    let config = Config::parse();
     let _log_guard = logging::init(&config)?;
+    if let Some(Command::ResetPassword { password }) = &config.command {
+        let database = Database::connect(&config.database_url()).await?;
+        let auth = web_auth::WebAuth::open(&config.database_url()).await?;
+        let result = auth.reset_password(password.clone()).await;
+        database.close().await;
+        return result;
+    }
+    let config = Arc::new(config);
     info!(
         version = env!("CARGO_PKG_VERSION"),
         git = env!("GIT_HASH"),
@@ -385,6 +395,10 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let db = Database::connect(&config.database_url()).await?;
+    let web_auth = Arc::new(web_auth::WebAuth::open(&config.database_url()).await?);
+    web_auth
+        .ensure_initial_admin(config.admin_password.as_deref())
+        .await?;
     let db_for_shutdown = db.clone();
     let (queue_writer, queue_writer_task) = QueueWriter::start(
         db.clone(),
@@ -445,6 +459,7 @@ async fn main() -> anyhow::Result<()> {
         mqtt_on_status.then(|| mqtt_ctx.clone()),
         mqtt_ctx.registry.clone(),
         grpc_clients.clone(),
+        web_auth,
     ));
     let worker = tokio::spawn(dispatch_loop(
         db.clone(),

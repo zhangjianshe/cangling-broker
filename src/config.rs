@@ -1,10 +1,23 @@
 use std::{net::SocketAddr, path::PathBuf};
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum Command {
+    /// Reset the Dashboard administrator password.
+    ResetPassword {
+        /// New password; omitted to generate and print one once.
+        #[arg(short, long)]
+        password: Option<String>,
+    },
+}
 
 #[derive(Debug, Clone, Parser)]
 #[command(about = "Durable gRPC message dispatcher")]
 pub struct Config {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// gRPC listen port (`0.0.0.0:<port>`).
     #[arg(long, env = "CL_BROKER_PORT", default_value_t = 7500)]
     pub port: u16,
@@ -35,6 +48,14 @@ pub struct Config {
     /// (`authorization: Bearer <token>` or `x-auth-token`). Empty disables auth.
     #[arg(long, env = "CL_BROKER_AUTH_TOKEN")]
     pub auth_token: Option<String>,
+
+    /// Initial Dashboard administrator password; only used when no administrator exists.
+    #[arg(long, env = "CL_BROKER_ADMIN_PASSWORD")]
+    pub admin_password: Option<String>,
+
+    /// Add Secure to the Dashboard session cookie when served behind HTTPS.
+    #[arg(long, env = "CL_BROKER_SECURE_COOKIES", default_value_t = false)]
+    pub secure_cookies: bool,
 
     /// Data directory. SQLite is `<dir>/queue.db`, logs are `<dir>/logs`.
     #[arg(long, env = "CL_BROKER_DATA")]
@@ -176,6 +197,7 @@ fn sqlite_url(dir: &str) -> String {
 impl Config {
     pub fn test_default() -> Self {
         Self {
+            command: None,
             port: 7500,
             web_port: 7501,
             mqtt_enabled: true,
@@ -183,6 +205,8 @@ impl Config {
             mqtt_ws_port: 8083,
             web_base: String::new(),
             auth_token: None,
+            admin_password: None,
+            secure_cookies: false,
             data_dir: None,
             downstream_url: None,
             worker_poll_ms: 20,

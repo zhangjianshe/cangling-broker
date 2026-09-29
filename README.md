@@ -4,7 +4,7 @@ A small, Kafka-like building block. Producers and consumers use **gRPC streams**
 
 Unconfigured topics default to **broadcast** + **ephemeral** (MQTT-style: every live stream gets a copy; a publish with nobody listening is dropped). Set a topic to **single** for competing consumers (one live stream gets each message). Set a topic to **persistent** to queue and deliver later. `Register` only stores extra consumer metadata. `DOWNSTREAM_URL` is an optional HTTP fallback when a **persistent** topic has no live stream.
 
-Set `CL_BROKER_AUTH_TOKEN` on the broker for production. Clients must send the same value as `authorization: Bearer <token>` (or `--token` / `CL_BROKER_AUTH_TOKEN`). Unset keeps the broker open.
+Set `CL_BROKER_AUTH_TOKEN` on the broker for production. gRPC, MQTT, and HTTP cache/lock writes use this service token. Dashboard reads are public; topic configuration and message deletion require an administrator login, and the service token cannot replace the administrator session.
 
 ## Run it
 
@@ -60,7 +60,7 @@ cd .test
   --token change-me
 ```
 
-The subscriber should print `s0 received | <message_id> | hello`. Status UI: [http://127.0.0.1:7501/?token=change-me](http://127.0.0.1:7501/?token=change-me).
+The subscriber should print `s0 received | <message_id> | hello`. Status UI: [http://127.0.0.1:7501/](http://127.0.0.1:7501/).
 
 Rust consumer:
 
@@ -190,12 +190,14 @@ The gRPC API definition is [`proto/queue.proto`](proto/queue.proto). Generate a 
 Broker internals are on a separate HTTP port (`CL_BROKER_WEBPORT`, default `7501`):
 
 ```bash
-# dashboard (pass the token when CL_BROKER_AUTH_TOKEN is set)
-open 'http://127.0.0.1:7501/?token=change-me'
+# dashboard (reads are public; use the administrator login for management)
+open 'http://127.0.0.1:7501/'
 
 curl -s http://127.0.0.1:7501/health
-curl -s -H 'authorization: Bearer change-me' http://127.0.0.1:7501/status
+curl -s http://127.0.0.1:7501/status
 ```
+
+On first start the broker creates `admin`; its password is `CL_BROKER_ADMIN_PASSWORD`, or `-Cangling@zky` when unset. Change it immediately. The administrator session is stored in an HttpOnly Cookie and expires after two idle hours. `cangling-broker reset-password` resets the password and invalidates old sessions; omit `-p` to generate a policy-compliant password.
 
 `/` is a single HTML page that refreshes from `/status`. `/status` is the JSON and includes `version`, `git`, `built`, and `db_bytes` (the control database plus all 16 message shards and their WAL/SHM sidecars). Each `clients[]` entry includes `version` when the client sent `x-client-version` (Java/Python SDKs do this automatically) or, for MQTT, the protocol version (`3.1` / `3.1.1`). Official SDKs also send `x-client-host` (Docker `HOSTNAME`, or use `CL_BROKER_CLIENT_HOST` to override) so the dashboard can tell containers apart when they all NAT through the same gateway IP. `consumers` / `streams` is the number of live `Subscribe` streams. The dashboard card **SQLite** shows the same size. Click a **persistent** topic to open its consumers and browse saved messages (`GET /messages?topic=...&offset=0`, offset `0` is the latest). Ephemeral topics do not store payloads. **清空** on a topic row deletes that topic's messages (`DELETE /messages?topic=...`) and resets its counters.
 
@@ -203,7 +205,7 @@ Dashboard 的 **消息趋势** TAB 按分钟绘制“接收”和“分发”两
 
 The header links to three pages: **消息** (status overview, connected clients, topics and per-topic message browsing), **缓存** (cache key lookup / write / delete / increment plus a full key list), and **分布式锁** (lock status / acquire / renew / release plus a full lock list). The cache and lock pages refresh from `GET /cache/keys` and `GET /lock/list`.
 
-Behind a reverse proxy at `/msg/`, open `/msg/?token=change-me`. The page calls `status` next to itself (`/msg/status`), not `/status` on the site root. If nginx strips the prefix (`proxy_pass http://broker:7501/;`), that is enough. If the proxy forwards `/msg/status` unchanged, set `CL_BROKER_WEB_BASE=/msg` so the broker also serves the dashboard and JSON under that prefix.
+Behind a reverse proxy at `/msg/`, open `/msg/`. The page calls `status` next to itself (`/msg/status`), not `/status` on the site root. If nginx strips the prefix (`proxy_pass http://broker:7501/;`), that is enough. If the proxy forwards `/msg/status` unchanged, set `CL_BROKER_WEB_BASE=/msg` so the broker also serves the dashboard and JSON under that prefix. Administrator login uses the same relative path and session Cookie, so no credential needs to appear in the URL.
 
 ### Competing consumers
 
@@ -221,10 +223,13 @@ On a **single** topic, each message is claimed by one live stream. On a **broadc
 
 ### Topic delivery mode
 
-Unconfigured topics are `broadcast` + `ephemeral`. Configure many topics at once:
+Unconfigured topics are `broadcast` + `ephemeral`. Log in as administrator, save the Cookie, and configure many topics at once:
 
 ```bash
-curl -s -H 'authorization: Bearer change-me' \
+curl -s -c admin.cookies -H 'content-type: application/json' \
+  -d '{"password":"-Cangling@zky"}' http://127.0.0.1:7501/auth/login
+
+curl -s -b admin.cookies \
   -H 'content-type: application/json' \
   -d '{"topics":[
         {"topic":"jobs","delivery":"single","persistence":"persistent"},
@@ -233,7 +238,7 @@ curl -s -H 'authorization: Bearer change-me' \
       ]}' \
   http://127.0.0.1:7501/topics
 
-curl -s -H 'authorization: Bearer change-me' http://127.0.0.1:7501/topics
+curl -s http://127.0.0.1:7501/topics
 ```
 
 gRPC: `ConfigureTopics` / `ListTopics`. Java: `client.configureTopics(List.of(TopicConfig.broadcast("alerts"), TopicConfig.single("jobs"), TopicConfig.ephemeral("live-events", TopicConfig.BROADCAST)))`. Python: `client.configure_topics([TopicConfig("alerts", "broadcast"), TopicConfig("jobs", "single"), TopicConfig("live-events", "broadcast", "ephemeral")])`.
@@ -279,7 +284,7 @@ without expiry, and the remaining seconds otherwise. Locks require an `owner` to
 `release` and `renew` only succeed for the owner that holds the lock, and a lease
 never outlives its `ttl_seconds` (so a crashed holder cannot deadlock others).
 
-HTTP (same Bearer token as the rest of the dashboard):
+HTTP reads are public. Mutating cache and lock requests require the service Bearer token when `CL_BROKER_AUTH_TOKEN` is configured:
 
 ```bash
 curl -s -H 'authorization: Bearer change-me' 'http://127.0.0.1:7501/cache?key=jobs:count'
@@ -517,7 +522,12 @@ write-limited container volumes can behave very differently from local NVMe.
 | `CL_BROKER_MQTT_ENABLED` | `true` | accept MQTT 3.1.1 clients; `false` disables both MQTT listeners |
 | `CL_BROKER_MQTT_PORT` | `7883` | MQTT TCP listener. `0` disables TCP. Unprivileged default; map `1883:7883` or set `1883` if you can bind it |
 | `CL_BROKER_MQTT_WSPORT` | `8083` | MQTT WebSocket listener (`/mqtt`). `0` attaches `GET /mqtt` to the status port |
-| `CL_BROKER_AUTH_TOKEN` | unset | shared secret; when set, gRPC, `/` `/status`, and MQTT `CONNECT` require it. `/health` stays open |
+| `CL_BROKER_AUTH_TOKEN` | unset | service token for gRPC, MQTT, and HTTP cache/lock writes; it cannot perform Dashboard management actions |
+| `CL_BROKER_ADMIN_PASSWORD` | `-Cangling@zky` | initial Dashboard administrator password, used only when no administrator exists |
+| `CL_BROKER_SECURE_COOKIES` | `false` | add `Secure` to the administrator Cookie behind HTTPS |
+| `CL_BROKER_PASSWORD_REGEX` | default strong-password rule | administrator password validation regex |
+| `CL_BROKER_PASSWORD_HINT` | default rule description | validation error text |
+| `CL_BROKER_PASSWORD_GENERATED_LENGTH` | `8` | generated `reset-password` length, from 8 through 128 |
 | `CL_BROKER_DATA` | unset (image: `/data`) | data dir; control DB is `<dir>/queue.db`, message shards are `<dir>/queue-00.db` … `queue-15.db`, logs are `<dir>/logs` |
 | `DOWNSTREAM_URL` | unset | optional HTTP POST fallback when a topic has no live `Subscribe` stream |
 | `WORKER_POLL_MS` | `500` | queue polling interval |

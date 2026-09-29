@@ -1,10 +1,10 @@
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use axum::{
     extract::{Query, State},
-    http::{header::AUTHORIZATION, Request, StatusCode},
+    http::{header, header::AUTHORIZATION, HeaderMap, Request, StatusCode},
     middleware::{self, Next},
-    response::{Html, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -34,6 +34,8 @@ struct StatusState {
     started: Instant,
     auth_token: Option<String>,
     web_base: Option<String>,
+    web_auth: Arc<crate::web_auth::WebAuth>,
+    secure_cookies: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -112,6 +114,7 @@ pub async fn serve(
     mqtt: Option<crate::mqtt::MqttCtx>,
     mqtt_clients: crate::mqtt::ClientRegistry,
     grpc_clients: GrpcClientRegistry,
+    web_auth: Arc<crate::web_auth::WebAuth>,
 ) -> anyhow::Result<()> {
     let state = StatusState {
         db: db.clone(),
@@ -124,6 +127,8 @@ pub async fn serve(
         started: Instant::now(),
         auth_token: auth::normalize(config.auth_token.as_deref()),
         web_base: config.status_web_base(),
+        web_auth,
+        secure_cookies: config.secure_cookies,
     };
     let app = status_app(state, mqtt);
     axum::serve(
@@ -150,30 +155,44 @@ fn status_app(state: StatusState, mqtt: Option<crate::mqtt::MqttCtx>) -> Router 
 }
 
 fn status_routes(state: StatusState) -> Router {
-    Router::new()
+    let public = Router::new()
         .route("/", get(page))
         .route("/health", get(health))
         .route("/status", get(status))
         .route("/message-trends", get(message_trends))
-        .route("/topics", get(list_topics).post(configure_topics))
-        .route("/messages", get(topic_message).delete(clear_topic_messages))
+        .route("/topics", get(list_topics))
+        .route("/messages", get(topic_message))
+        .route("/auth/status", get(auth_status))
+        .route("/auth/login", post(login))
+        .route("/auth/logout", post(logout))
+        .route("/cache", get(cache_get))
+        .route("/cache/keys", get(cache_keys))
+        .route("/lock", get(lock_get))
+        .route("/lock/list", get(lock_list));
+    let service_writes = Router::new()
         .route(
             "/cache",
-            get(cache_get)
-                .put(cache_set)
+            axum::routing::put(cache_set)
                 .post(cache_set)
                 .delete(cache_delete),
         )
-        .route("/cache/keys", get(cache_keys))
         .route("/cache/incr", post(cache_incr))
-        .route("/lock", get(lock_get).delete(lock_release))
-        .route("/lock/list", get(lock_list))
+        .route("/lock", axum::routing::delete(lock_release))
         .route("/lock/acquire", post(lock_acquire))
         .route("/lock/renew", post(lock_renew))
-        .layer(middleware::from_fn_with_state(state.clone(), require_token))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
+    let admin = Router::new()
+        .route("/topics", post(configure_topics))
+        .route("/messages", axum::routing::delete(clear_topic_messages))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
+    Router::new()
+        .merge(public)
+        .merge(service_writes)
+        .merge(admin)
         .with_state(state)
 }
 
+#[cfg(test)]
 fn is_open_health_path(path: &str, web_base: Option<&str>) -> bool {
     if path == "/health" {
         return true;
@@ -197,9 +216,6 @@ async fn require_token(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    if is_open_health_path(request.uri().path(), state.web_base.as_deref()) {
-        return Ok(next.run(request).await);
-    }
     let Some(expected) = state.auth_token.as_deref() else {
         return Ok(next.run(request).await);
     };
@@ -214,6 +230,98 @@ async fn require_token(
         return Ok(next.run(request).await);
     }
     Err(StatusCode::UNAUTHORIZED)
+}
+
+async fn require_admin(
+    State(state): State<StatusState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let valid = if let Some(token) = crate::web_auth::cookie_token(request.headers()) {
+        state.web_auth.valid_session(token).await.unwrap_or(false)
+    } else {
+        false
+    };
+    if valid {
+        Ok(next.run(request).await)
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+#[derive(Deserialize)]
+struct LoginBody {
+    password: String,
+}
+
+#[derive(Serialize)]
+struct AuthStatus {
+    authenticated: bool,
+}
+
+async fn auth_status(State(state): State<StatusState>, headers: HeaderMap) -> Json<AuthStatus> {
+    let authenticated = match crate::web_auth::cookie_token(&headers) {
+        Some(token) => state.web_auth.valid_session(token).await.unwrap_or(false),
+        None => false,
+    };
+    Json(AuthStatus { authenticated })
+}
+
+fn cookie_path(state: &StatusState) -> String {
+    state.web_base.clone().unwrap_or_else(|| "/".to_owned())
+}
+
+async fn login(
+    State(state): State<StatusState>,
+    Json(body): Json<LoginBody>,
+) -> Result<Response, StatusCode> {
+    let token = state
+        .web_auth
+        .login(body.password)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let secure = if state.secure_cookies { "; Secure" } else { "" };
+    Ok((
+        [(
+            header::SET_COOKIE,
+            format!(
+                "cangling_broker_session={token}; HttpOnly; SameSite=Strict; Path={}; Max-Age=7200{secure}",
+                cookie_path(&state),
+            ),
+        )],
+        Json(AuthStatus {
+            authenticated: true,
+        }),
+    )
+        .into_response())
+}
+
+async fn logout(
+    State(state): State<StatusState>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    if let Some(token) = crate::web_auth::cookie_token(&headers) {
+        state
+            .web_auth
+            .logout(token)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    let secure = if state.secure_cookies { "; Secure" } else { "" };
+    Ok((
+        [(
+            header::SET_COOKIE,
+            format!(
+                "cangling_broker_session=; HttpOnly; SameSite=Strict; Path={}; Max-Age=0{secure}",
+                cookie_path(&state),
+            ),
+        )],
+        Json(AuthStatus {
+            authenticated: false,
+        }),
+    )
+        .into_response())
 }
 
 async fn page(State(state): State<StatusState>) -> Html<String> {

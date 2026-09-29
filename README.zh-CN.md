@@ -4,7 +4,7 @@
 
 未配置主题默认是 **broadcast**（广播）+ **ephemeral**（即弃）（MQTT 风格：每个在线流都收到一份；没人监听时发布即被丢弃）。把主题设为 **single**（单投）即竞争消费：每条消息只发给一个在线流。设为 **persistent**（持久）则先排队、稍后投递。`Register` 只保存额外的消费者元数据。当 **persistent** 主题没有在线流时，`DOWNSTREAM_URL` 是可选的 HTTP 回退。
 
-生产环境请给 broker 设置 `CL_BROKER_AUTH_TOKEN`。客户端必须用相同的值发送 `authorization: Bearer <token>`（或 `--token` / `CL_BROKER_AUTH_TOKEN`）。不设置则 broker 保持开放。
+生产环境请给 broker 设置 `CL_BROKER_AUTH_TOKEN`。gRPC、MQTT 以及缓存/分布式锁写入客户端使用该服务令牌；Dashboard 状态和其他 GET 浏览接口公开，主题配置与清空消息必须登录管理员，服务令牌不能代替管理员会话。
 
 ## 运行
 
@@ -60,7 +60,7 @@ cd .test
   --token change-me
 ```
 
-订阅者应打印 `s0 received | <message_id> | hello`。状态页：[http://127.0.0.1:7501/?token=change-me](http://127.0.0.1:7501/?token=change-me)。
+订阅者应打印 `s0 received | <message_id> | hello`。状态页：[http://127.0.0.1:7501/](http://127.0.0.1:7501/)。
 
 Rust 消费者：
 
@@ -190,18 +190,20 @@ gRPC API 定义见 [`proto/queue.proto`](proto/queue.proto)。用你喜欢的语
 Broker 内部接口在单独的 HTTP 端口上（`CL_BROKER_WEBPORT`，默认 `7501`）：
 
 ```bash
-# 仪表盘（设置了 CL_BROKER_AUTH_TOKEN 时请带上 token）
-open 'http://127.0.0.1:7501/?token=change-me'
+# 仪表盘（浏览无需令牌，管理操作请点“管理员登录”）
+open 'http://127.0.0.1:7501/'
 
 curl -s http://127.0.0.1:7501/health
-curl -s -H 'authorization: Bearer change-me' http://127.0.0.1:7501/status
+curl -s http://127.0.0.1:7501/status
 ```
+
+首次启动自动创建 `admin`，未配置 `CL_BROKER_ADMIN_PASSWORD` 时初始密码为 `-Cangling@zky`；请登录后立即修改。管理员会话保存在 HttpOnly Cookie 中，空闲两小时失效。执行 `cangling-broker reset-password` 可重置密码并注销全部旧会话；省略 `-p` 时生成符合密码策略的随机密码。
 
 `/` 是单个 HTML 页面，从 `/status` 刷新。`/status` 是 JSON，包含 `version`、`git`、`built` 以及 `db_bytes`（管理库、16 个消息分片及全部 WAL/SHM 的磁盘占用）。每个 `clients[]` 条目在客户端发送了 `x-client-version` 时包含 `version`（Java/Python SDK 会自动发送）；对 MQTT 则是协议版本（`3.1` / `3.1.1`）。官方 SDK 也会发送 `x-client-host`（Docker `HOSTNAME`，或用 `CL_BROKER_CLIENT_HOST` 覆盖），这样当容器都经同一网关 IP 做 NAT 时，仪表盘能区分它们。`consumers` / `streams` 是存活的 `Subscribe` 流数量。仪表盘卡片 **SQLite** 显示同样的占用大小。点击 **persistent** 主题可打开其消费者并浏览已保存消息（`GET /messages?topic=...&offset=0`，offset `0` 为最新）。即弃主题不保存消息体。主题行上的 **清空** 会删除该主题的消息（`DELETE /messages?topic=...`）并重置其计数。
 
 页头现在链接到三个页面：**消息**（状态概览、已连接客户端、主题及按主题浏览消息）、**缓存**（缓存的按键查询 / 写入 / 删除 / 自增，以及完整键列表）与 **分布式锁**（锁状态 / 获取 / 续期 / 释放，以及完整锁列表）。缓存与锁页面分别从 `GET /cache/keys` 与 `GET /lock/list` 刷新。
 
-在反向代理的 `/msg/` 路径后，打开 `/msg/?token=change-me`。页面会调用自身旁边的 `status`（`/msg/status`），而不是站点根部的 `/status`。如果 nginx 去掉了前缀（`proxy_pass http://broker:7501/;`），这就够了。如果代理原样转发 `/msg/status`，请设置 `CL_BROKER_WEB_BASE=/msg`，broker 也会在该前缀下提供仪表盘与 JSON。
+在反向代理的 `/msg/` 路径后，直接打开 `/msg/`。页面会调用自身旁边的 `status`（`/msg/status`），而不是站点根部的 `/status`。如果 nginx 去掉了前缀（`proxy_pass http://broker:7501/;`），这就够了。如果代理原样转发 `/msg/status`，请设置 `CL_BROKER_WEB_BASE=/msg`，broker 也会在该前缀下提供仪表盘与 JSON。管理员登录同样使用相对路径和会话 Cookie，无需把凭据放进 URL。
 
 ### 竞争消费
 
@@ -235,10 +237,13 @@ cd .test
 
 ### 主题投递模式
 
-未配置主题是 `broadcast` + `ephemeral`。可一次配置多个主题：
+未配置主题是 `broadcast` + `ephemeral`。可一次配置多个主题；先登录管理员并保存 Cookie：
 
 ```bash
-curl -s -H 'authorization: Bearer change-me' \
+curl -s -c admin.cookies -H 'content-type: application/json' \
+  -d '{"password":"-Cangling@zky"}' http://127.0.0.1:7501/auth/login
+
+curl -s -b admin.cookies \
   -H 'content-type: application/json' \
   -d '{"topics":[
         {"topic":"jobs","delivery":"single","persistence":"persistent"},
@@ -247,7 +252,7 @@ curl -s -H 'authorization: Bearer change-me' \
       ]}' \
   http://127.0.0.1:7501/topics
 
-curl -s -H 'authorization: Bearer change-me' http://127.0.0.1:7501/topics
+curl -s http://127.0.0.1:7501/topics
 ```
 
 gRPC：`ConfigureTopics` / `ListTopics`。Java：`client.configureTopics(List.of(TopicConfig.broadcast("alerts"), TopicConfig.single("jobs"), TopicConfig.ephemeral("live-events", TopicConfig.BROADCAST)))`。Python：`client.configure_topics([TopicConfig("alerts", "broadcast"), TopicConfig("jobs", "single"), TopicConfig("live-events", "broadcast", "ephemeral")])`。
@@ -283,7 +288,7 @@ broker 还提供一个小型 Redis 替代：带 TTL 与原子自增的 **内存*
 
 TTL 语义对齐 Redis：`Ttl` 对不存在的键返回 `-2`，对永不过期的键返回 `-1`，否则返回剩余秒数。锁需要 `owner` 令牌；`release` 与 `renew` 只对持有该锁的 owner 生效，租约不会超过其 `ttl_seconds`（因此崩溃的持有者不会让其他人死锁）。
 
-HTTP（使用与仪表盘其余部分相同的 Bearer token）：
+HTTP 读取接口公开；配置了 `CL_BROKER_AUTH_TOKEN` 时，缓存与锁的修改请求必须携带服务 Bearer token：
 
 ```bash
 curl -s -H 'authorization: Bearer change-me' 'http://127.0.0.1:7501/cache?key=jobs:count'
@@ -337,7 +342,12 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
 | `CL_BROKER_MQTT_ENABLED` | `true` | 接受 MQTT 3.1.1 客户端；`false` 禁用两个 MQTT 监听 |
 | `CL_BROKER_MQTT_PORT` | `7883` | MQTT TCP 监听。`0` 禁用 TCP。默认是非特权端口；映射 `1883:7883`，或能绑定就设 `1883` |
 | `CL_BROKER_MQTT_WSPORT` | `8083` | MQTT WebSocket 监听（`/mqtt`）。`0` 把 `GET /mqtt` 挂到状态端口 |
-| `CL_BROKER_AUTH_TOKEN` | 不设置 | 共享密钥；设置后，gRPC、`/` `/status` 与 MQTT `CONNECT` 都需要它。`/health` 保持开放 |
+| `CL_BROKER_AUTH_TOKEN` | 不设置 | gRPC、MQTT 及 HTTP 缓存/锁写接口的服务令牌；不能执行 Dashboard 管理操作 |
+| `CL_BROKER_ADMIN_PASSWORD` | `-Cangling@zky` | 首次启动的 Dashboard 管理员密码，仅在管理员不存在时使用 |
+| `CL_BROKER_SECURE_COOKIES` | `false` | HTTPS 反向代理下设为 `true`，为管理员会话 Cookie 增加 `Secure` |
+| `CL_BROKER_PASSWORD_REGEX` | 8–128 位且包含大小写和特殊字符 | 管理员密码校验规则 |
+| `CL_BROKER_PASSWORD_HINT` | 缺省规则中文提示 | 密码不符合规则时的提示 |
+| `CL_BROKER_PASSWORD_GENERATED_LENGTH` | `8` | `reset-password` 自动生成密码的长度，范围 8–128 |
 | `CL_BROKER_DATA` | 不设置（镜像：`/data`） | 数据目录；管理库为 `<dir>/queue.db`，消息库为 `queue-00.db`～`queue-15.db`，日志在 `<dir>/logs` |
 | `DOWNSTREAM_URL` | 不设置 | 主题没有在线 `Subscribe` 流时的可选 HTTP POST 回退 |
 | `WORKER_POLL_MS` | `500` | 队列轮询间隔 |
