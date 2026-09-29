@@ -33,6 +33,7 @@ pub struct MqttCtx {
     pub inflight: InflightAcks,
     pub shutdown: CancellationToken,
     pub registry: ClientRegistry,
+    pub auth_client: reqwest::Client,
 }
 
 #[derive(Clone, Debug)]
@@ -223,6 +224,7 @@ mod tests {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpStream,
+        sync::mpsc,
     };
     use uuid::Uuid;
 
@@ -271,6 +273,7 @@ mod tests {
             inflight: InflightAcks::default(),
             shutdown: CancellationToken::new(),
             registry: ClientRegistry::default(),
+            auth_client: reqwest::Client::new(),
         };
         (ctx, dir)
     }
@@ -282,6 +285,28 @@ mod tests {
             let _ = serve_tcp(listener, ctx).await;
         });
         addr
+    }
+
+    async fn start_auth_server(
+        status: axum::http::StatusCode,
+    ) -> (String, mpsc::Receiver<serde_json::Value>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, receiver) = mpsc::channel(1);
+        let app = axum::Router::new().route(
+            "/auth",
+            axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let sender = sender.clone();
+                async move {
+                    let _ = sender.send(body).await;
+                    status
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{address}/auth"), receiver)
     }
 
     async fn write_packet(stream: &mut TcpStream, packet: &Packet) {
@@ -372,6 +397,69 @@ mod tests {
                 clean_session: true,
                 keep_alive: 10,
                 client_id: "no-auth".into(),
+                username: None,
+                password: None,
+            }),
+        )
+        .await;
+        match read_packet(&mut stream).await {
+            Packet::ConnAck(ConnAck { code, .. }) => assert_eq!(code, CONNACK_NOT_AUTHORIZED),
+            other => panic!("{other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn external_auth_posts_connect_identity_and_requires_200() {
+        let (url, mut requests) = start_auth_server(axum::http::StatusCode::OK).await;
+        let (mut ctx, dir) = temp_ctx().await;
+        ctx.config = {
+            let mut config = Config::test_default();
+            config.mqtt_auth_url = Some(url);
+            Arc::new(config)
+        };
+        let addr = start_broker(ctx).await;
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        write_packet(
+            &mut stream,
+            &Packet::Connect(Connect {
+                protocol_level: 4,
+                clean_session: true,
+                keep_alive: 10,
+                client_id: "external-auth".into(),
+                username: Some("mqtt-user".into()),
+                password: Some(b"mqtt-password".to_vec()),
+            }),
+        )
+        .await;
+        match read_packet(&mut stream).await {
+            Packet::ConnAck(ConnAck { code, .. }) => assert_eq!(code, CONNACK_ACCEPT),
+            other => panic!("{other:?}"),
+        }
+        let request = requests.recv().await.unwrap();
+        assert_eq!(request["username"], "mqtt-user");
+        assert_eq!(request["password"], "mqtt-password");
+        assert_eq!(request["client_id"], "external-auth");
+        assert_eq!(request["transport"], "mqtt");
+        assert!(request["remote_address"].as_str().unwrap().contains(':'));
+        let _ = std::fs::remove_dir_all(dir);
+
+        let (url, _) = start_auth_server(axum::http::StatusCode::UNAUTHORIZED).await;
+        let (mut ctx, dir) = temp_ctx().await;
+        ctx.config = {
+            let mut config = Config::test_default();
+            config.mqtt_auth_url = Some(url);
+            Arc::new(config)
+        };
+        let addr = start_broker(ctx).await;
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        write_packet(
+            &mut stream,
+            &Packet::Connect(Connect {
+                protocol_level: 4,
+                clean_session: true,
+                keep_alive: 10,
+                client_id: "external-rejected".into(),
                 username: None,
                 password: None,
             }),

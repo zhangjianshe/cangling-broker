@@ -2,6 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use anyhow::Context;
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{
@@ -177,12 +178,7 @@ async fn run_session(
         connect.client_id.trim().to_string()
     };
 
-    let expected = auth::normalize(ctx.config.auth_token.as_deref());
-    if !mqtt_authorized(
-        expected.as_deref(),
-        ctx.config.mqtt_allow_anonymous,
-        &connect,
-    ) {
+    if !mqtt_authorized(&ctx, &connect, &client_id, &peer, transport).await {
         let code = if connect.username.is_none() && connect.password.is_none() {
             CONNACK_NOT_AUTHORIZED
         } else {
@@ -610,7 +606,74 @@ fn alloc_packet_id(next: &mut u16, used: &HashMap<u16, (String, String)>) -> u16
     *next
 }
 
-fn mqtt_authorized(
+#[derive(Serialize)]
+struct MqttAuthRequest<'a> {
+    username: Option<&'a str>,
+    password: Option<&'a str>,
+    client_id: &'a str,
+    remote_address: &'a str,
+    transport: &'a str,
+}
+
+async fn mqtt_authorized(
+    ctx: &MqttCtx,
+    connect: &codec::Connect,
+    client_id: &str,
+    peer: &str,
+    transport: &str,
+) -> bool {
+    if let Some(url) = ctx
+        .config
+        .mqtt_auth_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            warn!("MQTT authentication URL must use http:// or https://");
+            return false;
+        }
+        let password = match connect.password.as_deref() {
+            Some(value) => match std::str::from_utf8(value) {
+                Ok(value) => Some(value),
+                Err(_) => return false,
+            },
+            None => None,
+        };
+        return match ctx
+            .auth_client
+            .post(url)
+            .json(&MqttAuthRequest {
+                username: connect.username.as_deref(),
+                password,
+                client_id,
+                remote_address: peer,
+                transport,
+            })
+            .send()
+            .await
+        {
+            Ok(response) if response.status() == reqwest::StatusCode::OK => true,
+            Ok(response) => {
+                warn!(status = %response.status(), "MQTT external authentication rejected");
+                false
+            }
+            Err(error) => {
+                warn!(%error, "MQTT external authentication request failed");
+                false
+            }
+        };
+    }
+
+    let expected = auth::normalize(ctx.config.auth_token.as_deref());
+    mqtt_token_authorized(
+        expected.as_deref(),
+        ctx.config.mqtt_allow_anonymous,
+        connect,
+    )
+}
+
+fn mqtt_token_authorized(
     expected: Option<&str>,
     allow_anonymous: bool,
     connect: &codec::Connect,
@@ -653,7 +716,7 @@ pub fn authorized_for_test(
     username: Option<&str>,
     password: Option<&str>,
 ) -> bool {
-    mqtt_authorized(
+    mqtt_token_authorized(
         expected,
         allow_anonymous,
         &codec::Connect {

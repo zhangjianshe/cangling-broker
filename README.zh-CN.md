@@ -352,6 +352,7 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
 | `CL_BROKER_MQTT_PORT` | `7883` | MQTT TCP 监听。`0` 禁用 TCP。默认是非特权端口；映射 `1883:7883`，或能绑定就设 `1883` |
 | `CL_BROKER_MQTT_WSPORT` | `8083` | MQTT WebSocket 监听（`/mqtt`）。`0` 把 `GET /mqtt` 挂到状态端口 |
 | `CL_BROKER_MQTT_ALLOW_ANONYMOUS` | `true` | 迁移兼容开关：允许未提供用户名和密码的 CONNECT；提供了错误凭据仍会拒绝。全部客户端支持 token 后设为 `false` |
+| `CL_BROKER_MQTT_AUTH_URL` | 不设置 | 部署者授权的 MQTT CONNECT HTTP(S) 认证地址；配置后取代本地匿名/token 策略 |
 | `CL_BROKER_AUTH_TOKEN` | 不设置 | 供机器访问 gRPC、MQTT 和全部受保护 HTTP 接口的服务令牌；Dashboard UI 自身仅使用管理员 Cookie 会话 |
 | `CL_BROKER_ADMIN_PASSWORD` | `-Cangling@zky` | 首次启动的 Dashboard 管理员密码，仅在管理员不存在时使用 |
 | `CL_BROKER_SECURE_COOKIES` | `false` | HTTPS 反向代理下设为 `true`，为管理员会话 Cookie 增加 `Secure` |
@@ -394,6 +395,29 @@ docker run --rm --name cangling-broker \
 MQTT 3.1.1，QoS 0/1。发布与订阅和 gRPC 共用同一个 SQLite 队列。主题过滤器支持精确名、单层 `+` 与多层 `#`（`building/#` 会收到 `building`、`building/floor1/temp`、……）。`#` 必须是最后一级。Retain、LWT 与 QoS 2 未实现：收到的 QoS 2 会以 `PUBREC`/`PUBCOMP` 应答，但和 QoS 1 一样只存一次。
 
 迁移期间保持缺省的 `CL_BROKER_MQTT_ALLOW_ANONYMOUS=true`，没有填写用户名和密码的旧客户端可以继续连接；一旦客户端提供了凭据，就必须匹配 `CL_BROKER_AUTH_TOKEN`。全部客户端升级完成后设置 `CL_BROKER_MQTT_ALLOW_ANONYMOUS=false`，此时匿名 CONNECT 会被拒绝，HTTP/gRPC 的认证策略不受影响。
+
+### MQTT 外部认证接口规范
+
+部署时设置 `CL_BROKER_MQTT_AUTH_URL` 即表示部署者明确授权 broker 将 MQTT 凭据发送给该地址。可信内网之外必须使用 HTTPS。配置后外部认证服务拥有最终决定权，不再回退到匿名或本地 token 策略。
+
+每次 MQTT CONNECT 调用一次认证接口。HTTP Client 和连接池会复用，连接超时为 2 秒，总超时为 3 秒：
+
+```http
+POST <CL_BROKER_MQTT_AUTH_URL>
+Content-Type: application/json
+```
+
+```json
+{
+  "username": "mqtt-user",
+  "password": "mqtt-password",
+  "client_id": "client-001",
+  "remote_address": "192.168.1.20:53120",
+  "transport": "mqtt"
+}
+```
+
+客户端未提供用户名或密码时，对应字段为 `null`。TCP 的 `transport` 为 `mqtt`，WebSocket 为 `mqtt-ws`。只有 HTTP `200 OK` 表示认证成功；其他状态码、超时、连接错误、非法 URL 或非 UTF-8 密码都会拒绝 CONNECT。响应体被忽略，broker 日志不会记录密码和响应体。
 
 ```bash
 # 订阅（TCP）

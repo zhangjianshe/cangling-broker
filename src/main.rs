@@ -422,8 +422,14 @@ async fn main() -> anyhow::Result<()> {
         inflight: inflight.clone(),
         shutdown: shutdown.clone(),
         registry: mqtt::ClientRegistry::default(),
+        auth_client: reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(3))
+            .build()?,
     };
-    if config.mqtt_enabled && config.mqtt_allow_anonymous {
+    if config.mqtt_enabled && config.mqtt_auth_url.is_some() {
+        info!("MQTT external HTTP authentication enabled");
+    } else if config.mqtt_enabled && config.mqtt_allow_anonymous {
         warn!(
             "MQTT anonymous compatibility is enabled; set CL_BROKER_MQTT_ALLOW_ANONYMOUS=false after all clients send the service token"
         );

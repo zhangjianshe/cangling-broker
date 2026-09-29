@@ -532,6 +532,7 @@ write-limited container volumes can behave very differently from local NVMe.
 | `CL_BROKER_MQTT_PORT` | `7883` | MQTT TCP listener. `0` disables TCP. Unprivileged default; map `1883:7883` or set `1883` if you can bind it |
 | `CL_BROKER_MQTT_WSPORT` | `8083` | MQTT WebSocket listener (`/mqtt`). `0` attaches `GET /mqtt` to the status port |
 | `CL_BROKER_MQTT_ALLOW_ANONYMOUS` | `true` | migration compatibility: accept CONNECT with no username/password; supplied invalid credentials are still rejected. Set `false` after all clients send the token |
+| `CL_BROKER_MQTT_AUTH_URL` | unset | deployment-authorized HTTP(S) endpoint for MQTT CONNECT authentication; when set it replaces the local anonymous/token MQTT policy |
 | `CL_BROKER_AUTH_TOKEN` | unset | machine service token for gRPC, MQTT, and every protected HTTP API; the Dashboard UI itself uses only administrator Cookie sessions |
 | `CL_BROKER_ADMIN_PASSWORD` | `-Cangling@zky` | initial Dashboard administrator password, used only when no administrator exists |
 | `CL_BROKER_SECURE_COOKIES` | `false` | add `Secure` to the administrator Cookie behind HTTPS |
@@ -574,6 +575,29 @@ docker run --rm --name cangling-broker \
 MQTT 3.1.1, QoS 0/1. Publish and subscribe share the same SQLite queue as gRPC. Topic filters support exact names, single-level `+`, and multi-level `#` (`building/#` receives `building`, `building/floor1/temp`, …). `#` must be the last level. Retain, LWT, and QoS 2 are not implemented: incoming QoS 2 is acknowledged with `PUBREC`/`PUBCOMP` but stored once like QoS 1.
 
 During migration, `CL_BROKER_MQTT_ALLOW_ANONYMOUS=true` (the default) accepts clients that send neither username nor password. Clients that do send credentials must provide the correct `CL_BROKER_AUTH_TOKEN`. After all clients have been upgraded, set `CL_BROKER_MQTT_ALLOW_ANONYMOUS=false`; unauthenticated CONNECT packets will then be rejected without changing the HTTP/gRPC policy.
+
+### External MQTT authentication protocol
+
+Set `CL_BROKER_MQTT_AUTH_URL` at deployment time to delegate MQTT CONNECT authentication. Configuring this variable explicitly authorizes the broker to send MQTT credentials to that endpoint. Use HTTPS outside a trusted private network. When configured, the external service is authoritative: there is no fallback to the anonymous/token policy.
+
+The broker sends one request per MQTT CONNECT, using a shared HTTP connection pool with a 2-second connect timeout and a 3-second total timeout:
+
+```http
+POST <CL_BROKER_MQTT_AUTH_URL>
+Content-Type: application/json
+```
+
+```json
+{
+  "username": "mqtt-user",
+  "password": "mqtt-password",
+  "client_id": "client-001",
+  "remote_address": "192.168.1.20:53120",
+  "transport": "mqtt"
+}
+```
+
+`username` and `password` are `null` when omitted by the client. `transport` is `mqtt` for TCP and `mqtt-ws` for WebSocket. Exactly HTTP `200 OK` means authenticated; every other status, timeout, connection error, invalid URL, or non-UTF-8 password rejects the CONNECT. The response body is ignored. Passwords and response bodies are never written to broker logs.
 
 ```bash
 # subscribe (TCP)
