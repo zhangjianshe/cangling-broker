@@ -4,7 +4,7 @@
 
 未配置主题默认是 **broadcast**（广播）+ **ephemeral**（即弃）（MQTT 风格：每个在线流都收到一份；没人监听时发布即被丢弃）。把主题设为 **single**（单投）即竞争消费：每条消息只发给一个在线流。设为 **persistent**（持久）则先排队、稍后投递。`Register` 只保存额外的消费者元数据。当 **persistent** 主题没有在线流时，`DOWNSTREAM_URL` 是可选的 HTTP 回退。
 
-生产环境请给 broker 设置 `CL_BROKER_AUTH_TOKEN`。gRPC、MQTT 以及缓存/分布式锁写入客户端使用该服务令牌；Dashboard 状态和其他 GET 浏览接口公开，主题配置与清空消息必须登录管理员，服务令牌不能代替管理员会话。
+生产环境请给 broker 设置 `CL_BROKER_AUTH_TOKEN`。gRPC、MQTT、缓存/分布式锁写入以及程序化主题配置使用该服务令牌；Dashboard 状态和其他 GET 浏览接口公开，`POST /topics` 可使用服务令牌或管理员会话，清空消息仍必须登录管理员。
 
 ## 运行
 
@@ -253,6 +253,15 @@ curl -s -b admin.cookies \
   http://127.0.0.1:7501/topics
 
 curl -s http://127.0.0.1:7501/topics
+```
+
+程序也可以直接携带服务令牌配置同一个接口，无需创建浏览器会话：
+
+```bash
+curl -s -H 'authorization: Bearer change-me' \
+  -H 'content-type: application/json' \
+  -d '[{"name":"alerts","dispatch":"broadcast","persistence":"persistent"}]' \
+  http://127.0.0.1:7501/topics
 ```
 
 gRPC：`ConfigureTopics` / `ListTopics`。Java：`client.configureTopics(List.of(TopicConfig.broadcast("alerts"), TopicConfig.single("jobs"), TopicConfig.ephemeral("live-events", TopicConfig.BROADCAST)))`。Python：`client.configure_topics([TopicConfig("alerts", "broadcast"), TopicConfig("jobs", "single"), TopicConfig("live-events", "broadcast", "ephemeral")])`。

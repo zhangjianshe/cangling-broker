@@ -181,13 +181,19 @@ fn status_routes(state: StatusState) -> Router {
         .route("/lock/acquire", post(lock_acquire))
         .route("/lock/renew", post(lock_renew))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
-    let admin = Router::new()
+    let topic_configuration = Router::new()
         .route("/topics", post(configure_topics))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_or_token,
+        ));
+    let admin = Router::new()
         .route("/messages", axum::routing::delete(clear_topic_messages))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
     Router::new()
         .merge(public)
         .merge(service_writes)
+        .merge(topic_configuration)
         .merge(admin)
         .with_state(state)
 }
@@ -219,17 +225,36 @@ async fn require_token(
     let Some(expected) = state.auth_token.as_deref() else {
         return Ok(next.run(request).await);
     };
+    if request_has_service_token(&request, expected) {
+        return Ok(next.run(request).await);
+    }
+    Err(StatusCode::UNAUTHORIZED)
+}
+
+fn request_has_service_token(request: &Request<axum::body::Body>, expected: &str) -> bool {
     let authorization = request
         .headers()
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
-    if auth::tokens_match(
+    auth::tokens_match(
         expected,
         auth::http_token(authorization, request.uri().query()).as_deref(),
-    ) {
+    )
+}
+
+async fn require_admin_or_token(
+    State(state): State<StatusState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if state
+        .auth_token
+        .as_deref()
+        .is_some_and(|expected| request_has_service_token(&request, expected))
+    {
         return Ok(next.run(request).await);
     }
-    Err(StatusCode::UNAUTHORIZED)
+    require_admin(State(state), request, next).await
 }
 
 async fn require_admin(

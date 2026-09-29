@@ -4,7 +4,7 @@ A small, Kafka-like building block. Producers and consumers use **gRPC streams**
 
 Unconfigured topics default to **broadcast** + **ephemeral** (MQTT-style: every live stream gets a copy; a publish with nobody listening is dropped). Set a topic to **single** for competing consumers (one live stream gets each message). Set a topic to **persistent** to queue and deliver later. `Register` only stores extra consumer metadata. `DOWNSTREAM_URL` is an optional HTTP fallback when a **persistent** topic has no live stream.
 
-Set `CL_BROKER_AUTH_TOKEN` on the broker for production. gRPC, MQTT, and HTTP cache/lock writes use this service token. Dashboard reads are public; topic configuration and message deletion require an administrator login, and the service token cannot replace the administrator session.
+Set `CL_BROKER_AUTH_TOKEN` on the broker for production. gRPC, MQTT, HTTP cache/lock writes, and programmatic topic configuration use this service token. Dashboard reads are public; `POST /topics` accepts either the service token or an administrator session, while message deletion requires an administrator login.
 
 ## Run it
 
@@ -239,6 +239,15 @@ curl -s -b admin.cookies \
   http://127.0.0.1:7501/topics
 
 curl -s http://127.0.0.1:7501/topics
+```
+
+Applications can configure the same endpoint without a browser session by sending the service token:
+
+```bash
+curl -s -H 'authorization: Bearer change-me' \
+  -H 'content-type: application/json' \
+  -d '[{"name":"alerts","dispatch":"broadcast","persistence":"persistent"}]' \
+  http://127.0.0.1:7501/topics
 ```
 
 gRPC: `ConfigureTopics` / `ListTopics`. Java: `client.configureTopics(List.of(TopicConfig.broadcast("alerts"), TopicConfig.single("jobs"), TopicConfig.ephemeral("live-events", TopicConfig.BROADCAST)))`. Python: `client.configure_topics([TopicConfig("alerts", "broadcast"), TopicConfig("jobs", "single"), TopicConfig("live-events", "broadcast", "ephemeral")])`.
