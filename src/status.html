@@ -1263,7 +1263,7 @@
       const box = $("topic-message");
       if (box) box.innerHTML = '<div class="empty">正在加载消息…</div>';
       try {
-        const url = new URL(apiUrl("messages"));
+        const url = new URL(apiUrl("ui/messages"));
         url.searchParams.set("topic", topic);
         url.searchParams.set("offset", String(offset));
         const response = await fetch(url.toString(), { cache: "no-store" });
@@ -1639,7 +1639,7 @@
     }
 
     async function clearTopicMessages(topic) {
-      const url = new URL(apiUrl("messages"));
+      const url = new URL(apiUrl("ui/messages"));
       url.searchParams.set("topic", topic);
       const response = await fetch(url.toString(), { method: "DELETE", cache: "no-store" });
       if (!response.ok) throw new Error("HTTP " + response.status);
@@ -1811,7 +1811,7 @@
 
     async function refreshStatus() {
       try {
-        const endpoint = adminAuthenticated ? "status/details" : "status";
+        const endpoint = adminAuthenticated ? "ui/status/details" : "status";
         const response = await fetch(apiUrl(endpoint), { cache: "no-store" });
         if (!response.ok) throw new Error("HTTP " + response.status);
         render(await response.json());
@@ -1927,7 +1927,7 @@
 
     async function loadCache() {
       try {
-        const data = await apiRequest("cache/keys");
+        const data = await apiRequest("ui/cache/keys");
         renderCache(data.entries || []);
       } catch (error) {
         $("cache-list").innerHTML = '<div class="empty">无法加载缓存：' + escapeHtml(error.message) + '</div>';
@@ -1936,7 +1936,7 @@
 
     async function loadLocks() {
       try {
-        const data = await apiRequest("lock/list");
+        const data = await apiRequest("ui/lock/list");
         renderLocks(data.locks || []);
       } catch (error) {
         $("lock-list").innerHTML = '<div class="empty">无法加载锁：' + escapeHtml(error.message) + '</div>';
@@ -2020,7 +2020,7 @@
         let data;
         if (op === "get") {
           if (!key) throw new Error("请输入键");
-          data = await apiRequest("cache", { query: { key } });
+          data = await apiRequest("ui/cache", { query: { key } });
           setCacheResult(
             '<span>键 <b>' + escapeHtml(data.key) + '</b></span> ' +
             (data.found
@@ -2030,15 +2030,15 @@
           );
         } else if (op === "set") {
           if (!key) throw new Error("请输入键");
-          data = await apiRequest("cache", { method: "PUT", body: { key, value, ttl_seconds: ttl } });
+          data = await apiRequest("ui/cache", { method: "PUT", body: { key, value, ttl_seconds: ttl } });
           setCacheResult('<span class="pill live">写入成功</span><span>键 <b>' + escapeHtml(data.key) + '</b></span>');
         } else if (op === "delete") {
           if (!key) throw new Error("请输入键");
-          data = await apiRequest("cache", { method: "DELETE", query: { key } });
+          data = await apiRequest("ui/cache", { method: "DELETE", query: { key } });
           setCacheResult('<span class="pill ' + (data.deleted ? "live" : "stale") + '">' + (data.deleted ? "已删除" : "未找到") + '</span>');
         } else if (op === "incr") {
           if (!key) throw new Error("请输入键");
-          data = await apiRequest("cache/incr", { method: "POST", body: { key, delta, ttl_seconds: ttl } });
+          data = await apiRequest("ui/cache/incr", { method: "POST", body: { key, delta, ttl_seconds: ttl } });
           setCacheResult('<span class="pill live">自增结果</span><b>' + escapeHtml(data.value) + '</b>');
         }
         loadCache();
@@ -2056,7 +2056,7 @@
         let data;
         if (op === "get") {
           if (!lockKey) throw new Error("请输入锁键");
-          data = await apiRequest("lock", { query: { lock_key: lockKey } });
+          data = await apiRequest("ui/lock", { query: { lock_key: lockKey } });
           setLockResult(
             '<span>锁 <b>' + escapeHtml(data.lock_key) + '</b></span> ' +
             (data.locked ? '<span class="pill live">已锁定</span>' : '<span class="pill stale">未锁定</span>')
@@ -2064,20 +2064,20 @@
         } else if (op === "acquire") {
           if (!lockKey || !owner) throw new Error("请输入锁键和持有者");
           if (ttl <= 0) throw new Error("TTL 必须大于 0");
-          data = await apiRequest("lock/acquire", { method: "POST", body: { lock_key: lockKey, owner, ttl_seconds: ttl } });
+          data = await apiRequest("ui/lock/acquire", { method: "POST", body: { lock_key: lockKey, owner, ttl_seconds: ttl } });
           setLockResult(data.acquired
             ? '<span class="pill live">获取成功</span>'
             : '<span class="pill stale">获取失败（已被占用或不可用）</span>');
         } else if (op === "renew") {
           if (!lockKey || !owner) throw new Error("请输入锁键和持有者");
           if (ttl <= 0) throw new Error("TTL 必须大于 0");
-          data = await apiRequest("lock/renew", { method: "POST", body: { lock_key: lockKey, owner, ttl_seconds: ttl } });
+          data = await apiRequest("ui/lock/renew", { method: "POST", body: { lock_key: lockKey, owner, ttl_seconds: ttl } });
           setLockResult(data.renewed
             ? '<span class="pill live">续期成功</span>'
             : '<span class="pill stale">续期失败</span>');
         } else if (op === "release") {
           if (!lockKey || !owner) throw new Error("请输入锁键和持有者");
-          data = await apiRequest("lock", { method: "DELETE", query: { lock_key: lockKey, owner } });
+          data = await apiRequest("ui/lock", { method: "DELETE", query: { lock_key: lockKey, owner } });
           setLockResult(data.released
             ? '<span class="pill live">释放成功</span>'
             : '<span class="pill stale">释放失败</span>');

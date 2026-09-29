@@ -4,7 +4,7 @@ A small, Kafka-like building block. Producers and consumers use **gRPC streams**
 
 Unconfigured topics default to **broadcast** + **ephemeral** (MQTT-style: every live stream gets a copy; a publish with nobody listening is dropped). Set a topic to **single** for competing consumers (one live stream gets each message). Set a topic to **persistent** to queue and deliver later. `Register` only stores extra consumer metadata. `DOWNSTREAM_URL` is an optional HTTP fallback when a **persistent** topic has no live stream.
 
-Set `CL_BROKER_AUTH_TOKEN` on the broker for production. Machine clients can use this service token for every protected HTTP API as well as gRPC and MQTT. The shipped UI never reads or forwards a token from its URL: UI operations require an administrator Cookie session. Only the Dashboard summary, message trend, health, and login endpoints are public.
+Set `CL_BROKER_AUTH_TOKEN` on the broker for production. Machine API paths use this service token; when it is unset, empty, or whitespace-only, machine API calls are accepted for backward compatibility. The shipped UI uses separate `/ui/*` endpoints that always require an administrator Cookie, so disabling the machine token never bypasses UI login. The UI never reads or forwards a token from its URL.
 
 ## Run it
 
@@ -199,11 +199,11 @@ curl -s http://127.0.0.1:7501/status
 
 On first start the broker creates `admin`; its password is `CL_BROKER_ADMIN_PASSWORD`, or `-Cangling@zky` when unset. Change it immediately. The administrator session is stored in an HttpOnly Cookie and expires after two idle hours. `cangling-broker reset-password` resets the password and invalidates old sessions; omit `-p` to generate a policy-compliant password.
 
-`/` is a single HTML page. The anonymous summary refreshes from `/status`, which contains aggregate counters but deliberately omits `clients[]` and `topics_detail[]`. After administrator login, detailed tabs refresh from protected `GET /status/details`. Each detailed client entry includes `version` when the client sent `x-client-version` (Java/Python SDKs do this automatically) or, for MQTT, the protocol version (`3.1` / `3.1.1`). Official SDKs also send `x-client-host` (Docker `HOSTNAME`, or use `CL_BROKER_CLIENT_HOST` to override) so the dashboard can tell containers apart when they all NAT through the same gateway IP. Click a **persistent** topic to browse saved messages through protected `GET /messages?topic=...&offset=0`. Ephemeral topics do not store payloads. **清空** requires the administrator session and resets that topic's counters.
+`/` is a single HTML page. The anonymous summary refreshes from `/status`, which contains aggregate counters but deliberately omits `clients[]` and `topics_detail[]`. After administrator login, detailed tabs use the Cookie-protected `/ui/*` API namespace. Machine clients continue to use the original paths such as `/status/details`, `/messages`, `/cache`, and `/lock`.
 
 The **message trend** chart is part of the anonymous summary and plots received/distributed counts per minute for the latest 1, 3, 6, or 24 hours. `GET /message-trends?minutes=180` remains public; `minutes` is limited to 10–1440.
 
-The anonymous header exposes only the message summary. After administrator login it also exposes client/topic tabs and the **缓存**, **分布式锁**, and **关于** pages. Protected APIs accept either the administrator Cookie (used by the UI) or the service Bearer token (used by machines).
+The anonymous header exposes only the message summary. After administrator login it also exposes client/topic tabs and the **缓存**, **分布式锁**, and **关于** pages. `/ui/*` always requires the administrator Cookie; machine paths require the Bearer token only when a non-empty token is configured.
 
 Behind a reverse proxy at `/msg/`, open `/msg/`. The page calls `status` next to itself (`/msg/status`), not `/status` on the site root. If nginx strips the prefix (`proxy_pass http://broker:7501/;`), that is enough. If the proxy forwards `/msg/status` unchanged, set `CL_BROKER_WEB_BASE=/msg` so the broker also serves the dashboard and JSON under that prefix. Administrator login uses the same relative path and session Cookie, so no credential needs to appear in the URL.
 
@@ -293,7 +293,7 @@ without expiry, and the remaining seconds otherwise. Locks require an `owner` to
 `release` and `renew` only succeed for the owner that holds the lock, and a lease
 never outlives its `ttl_seconds` (so a crashed holder cannot deadlock others).
 
-All cache and lock HTTP APIs are protected. Machines use the service Bearer token; the UI uses its administrator Cookie session:
+Machine cache and lock APIs use the service Bearer token when configured and stay open when it is absent; the UI calls the separate Cookie-protected `/ui/cache*` and `/ui/lock*` paths:
 
 ```bash
 curl -s -H 'authorization: Bearer change-me' 'http://127.0.0.1:7501/cache?key=jobs:count'
@@ -533,7 +533,7 @@ write-limited container volumes can behave very differently from local NVMe.
 | `CL_BROKER_MQTT_WSPORT` | `8083` | MQTT WebSocket listener (`/mqtt`). `0` attaches `GET /mqtt` to the status port |
 | `CL_BROKER_MQTT_ALLOW_ANONYMOUS` | `true` | migration compatibility: accept CONNECT with no username/password; supplied invalid credentials are still rejected. Set `false` after all clients send the token |
 | `CL_BROKER_MQTT_AUTH_URL` | unset | deployment-authorized HTTP(S) endpoint for MQTT CONNECT authentication; when set it replaces the local anonymous/token MQTT policy |
-| `CL_BROKER_AUTH_TOKEN` | unset | machine service token for gRPC, MQTT, and every protected HTTP API; the Dashboard UI itself uses only administrator Cookie sessions |
+| `CL_BROKER_AUTH_TOKEN` | unset | machine service token for gRPC, MQTT, and machine HTTP APIs. Unset, empty, or whitespace-only permits machine API calls; `/ui/*` always requires an administrator Cookie |
 | `CL_BROKER_ADMIN_PASSWORD` | `-Cangling@zky` | initial Dashboard administrator password, used only when no administrator exists |
 | `CL_BROKER_SECURE_COOKIES` | `false` | add `Secure` to the administrator Cookie behind HTTPS |
 | `CL_BROKER_PASSWORD_REGEX` | default strong-password rule | administrator password validation regex |

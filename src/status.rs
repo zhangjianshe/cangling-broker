@@ -164,52 +164,40 @@ fn status_routes(state: StatusState) -> Router {
         .route("/auth/status", get(auth_status))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout));
-    let protected_reads = Router::new()
+    let machine_api = management_routes().route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        require_service_token,
+    ));
+    let ui_api = management_routes()
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
+    Router::new()
+        .merge(public)
+        .merge(machine_api)
+        .nest("/ui", ui_api)
+        .with_state(state)
+}
+
+fn management_routes() -> Router<StatusState> {
+    Router::new()
         .route("/status/details", get(status_details))
         .route("/topics", get(list_topics))
+        .route("/topics", post(configure_topics))
         .route("/messages", get(topic_message))
+        .route("/messages", axum::routing::delete(clear_topic_messages))
         .route("/cache", get(cache_get))
-        .route("/cache/keys", get(cache_keys))
-        .route("/lock", get(lock_get))
-        .route("/lock/list", get(lock_list))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_admin_or_token,
-        ));
-    let service_writes = Router::new()
         .route(
             "/cache",
             axum::routing::put(cache_set)
                 .post(cache_set)
                 .delete(cache_delete),
         )
+        .route("/cache/keys", get(cache_keys))
         .route("/cache/incr", post(cache_incr))
+        .route("/lock", get(lock_get))
         .route("/lock", axum::routing::delete(lock_release))
+        .route("/lock/list", get(lock_list))
         .route("/lock/acquire", post(lock_acquire))
         .route("/lock/renew", post(lock_renew))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_admin_or_token,
-        ));
-    let topic_configuration = Router::new()
-        .route("/topics", post(configure_topics))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_admin_or_token,
-        ));
-    let admin = Router::new()
-        .route("/messages", axum::routing::delete(clear_topic_messages))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_admin_or_token,
-        ));
-    Router::new()
-        .merge(public)
-        .merge(protected_reads)
-        .merge(service_writes)
-        .merge(topic_configuration)
-        .merge(admin)
-        .with_state(state)
 }
 
 #[cfg(test)]
@@ -242,19 +230,18 @@ fn request_has_service_token(request: &Request<axum::body::Body>, expected: &str
     )
 }
 
-async fn require_admin_or_token(
+async fn require_service_token(
     State(state): State<StatusState>,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    if state
-        .auth_token
-        .as_deref()
-        .is_some_and(|expected| request_has_service_token(&request, expected))
-    {
+    let Some(expected) = state.auth_token.as_deref() else {
+        return Ok(next.run(request).await);
+    };
+    if request_has_service_token(&request, expected) {
         return Ok(next.run(request).await);
     }
-    require_admin(State(state), request, next).await
+    Err(StatusCode::UNAUTHORIZED)
 }
 
 async fn require_admin(
@@ -1484,7 +1471,7 @@ mod tests {
         assert!(html.contains("function fuzzyMatch("), "{html}");
         assert!(html.contains("连接时长"), "{html}");
         assert!(html.contains("fmtSince("), "{html}");
-        assert!(html.contains("apiUrl(\"messages\")"), "{html}");
+        assert!(html.contains("apiUrl(\"ui/messages\")"), "{html}");
         assert!(html.contains("data-msg-nav"), "{html}");
         assert!(html.contains("function numCell("), "{html}");
         assert!(html.contains("td.zero"), "{html}");
