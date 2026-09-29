@@ -44,6 +44,11 @@ pub struct Config {
     #[arg(long, env = "CL_BROKER_MQTT_WSPORT", default_value_t = 8083)]
     pub mqtt_ws_port: u16,
 
+    /// Accept MQTT CONNECT packets without username/password during client migration.
+    /// Supplied but invalid credentials are still rejected. Disable after all clients send a token.
+    #[arg(long, env = "CL_BROKER_MQTT_ALLOW_ANONYMOUS", default_value_t = true, action = clap::ArgAction::Set)]
+    pub mqtt_allow_anonymous: bool,
+
     /// Shared secret. When set, every gRPC call must send it
     /// (`authorization: Bearer <token>` or `x-auth-token`). Empty disables auth.
     #[arg(long, env = "CL_BROKER_AUTH_TOKEN")]
@@ -203,6 +208,7 @@ impl Config {
             mqtt_enabled: true,
             mqtt_port: 7883,
             mqtt_ws_port: 8083,
+            mqtt_allow_anonymous: true,
             web_base: String::new(),
             auth_token: None,
             admin_password: None,

@@ -531,6 +531,7 @@ write-limited container volumes can behave very differently from local NVMe.
 | `CL_BROKER_MQTT_ENABLED` | `true` | accept MQTT 3.1.1 clients; `false` disables both MQTT listeners |
 | `CL_BROKER_MQTT_PORT` | `7883` | MQTT TCP listener. `0` disables TCP. Unprivileged default; map `1883:7883` or set `1883` if you can bind it |
 | `CL_BROKER_MQTT_WSPORT` | `8083` | MQTT WebSocket listener (`/mqtt`). `0` attaches `GET /mqtt` to the status port |
+| `CL_BROKER_MQTT_ALLOW_ANONYMOUS` | `true` | migration compatibility: accept CONNECT with no username/password; supplied invalid credentials are still rejected. Set `false` after all clients send the token |
 | `CL_BROKER_AUTH_TOKEN` | unset | machine service token for gRPC, MQTT, and every protected HTTP API; the Dashboard UI itself uses only administrator Cookie sessions |
 | `CL_BROKER_ADMIN_PASSWORD` | `-Cangling@zky` | initial Dashboard administrator password, used only when no administrator exists |
 | `CL_BROKER_SECURE_COOKIES` | `false` | add `Secure` to the administrator Cookie behind HTTPS |
@@ -572,7 +573,7 @@ docker run --rm --name cangling-broker \
 
 MQTT 3.1.1, QoS 0/1. Publish and subscribe share the same SQLite queue as gRPC. Topic filters support exact names, single-level `+`, and multi-level `#` (`building/#` receives `building`, `building/floor1/temp`, …). `#` must be the last level. Retain, LWT, and QoS 2 are not implemented: incoming QoS 2 is acknowledged with `PUBREC`/`PUBCOMP` but stored once like QoS 1.
 
-When `CL_BROKER_AUTH_TOKEN` is set, send it as the MQTT password (or username).
+During migration, `CL_BROKER_MQTT_ALLOW_ANONYMOUS=true` (the default) accepts clients that send neither username nor password. Clients that do send credentials must provide the correct `CL_BROKER_AUTH_TOKEN`. After all clients have been upgraded, set `CL_BROKER_MQTT_ALLOW_ANONYMOUS=false`; unauthenticated CONNECT packets will then be rejected without changing the HTTP/gRPC policy.
 
 ```bash
 # subscribe (TCP)

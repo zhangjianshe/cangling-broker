@@ -423,6 +423,11 @@ async fn main() -> anyhow::Result<()> {
         shutdown: shutdown.clone(),
         registry: mqtt::ClientRegistry::default(),
     };
+    if config.mqtt_enabled && config.mqtt_allow_anonymous {
+        warn!(
+            "MQTT anonymous compatibility is enabled; set CL_BROKER_MQTT_ALLOW_ANONYMOUS=false after all clients send the service token"
+        );
+    }
     let mqtt_on_status = config.mqtt_enabled && config.mqtt_ws_port == 0;
     let mqtt_tcp = if config.mqtt_enabled && config.mqtt_port != 0 {
         let address = config.mqtt_listen_addr();

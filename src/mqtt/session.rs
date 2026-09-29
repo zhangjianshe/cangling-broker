@@ -178,7 +178,11 @@ async fn run_session(
     };
 
     let expected = auth::normalize(ctx.config.auth_token.as_deref());
-    if !mqtt_authorized(expected.as_deref(), &connect) {
+    if !mqtt_authorized(
+        expected.as_deref(),
+        ctx.config.mqtt_allow_anonymous,
+        &connect,
+    ) {
         let code = if connect.username.is_none() && connect.password.is_none() {
             CONNACK_NOT_AUTHORIZED
         } else {
@@ -606,10 +610,17 @@ fn alloc_packet_id(next: &mut u16, used: &HashMap<u16, (String, String)>) -> u16
     *next
 }
 
-fn mqtt_authorized(expected: Option<&str>, connect: &codec::Connect) -> bool {
+fn mqtt_authorized(
+    expected: Option<&str>,
+    allow_anonymous: bool,
+    connect: &codec::Connect,
+) -> bool {
     let Some(expected) = expected else {
         return true;
     };
+    if allow_anonymous && connect.username.is_none() && connect.password.is_none() {
+        return true;
+    }
     if let Some(password) = connect.password.as_deref() {
         if let Ok(text) = std::str::from_utf8(password) {
             if auth::tokens_match(expected, Some(text.trim())) {
@@ -638,11 +649,13 @@ async fn sleep_or_pending(duration: Option<Duration>) {
 #[cfg(test)]
 pub fn authorized_for_test(
     expected: Option<&str>,
+    allow_anonymous: bool,
     username: Option<&str>,
     password: Option<&str>,
 ) -> bool {
     mqtt_authorized(
         expected,
+        allow_anonymous,
         &codec::Connect {
             protocol_level: 4,
             clean_session: true,

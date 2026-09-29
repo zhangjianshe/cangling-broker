@@ -326,15 +326,32 @@ mod tests {
 
     #[test]
     fn password_or_username_matches_token() {
-        assert!(session::authorized_for_test(None, None, None));
-        assert!(session::authorized_for_test(Some("tok"), None, Some("tok")));
-        assert!(session::authorized_for_test(Some("tok"), Some("tok"), None));
+        assert!(session::authorized_for_test(None, false, None, None));
+        assert!(session::authorized_for_test(
+            Some("tok"),
+            false,
+            None,
+            Some("tok")
+        ));
+        assert!(session::authorized_for_test(
+            Some("tok"),
+            false,
+            Some("tok"),
+            None
+        ));
         assert!(!session::authorized_for_test(
             Some("tok"),
+            true,
             Some("no"),
             Some("no")
         ));
-        assert!(!session::authorized_for_test(Some("tok"), None, None));
+        assert!(session::authorized_for_test(Some("tok"), true, None, None));
+        assert!(!session::authorized_for_test(
+            Some("tok"),
+            false,
+            None,
+            None
+        ));
     }
 
     #[tokio::test]
@@ -343,6 +360,7 @@ mod tests {
         ctx.config = {
             let mut config = Config::test_default();
             config.auth_token = Some("change-me".into());
+            config.mqtt_allow_anonymous = false;
             Arc::new(config)
         };
         let addr = start_broker(ctx).await;
