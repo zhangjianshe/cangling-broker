@@ -384,8 +384,14 @@
     .login-error { min-height: 20px; color: var(--danger); font-size: 13px; }
     .login-actions { display: flex; justify-content: flex-end; gap: 10px; }
     .login-submit { border-color: var(--accent-emphasis); background: var(--accent-emphasis); color: var(--on-emphasis); }
-    .login-submit:hover { filter: brightness(1.06); }
-    .login-submit:disabled { cursor: wait; opacity: .65; }
+    .btn.login-submit:hover,
+    .btn.login-submit:focus-visible {
+      border-color: var(--accent-emphasis); background: var(--accent-emphasis); color: var(--on-emphasis);
+      filter: brightness(1.08);
+    }
+    .btn.login-submit:focus-visible { outline: 3px solid var(--bg-active); outline-offset: 2px; }
+    .btn.login-submit:disabled,
+    .btn.login-submit:disabled:hover { cursor: wait; opacity: .65; filter: none; }
     .msg-view {
       padding: 12px 14px;
       border-bottom: 1px solid var(--line);

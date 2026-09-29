@@ -1456,6 +1456,7 @@ mod tests {
         assert!(html.contains("admin-only"), "{html}");
         assert!(html.contains("id=\"admin-login-modal\""), "{html}");
         assert!(html.contains("autocomplete=\"current-password\""), "{html}");
+        assert!(html.contains(".btn.login-submit:hover"), "{html}");
         assert!(!html.contains("prompt(\"请输入管理员密码\")"), "{html}");
         assert!(html.contains("trend-accepted"), "{html}");
         assert!(html.contains("trend-delivered"), "{html}");
