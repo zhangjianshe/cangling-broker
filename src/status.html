@@ -254,6 +254,7 @@
     }
     .trend-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
     .trend-head h2 { color: var(--text); margin: 0; }
+    .trend-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
     .trend-controls { display: flex; align-items: center; gap: 10px; color: var(--muted); }
     .trend-controls select { background: var(--bg-3); color: var(--text); border: 1px solid var(--line); padding: 6px 8px; }
     .trend-legend { display: flex; gap: 18px; margin-bottom: 8px; color: var(--muted); font-size: 13px; }
@@ -266,6 +267,7 @@
     .trend-axis-label { fill: var(--muted); font-size: 12px; }
     .trend-accepted { fill: none; stroke: var(--accent-emphasis); stroke-width: 2.5; }
     .trend-delivered { fill: none; stroke: var(--live); stroke-width: 2.5; }
+    .admin-only:not(.authorized) { display: none !important; }
     table { width: 100%; border-collapse: collapse; background: var(--bg-2); }
     th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
     th { color: var(--muted); font-weight: 700; }
@@ -670,6 +672,16 @@
     .tabs { gap: 16px; margin: 0 -16px 14px; padding: 0 16px; }
     .tabs button { padding: 13px 4px 10px; }
     #panel-summary .cards { margin-bottom: 0; }
+    .summary-dashboard { display: grid; gap: 16px; }
+    .summary-dashboard .cards { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(480px, 1.4fr); gap: 16px; }
+    .summary-dashboard .delivery-group { margin-top: 0; }
+    .summary-dashboard .resource-group .metric-grid,
+    .summary-dashboard .delivery-group .metric-grid { gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .summary-dashboard .resource-group .card,
+    .summary-dashboard .delivery-group .card { min-height: 82px; padding: 13px 14px; border: 0; border-radius: 0; box-shadow: none; }
+    .summary-dashboard .resource-group .card .value,
+    .summary-dashboard .delivery-group .card .value { margin-top: 11px; font-size: 23px; }
+    .summary-trend { padding: 18px; box-shadow: none; border-radius: 12px; }
     .view-heading #meta b { display: block; margin-top: 4px; font-size: 18px; line-height: 1; font-weight: 750; }
     .header-right { padding: 0; border: 0; background: transparent; grid-template-columns: minmax(0, 1fr);
       justify-content: stretch; align-items: stretch; }
@@ -698,6 +710,7 @@
     .about-copyright { margin-top: 24px; color: var(--muted); font-size: 12px; }
     @media (max-width: 1280px) {
       .cards { grid-template-columns: 1fr; }
+      .summary-dashboard .cards { grid-template-columns: 1fr; }
       .resource-group .metric-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     }
     @media (max-width: 760px) {
@@ -734,9 +747,9 @@
     <button id="menu-toggle" class="menu-button" type="button" aria-label="菜单" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
     <nav class="topnav" aria-label="主菜单">
       <a href="#messages" data-view="messages" class="active"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 3V5Z"/><path d="M8 9h8M8 12h5"/></svg></span><span>消息</span></a>
-      <a href="#cache" data-view="cache"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></span><span>缓存</span></a>
-      <a href="#lock" data-view="lock"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v2"/></svg></span><span>分布式锁</span></a>
-      <a href="#about" data-view="about"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></span><span>关于</span></a>
+      <a href="#cache" class="admin-only" data-view="cache"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></span><span>缓存</span></a>
+      <a href="#lock" class="admin-only" data-view="lock"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v2"/></svg></span><span>分布式锁</span></a>
+      <a href="#about" class="admin-only" data-view="about"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></span><span>关于</span></a>
     </nav>
     <div class="header-right">
       <button type="button" class="btn" id="admin-login"><span class="btn-label">管理员登录</span></button>
@@ -750,35 +763,34 @@
   <div class="tabs-wrap">
     <div class="tabs" role="tablist">
       <button type="button" role="tab" id="tab-summary" data-tab="summary" aria-controls="panel-summary" aria-selected="true" class="active">摘要</button>
-      <button type="button" role="tab" id="tab-clients" data-tab="clients" aria-controls="panel-clients" aria-selected="false">已连接客户端</button>
-      <button type="button" role="tab" id="tab-topics" data-tab="topics" aria-controls="panel-topics" aria-selected="false">主题</button>
-      <button type="button" role="tab" id="tab-trends" data-tab="trends" aria-controls="panel-trends" aria-selected="false">消息趋势</button>
+      <button type="button" role="tab" id="tab-clients" class="admin-only" data-tab="clients" aria-controls="panel-clients" aria-selected="false">已连接客户端</button>
+      <button type="button" role="tab" id="tab-topics" class="admin-only" data-tab="topics" aria-controls="panel-topics" aria-selected="false">主题</button>
     </div>
     <section id="panel-summary" role="tabpanel" aria-labelledby="tab-summary">
-      <div class="cards" id="cards"></div>
+      <div class="summary-dashboard">
+        <div class="cards" id="cards"></div>
+        <div class="trend-panel summary-trend">
+          <div class="trend-head">
+            <div><h2>消息趋势</h2><p>每分钟接收与分发数量</p></div>
+            <label class="trend-controls"><span>时间范围</span>
+              <select id="trend-minutes" aria-label="消息趋势时间范围">
+                <option value="60">最近 1 小时</option>
+                <option value="180" selected>最近 3 小时</option>
+                <option value="360">最近 6 小时</option>
+                <option value="1440">最近 24 小时</option>
+              </select>
+            </label>
+          </div>
+          <div class="trend-legend"><span class="accepted">接收</span><span class="delivered">分发</span></div>
+          <div id="message-trend-chart" class="trend-chart"><div class="empty">正在加载消息趋势…</div></div>
+        </div>
+      </div>
     </section>
     <section id="panel-clients" role="tabpanel" aria-labelledby="tab-clients" hidden>
       <div id="clients"></div>
     </section>
     <section id="panel-topics" role="tabpanel" aria-labelledby="tab-topics" hidden>
       <div id="topics"></div>
-    </section>
-    <section id="panel-trends" role="tabpanel" aria-labelledby="tab-trends" hidden>
-      <div class="trend-panel">
-        <div class="trend-head">
-          <h2>每分钟消息数量</h2>
-          <label class="trend-controls"><span>时间范围</span>
-            <select id="trend-minutes" aria-label="消息趋势时间范围">
-              <option value="60">最近 1 小时</option>
-              <option value="180" selected>最近 3 小时</option>
-              <option value="360">最近 6 小时</option>
-              <option value="1440">最近 24 小时</option>
-            </select>
-          </label>
-        </div>
-        <div class="trend-legend"><span class="accepted">接收</span><span class="delivered">分发</span></div>
-        <div id="message-trend-chart" class="trend-chart"><div class="empty">正在加载消息趋势…</div></div>
-      </div>
     </section>
   </div>
   </section>
@@ -871,6 +883,13 @@
       }
       $("admin-login").querySelector(".btn-label").textContent =
         adminAuthenticated ? "退出管理员" : "管理员登录";
+      document.querySelectorAll(".admin-only").forEach((item) => {
+        item.classList.toggle("authorized", adminAuthenticated);
+      });
+      if (!adminAuthenticated && (currentView() !== "messages" || currentTab() !== "summary")) {
+        setView("messages");
+        setTab("summary");
+      }
       if (lastTopics.length) renderTopics(lastTopics);
     }
 
@@ -878,6 +897,7 @@
       if (adminAuthenticated) {
         await fetch(apiUrl("auth/logout"), { method: "POST" });
         await refreshAdminAuth();
+        await refreshStatus();
         return;
       }
       const password = prompt("请输入管理员密码");
@@ -892,6 +912,7 @@
         return;
       }
       await refreshAdminAuth();
+      await refreshStatus();
     });
 
     function currentTheme() {
@@ -932,7 +953,7 @@
     function currentTab() {
       const parts = location.hash.replace(/^#/, "").split("/");
       const tab = parts[1];
-      if (tab === "summary" || tab === "topics" || tab === "clients" || tab === "trends") return tab;
+      if (tab === "summary" || tab === "topics" || tab === "clients") return tab;
       return "summary";
     }
 
@@ -945,7 +966,6 @@
       $("panel-summary").hidden = tab !== "summary";
       $("panel-clients").hidden = tab !== "clients";
       $("panel-topics").hidden = tab !== "topics";
-      $("panel-trends").hidden = tab !== "trends";
     }
 
     function writeHash(view, tab) {
@@ -954,16 +974,18 @@
     }
 
     function setTab(name) {
-      const tab = name === "summary" || name === "clients" || name === "topics" || name === "trends"
+      const requested = name === "summary" || name === "clients" || name === "topics"
         ? name
         : "summary";
+      const tab = !adminAuthenticated && requested !== "summary" ? "summary" : requested;
       applyTab(tab);
       writeHash(currentView(), tab);
-      if (tab === "trends") loadMessageTrends(true);
+      if (tab === "summary") loadMessageTrends(true);
     }
 
     function setView(name) {
-      const view = VIEWS.indexOf(name) >= 0 ? name : "messages";
+      const requested = VIEWS.indexOf(name) >= 0 ? name : "messages";
+      const view = !adminAuthenticated && requested !== "messages" ? "messages" : requested;
       try { localStorage.setItem(VIEW_KEY, view); } catch (_) {}
       document.querySelectorAll(".topnav [data-view]").forEach((link) => {
         link.classList.toggle("active", link.getAttribute("data-view") === view);
@@ -1459,7 +1481,7 @@
         '<section class="metric-group resource-group"><div class="metric-group-title">服务资源</div>' +
         '<div class="metric-grid resources">' +
         card("主题数", data.topics) +
-        card("客户端", (data.clients || []).length) +
+        card("客户端", data.client_count == null ? (data.clients || []).length : data.client_count) +
         card("在线流", data.consumers) +
         card("SQLite", fmtBytes(data.db_bytes)) +
         "</div></section>" +
@@ -1474,8 +1496,10 @@
         card("重复提交", data.duplicates) +
         "</div></section>";
 
-      renderClients(data.clients || []);
-      renderTopics(data.topics_detail || []);
+      if (adminAuthenticated) {
+        renderClients(data.clients || []);
+        renderTopics(data.topics_detail || []);
+      }
     }
 
     function numCell(value, extra) {
@@ -1711,7 +1735,8 @@
         const token = new URLSearchParams(location.search).get("token") || "";
         const headers = {};
         if (token) headers.Authorization = "Bearer " + token;
-        const response = await fetch(apiUrl("status"), { cache: "no-store", headers });
+        const endpoint = adminAuthenticated ? "status/details" : "status";
+        const response = await fetch(apiUrl(endpoint), { cache: "no-store", headers });
         if (!response.ok) throw new Error("HTTP " + response.status);
         render(await response.json());
       } catch (error) {
@@ -1894,13 +1919,13 @@
 
     let trendResizeTimer = 0;
     window.addEventListener("resize", () => {
-      if (currentTab() !== "trends" || !lastTrendPoints.length) return;
+      if (currentView() !== "messages" || currentTab() !== "summary" || !lastTrendPoints.length) return;
       clearTimeout(trendResizeTimer);
       trendResizeTimer = setTimeout(() => renderMessageTrends(lastTrendPoints, lastTrendMinutes), 100);
     });
 
     async function loadMessageTrends(force) {
-      if (trendLoading || currentTab() !== "trends") return;
+      if (trendLoading || currentView() !== "messages" || currentTab() !== "summary") return;
       const now = Date.now();
       if (!force && now - lastTrendLoadedAt < 10000) return;
       trendLoading = true;
@@ -1996,7 +2021,7 @@
 
     async function refresh() {
       await refreshStatus();
-      if (currentView() === "messages" && currentTab() === "trends") loadMessageTrends(false);
+      if (currentView() === "messages" && currentTab() === "summary") loadMessageTrends(false);
       if (currentView() === "cache") loadCache();
       if (currentView() === "lock") loadLocks();
     }

@@ -59,6 +59,7 @@ struct BrokerStatus {
     failed: i64,
     dropped: i64,
     db_bytes: u64,
+    client_count: usize,
     clients: Vec<ClientInfo>,
     topics_detail: Vec<TopicSnapshot>,
 }
@@ -160,15 +161,18 @@ fn status_routes(state: StatusState) -> Router {
         .route("/health", get(health))
         .route("/status", get(status))
         .route("/message-trends", get(message_trends))
-        .route("/topics", get(list_topics))
-        .route("/messages", get(topic_message))
         .route("/auth/status", get(auth_status))
         .route("/auth/login", post(login))
-        .route("/auth/logout", post(logout))
+        .route("/auth/logout", post(logout));
+    let protected_reads = Router::new()
+        .route("/status/details", get(status_details))
+        .route("/topics", get(list_topics))
+        .route("/messages", get(topic_message))
         .route("/cache", get(cache_get))
         .route("/cache/keys", get(cache_keys))
         .route("/lock", get(lock_get))
-        .route("/lock/list", get(lock_list));
+        .route("/lock/list", get(lock_list))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
     let service_writes = Router::new()
         .route(
             "/cache",
@@ -192,6 +196,7 @@ fn status_routes(state: StatusState) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
     Router::new()
         .merge(public)
+        .merge(protected_reads)
         .merge(service_writes)
         .merge(topic_configuration)
         .merge(admin)
@@ -908,6 +913,19 @@ fn to_body(config: TopicConfig) -> TopicConfigBody {
 }
 
 async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, StatusCode> {
+    let mut status = build_status(&state).await?;
+    status.clients.clear();
+    status.topics_detail.clear();
+    Ok(Json(status))
+}
+
+async fn status_details(
+    State(state): State<StatusState>,
+) -> Result<Json<BrokerStatus>, StatusCode> {
+    build_status(&state).await.map(Json)
+}
+
+async fn build_status(state: &StatusState) -> Result<BrokerStatus, StatusCode> {
     let cutoff = consumer_cutoff(state.consumer_ttl_secs);
     let mut topics_detail = state
         .db
@@ -938,7 +956,8 @@ async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, 
     );
     let consumers = topics_detail.iter().map(|topic| topic.streams).sum();
     let db_bytes = state.db.sqlite_size_bytes().await.unwrap_or(0);
-    Ok(Json(BrokerStatus {
+    let client_count = clients.len();
+    Ok(BrokerStatus {
         version: env!("CARGO_PKG_VERSION"),
         git: env!("GIT_HASH"),
         built: crate::logging::format_wall_time(env!("BUILD_TIME")),
@@ -953,9 +972,10 @@ async fn status(State(state): State<StatusState>) -> Result<Json<BrokerStatus>, 
         failed: topics_detail.iter().map(|topic| topic.failed).sum(),
         dropped: topics_detail.iter().map(|topic| topic.dropped).sum(),
         db_bytes,
+        client_count,
         clients,
         topics_detail,
-    }))
+    })
 }
 
 fn merge_live_sessions(topics: &mut Vec<TopicSnapshot>, sessions: &[SessionInfo]) {
@@ -1442,14 +1462,16 @@ mod tests {
     fn dashboard_html_injects_base_href() {
         let html = dashboard_html(Some("/msg"));
         assert!(html.contains(r#"<base href="/msg/">"#), "{html}");
-        assert!(html.contains("apiUrl(\"status\")"), "{html}");
+        assert!(html.contains("status/details"), "{html}");
         assert!(!html.contains(r#"fetch("/status""#), "{html}");
         assert!(html.contains("data-tab=\"clients\""), "{html}");
         assert!(html.contains("data-tab=\"summary\""), "{html}");
         assert!(html.contains("id=\"panel-summary\""), "{html}");
         assert!(html.contains("data-tab=\"topics\""), "{html}");
-        assert!(html.contains("data-tab=\"trends\""), "{html}");
+        assert!(!html.contains("data-tab=\"trends\""), "{html}");
         assert!(html.contains("message-trends"), "{html}");
+        assert!(html.contains("summary-trend"), "{html}");
+        assert!(html.contains("admin-only"), "{html}");
         assert!(html.contains("trend-accepted"), "{html}");
         assert!(html.contains("trend-delivered"), "{html}");
         assert!(html.contains("withPagers("), "{html}");
@@ -1496,7 +1518,7 @@ mod tests {
     fn dashboard_html_root_has_no_base_tag() {
         let html = dashboard_html(None);
         assert!(!html.contains("<base "));
-        assert!(html.contains("apiUrl(\"status\")"));
+        assert!(html.contains("status/details"));
         assert!(html.contains("role=\"tablist\""));
         assert!(html.contains("pager.top"));
         assert!(html.contains("pager.bottom"));

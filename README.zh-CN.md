@@ -4,7 +4,7 @@
 
 未配置主题默认是 **broadcast**（广播）+ **ephemeral**（即弃）（MQTT 风格：每个在线流都收到一份；没人监听时发布即被丢弃）。把主题设为 **single**（单投）即竞争消费：每条消息只发给一个在线流。设为 **persistent**（持久）则先排队、稍后投递。`Register` 只保存额外的消费者元数据。当 **persistent** 主题没有在线流时，`DOWNSTREAM_URL` 是可选的 HTTP 回退。
 
-生产环境请给 broker 设置 `CL_BROKER_AUTH_TOKEN`。gRPC、MQTT、缓存/分布式锁写入以及程序化主题配置使用该服务令牌；Dashboard 状态和其他 GET 浏览接口公开，`POST /topics` 可使用服务令牌或管理员会话，清空消息仍必须登录管理员。
+生产环境请给 broker 设置 `CL_BROKER_AUTH_TOKEN`。gRPC、MQTT、缓存/分布式锁写入以及程序化主题配置使用该服务令牌。只有 Dashboard 摘要、消息趋势、健康检查和登录接口允许匿名访问；客户端/主题明细、消息浏览、缓存/锁读取及摘要之外的页面都要求管理员会话。`POST /topics` 额外支持服务令牌，供程序自动配置主题。
 
 ## 运行
 
@@ -199,9 +199,9 @@ curl -s http://127.0.0.1:7501/status
 
 首次启动自动创建 `admin`，未配置 `CL_BROKER_ADMIN_PASSWORD` 时初始密码为 `-Cangling@zky`；请登录后立即修改。管理员会话保存在 HttpOnly Cookie 中，空闲两小时失效。执行 `cangling-broker reset-password` 可重置密码并注销全部旧会话；省略 `-p` 时生成符合密码策略的随机密码。
 
-`/` 是单个 HTML 页面，从 `/status` 刷新。`/status` 是 JSON，包含 `version`、`git`、`built` 以及 `db_bytes`（管理库、16 个消息分片及全部 WAL/SHM 的磁盘占用）。每个 `clients[]` 条目在客户端发送了 `x-client-version` 时包含 `version`（Java/Python SDK 会自动发送）；对 MQTT 则是协议版本（`3.1` / `3.1.1`）。官方 SDK 也会发送 `x-client-host`（Docker `HOSTNAME`，或用 `CL_BROKER_CLIENT_HOST` 覆盖），这样当容器都经同一网关 IP 做 NAT 时，仪表盘能区分它们。`consumers` / `streams` 是存活的 `Subscribe` 流数量。仪表盘卡片 **SQLite** 显示同样的占用大小。点击 **persistent** 主题可打开其消费者并浏览已保存消息（`GET /messages?topic=...&offset=0`，offset `0` 为最新）。即弃主题不保存消息体。主题行上的 **清空** 会删除该主题的消息（`DELETE /messages?topic=...`）并重置其计数。
+`/` 是单个 HTML 页面。匿名摘要从 `/status` 刷新，该接口只返回聚合指标并主动移除 `clients[]` 和 `topics_detail[]`。管理员登录后，明细页改从受保护的 `GET /status/details` 获取数据。客户端明细仍显示 SDK 版本、协议、主机和订阅；持久主题可通过受保护的 `GET /messages?topic=...&offset=0` 浏览消息。清空消息必须使用管理员会话。
 
-页头现在链接到三个页面：**消息**（状态概览、已连接客户端、主题及按主题浏览消息）、**缓存**（缓存的按键查询 / 写入 / 删除 / 自增，以及完整键列表）与 **分布式锁**（锁状态 / 获取 / 续期 / 释放，以及完整锁列表）。缓存与锁页面分别从 `GET /cache/keys` 与 `GET /lock/list` 刷新。
+消息趋势已合并到匿名可见的 **摘要** 面板，可选择最近 1、3、6、24 小时。未登录时只显示摘要；登录管理员后才显示客户端、主题、缓存、分布式锁和关于页面，其浏览接口同样受到管理员会话保护。
 
 在反向代理的 `/msg/` 路径后，直接打开 `/msg/`。页面会调用自身旁边的 `status`（`/msg/status`），而不是站点根部的 `/status`。如果 nginx 去掉了前缀（`proxy_pass http://broker:7501/;`），这就够了。如果代理原样转发 `/msg/status`，请设置 `CL_BROKER_WEB_BASE=/msg`，broker 也会在该前缀下提供仪表盘与 JSON。管理员登录同样使用相对路径和会话 Cookie，无需把凭据放进 URL。
 
