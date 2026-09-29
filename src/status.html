@@ -372,6 +372,20 @@
       border-color: var(--danger-emphasis);
     }
     .modal-body { overflow: auto; border-radius: 0; }
+    .login-panel { width: min(430px, 100%); }
+    .login-form { display: grid; gap: 18px; padding: 24px; }
+    .login-intro { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .login-field { display: grid; gap: 8px; color: var(--text); font-size: 13px; font-weight: 650; }
+    .login-field input {
+      width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 8px;
+      outline: none; background: var(--bg-input); color: var(--text);
+    }
+    .login-field input:focus { border-color: var(--accent-emphasis); box-shadow: 0 0 0 3px var(--bg-active); }
+    .login-error { min-height: 20px; color: var(--danger); font-size: 13px; }
+    .login-actions { display: flex; justify-content: flex-end; gap: 10px; }
+    .login-submit { border-color: var(--accent-emphasis); background: var(--accent-emphasis); color: var(--on-emphasis); }
+    .login-submit:hover { filter: brightness(1.06); }
+    .login-submit:disabled { cursor: wait; opacity: .65; }
     .msg-view {
       padding: 12px 14px;
       border-bottom: 1px solid var(--line);
@@ -854,6 +868,28 @@
     </div>
   </section>
   </main>
+  <div id="admin-login-modal" class="modal" hidden>
+    <div class="modal-panel login-panel" role="dialog" aria-modal="true" aria-labelledby="admin-login-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="admin-login-title">管理员登录</h2>
+          <div class="modal-meta">访问客户端、主题及服务管理功能</div>
+        </div>
+        <button type="button" class="btn modal-close" data-close-admin-login aria-label="关闭">关闭</button>
+      </div>
+      <form id="admin-login-form" class="login-form">
+        <p class="login-intro">请输入管理员密码。认证成功后，会话将安全保存在 HttpOnly Cookie 中。</p>
+        <label class="login-field" for="admin-password"><span>管理员密码</span>
+          <input id="admin-password" name="password" type="password" autocomplete="current-password" required placeholder="请输入密码">
+        </label>
+        <div id="admin-login-error" class="login-error" role="alert" aria-live="polite"></div>
+        <div class="login-actions">
+          <button type="button" class="btn" data-close-admin-login>取消</button>
+          <button type="submit" class="btn login-submit" id="admin-login-submit">登录</button>
+        </div>
+      </form>
+    </div>
+  </div>
   <div id="topic-modal" class="modal" hidden>
     <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="topic-modal-title">
       <div class="modal-head">
@@ -893,6 +929,19 @@
       if (lastTopics.length) renderTopics(lastTopics);
     }
 
+    function openAdminLogin() {
+      $("admin-login-error").textContent = "";
+      $("admin-password").value = "";
+      $("admin-login-modal").hidden = false;
+      requestAnimationFrame(() => $("admin-password").focus());
+    }
+
+    function closeAdminLogin() {
+      $("admin-login-modal").hidden = true;
+      $("admin-password").value = "";
+      $("admin-login-error").textContent = "";
+    }
+
     $("admin-login").addEventListener("click", async () => {
       if (adminAuthenticated) {
         await fetch(apiUrl("auth/logout"), { method: "POST" });
@@ -900,19 +949,49 @@
         await refreshStatus();
         return;
       }
-      const password = prompt("请输入管理员密码");
-      if (password === null) return;
-      const response = await fetch(apiUrl("auth/login"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
-      });
-      if (!response.ok) {
-        alert("管理员登录失败");
+      openAdminLogin();
+    });
+
+    $("admin-login-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const password = $("admin-password").value;
+      const submit = $("admin-login-submit");
+      const errorBox = $("admin-login-error");
+      if (!password) {
+        errorBox.textContent = "请输入管理员密码";
+        $("admin-password").focus();
         return;
       }
-      await refreshAdminAuth();
-      await refreshStatus();
+      submit.disabled = true;
+      submit.textContent = "正在登录…";
+      errorBox.textContent = "";
+      try {
+        const response = await fetch(apiUrl("auth/login"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password }),
+        });
+        if (!response.ok) {
+          errorBox.textContent = response.status === 401 ? "密码错误，请重新输入" : "登录失败，请稍后重试";
+          $("admin-password").select();
+          return;
+        }
+        closeAdminLogin();
+        await refreshAdminAuth();
+        await refreshStatus();
+      } catch (_) {
+        errorBox.textContent = "无法连接认证服务，请检查网络后重试";
+      } finally {
+        submit.disabled = false;
+        submit.textContent = "登录";
+      }
+    });
+
+    document.querySelectorAll("[data-close-admin-login]").forEach((button) => {
+      button.addEventListener("click", closeAdminLogin);
+    });
+    $("admin-login-modal").addEventListener("click", (event) => {
+      if (event.target === $("admin-login-modal")) closeAdminLogin();
     });
 
     function currentTheme() {
@@ -1651,6 +1730,10 @@
     });
 
     document.addEventListener("keydown", (event) => {
+      if (!$("admin-login-modal").hidden) {
+        if (event.key === "Escape") closeAdminLogin();
+        return;
+      }
       if ($("topic-modal").hidden) return;
       const typing = event.target && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName);
       if (event.key === "Escape") {
