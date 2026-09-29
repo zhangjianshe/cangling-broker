@@ -4,7 +4,7 @@
 
 未配置主题默认是 **broadcast**（广播）+ **ephemeral**（即弃）（MQTT 风格：每个在线流都收到一份；没人监听时发布即被丢弃）。把主题设为 **single**（单投）即竞争消费：每条消息只发给一个在线流。设为 **persistent**（持久）则先排队、稍后投递。`Register` 只保存额外的消费者元数据。当 **persistent** 主题没有在线流时，`DOWNSTREAM_URL` 是可选的 HTTP 回退。
 
-生产环境请给 broker 设置 `CL_BROKER_AUTH_TOKEN`。gRPC、MQTT、缓存/分布式锁写入以及程序化主题配置使用该服务令牌。只有 Dashboard 摘要、消息趋势、健康检查和登录接口允许匿名访问；客户端/主题明细、消息浏览、缓存/锁读取及摘要之外的页面都要求管理员会话。`POST /topics` 额外支持服务令牌，供程序自动配置主题。
+生产环境请给 broker 设置 `CL_BROKER_AUTH_TOKEN`。机器客户端可使用该服务令牌访问全部受保护的 HTTP 接口以及 gRPC、MQTT。内置 UI 不读取也不转发 URL 中的 token，所有 UI 操作必须使用管理员 Cookie 会话。只有 Dashboard 摘要、消息趋势、健康检查和登录接口允许匿名访问。
 
 ## 运行
 
@@ -199,9 +199,9 @@ curl -s http://127.0.0.1:7501/status
 
 首次启动自动创建 `admin`，未配置 `CL_BROKER_ADMIN_PASSWORD` 时初始密码为 `-Cangling@zky`；请登录后立即修改。管理员会话保存在 HttpOnly Cookie 中，空闲两小时失效。执行 `cangling-broker reset-password` 可重置密码并注销全部旧会话；省略 `-p` 时生成符合密码策略的随机密码。
 
-`/` 是单个 HTML 页面。匿名摘要从 `/status` 刷新，该接口只返回聚合指标并主动移除 `clients[]` 和 `topics_detail[]`。管理员登录后，明细页改从受保护的 `GET /status/details` 获取数据。客户端明细仍显示 SDK 版本、协议、主机和订阅；持久主题可通过受保护的 `GET /messages?topic=...&offset=0` 浏览消息。清空消息必须使用管理员会话。
+`/` 是单个 HTML 页面。匿名摘要从 `/status` 刷新，该接口只返回聚合指标并主动移除 `clients[]` 和 `topics_detail[]`。管理员登录后，明细页改从受保护的 `GET /status/details` 获取数据。客户端明细仍显示 SDK 版本、协议、主机和订阅；持久主题可通过受保护的 `GET /messages?topic=...&offset=0` 浏览消息。UI 清空消息必须登录管理员；机器调用可使用服务 token。
 
-消息趋势已合并到匿名可见的 **摘要** 面板，可选择最近 1、3、6、24 小时。未登录时只显示摘要；登录管理员后才显示客户端、主题、缓存、分布式锁和关于页面，其浏览接口同样受到管理员会话保护。
+消息趋势已合并到匿名可见的 **摘要** 面板，可选择最近 1、3、6、24 小时。未登录时只显示摘要；登录管理员后才显示客户端、主题、缓存、分布式锁和关于页面。受保护接口既接受 UI 使用的管理员 Cookie，也接受机器使用的服务 Bearer token。
 
 在反向代理的 `/msg/` 路径后，直接打开 `/msg/`。页面会调用自身旁边的 `status`（`/msg/status`），而不是站点根部的 `/status`。如果 nginx 去掉了前缀（`proxy_pass http://broker:7501/;`），这就够了。如果代理原样转发 `/msg/status`，请设置 `CL_BROKER_WEB_BASE=/msg`，broker 也会在该前缀下提供仪表盘与 JSON。管理员登录同样使用相对路径和会话 Cookie，无需把凭据放进 URL。
 
@@ -297,7 +297,7 @@ broker 还提供一个小型 Redis 替代：带 TTL 与原子自增的 **内存*
 
 TTL 语义对齐 Redis：`Ttl` 对不存在的键返回 `-2`，对永不过期的键返回 `-1`，否则返回剩余秒数。锁需要 `owner` 令牌；`release` 与 `renew` 只对持有该锁的 owner 生效，租约不会超过其 `ttl_seconds`（因此崩溃的持有者不会让其他人死锁）。
 
-HTTP 读取接口公开；配置了 `CL_BROKER_AUTH_TOKEN` 时，缓存与锁的修改请求必须携带服务 Bearer token：
+缓存与锁的全部 HTTP 接口都受到保护。机器调用携带服务 Bearer token，UI 调用使用管理员 Cookie 会话：
 
 ```bash
 curl -s -H 'authorization: Bearer change-me' 'http://127.0.0.1:7501/cache?key=jobs:count'
@@ -351,7 +351,7 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
 | `CL_BROKER_MQTT_ENABLED` | `true` | 接受 MQTT 3.1.1 客户端；`false` 禁用两个 MQTT 监听 |
 | `CL_BROKER_MQTT_PORT` | `7883` | MQTT TCP 监听。`0` 禁用 TCP。默认是非特权端口；映射 `1883:7883`，或能绑定就设 `1883` |
 | `CL_BROKER_MQTT_WSPORT` | `8083` | MQTT WebSocket 监听（`/mqtt`）。`0` 把 `GET /mqtt` 挂到状态端口 |
-| `CL_BROKER_AUTH_TOKEN` | 不设置 | gRPC、MQTT 及 HTTP 缓存/锁写接口的服务令牌；不能执行 Dashboard 管理操作 |
+| `CL_BROKER_AUTH_TOKEN` | 不设置 | 供机器访问 gRPC、MQTT 和全部受保护 HTTP 接口的服务令牌；Dashboard UI 自身仅使用管理员 Cookie 会话 |
 | `CL_BROKER_ADMIN_PASSWORD` | `-Cangling@zky` | 首次启动的 Dashboard 管理员密码，仅在管理员不存在时使用 |
 | `CL_BROKER_SECURE_COOKIES` | `false` | HTTPS 反向代理下设为 `true`，为管理员会话 Cookie 增加 `Secure` |
 | `CL_BROKER_PASSWORD_REGEX` | 8–128 位且包含大小写和特殊字符 | 管理员密码校验规则 |

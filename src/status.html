@@ -1187,11 +1187,7 @@
         const url = new URL(apiUrl("messages"));
         url.searchParams.set("topic", topic);
         url.searchParams.set("offset", String(offset));
-        const token = new URLSearchParams(location.search).get("token") || "";
-        if (token) url.searchParams.set("token", token);
-        const headers = {};
-        if (token) headers.Authorization = "Bearer " + token;
-        const response = await fetch(url.toString(), { cache: "no-store", headers });
+        const response = await fetch(url.toString(), { cache: "no-store" });
         if (!response.ok) throw new Error("HTTP " + response.status);
         const data = await response.json();
         if (selectedTopicName !== topic) return;
@@ -1732,11 +1728,8 @@
 
     async function refreshStatus() {
       try {
-        const token = new URLSearchParams(location.search).get("token") || "";
-        const headers = {};
-        if (token) headers.Authorization = "Bearer " + token;
         const endpoint = adminAuthenticated ? "status/details" : "status";
-        const response = await fetch(apiUrl(endpoint), { cache: "no-store", headers });
+        const response = await fetch(apiUrl(endpoint), { cache: "no-store" });
         if (!response.ok) throw new Error("HTTP " + response.status);
         render(await response.json());
       } catch (error) {
@@ -1744,13 +1737,6 @@
         $("error").textContent = "无法加载状态接口：" + error.message;
         $("meta").innerHTML = "<span>离线</span>";
       }
-    }
-
-    function authHeaders() {
-      const token = new URLSearchParams(location.search).get("token") || "";
-      const headers = {};
-      if (token) headers.Authorization = "Bearer " + token;
-      return headers;
     }
 
     async function apiRequest(path, options) {
@@ -1761,7 +1747,7 @@
           url.searchParams.set(key, opts.query[key]);
         });
       }
-      const headers = authHeaders();
+      const headers = {};
       if (opts.body !== undefined) headers["Content-Type"] = "application/json";
       const response = await fetch(url.toString(), {
         method: opts.method || "GET",

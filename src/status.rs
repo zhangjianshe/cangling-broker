@@ -172,7 +172,10 @@ fn status_routes(state: StatusState) -> Router {
         .route("/cache/keys", get(cache_keys))
         .route("/lock", get(lock_get))
         .route("/lock/list", get(lock_list))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_or_token,
+        ));
     let service_writes = Router::new()
         .route(
             "/cache",
@@ -184,7 +187,10 @@ fn status_routes(state: StatusState) -> Router {
         .route("/lock", axum::routing::delete(lock_release))
         .route("/lock/acquire", post(lock_acquire))
         .route("/lock/renew", post(lock_renew))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_or_token,
+        ));
     let topic_configuration = Router::new()
         .route("/topics", post(configure_topics))
         .route_layer(middleware::from_fn_with_state(
@@ -193,7 +199,10 @@ fn status_routes(state: StatusState) -> Router {
         ));
     let admin = Router::new()
         .route("/messages", axum::routing::delete(clear_topic_messages))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_or_token,
+        ));
     Router::new()
         .merge(public)
         .merge(protected_reads)
@@ -220,20 +229,6 @@ fn dashboard_html(web_base: Option<&str>) -> String {
         }
         None => html.to_string(),
     }
-}
-
-async fn require_token(
-    State(state): State<StatusState>,
-    request: Request<axum::body::Body>,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    let Some(expected) = state.auth_token.as_deref() else {
-        return Ok(next.run(request).await);
-    };
-    if request_has_service_token(&request, expected) {
-        return Ok(next.run(request).await);
-    }
-    Err(StatusCode::UNAUTHORIZED)
 }
 
 fn request_has_service_token(request: &Request<axum::body::Body>, expected: &str) -> bool {

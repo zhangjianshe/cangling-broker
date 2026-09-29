@@ -4,7 +4,7 @@ A small, Kafka-like building block. Producers and consumers use **gRPC streams**
 
 Unconfigured topics default to **broadcast** + **ephemeral** (MQTT-style: every live stream gets a copy; a publish with nobody listening is dropped). Set a topic to **single** for competing consumers (one live stream gets each message). Set a topic to **persistent** to queue and deliver later. `Register` only stores extra consumer metadata. `DOWNSTREAM_URL` is an optional HTTP fallback when a **persistent** topic has no live stream.
 
-Set `CL_BROKER_AUTH_TOKEN` on the broker for production. gRPC, MQTT, HTTP cache/lock writes, and programmatic topic configuration use this service token. Only the Dashboard summary, message trend, health, and login endpoints are public. Client/topic details, message browsing, cache/lock reads, and every non-summary page require an administrator session. `POST /topics` additionally accepts the service token for application-driven configuration.
+Set `CL_BROKER_AUTH_TOKEN` on the broker for production. Machine clients can use this service token for every protected HTTP API as well as gRPC and MQTT. The shipped UI never reads or forwards a token from its URL: UI operations require an administrator Cookie session. Only the Dashboard summary, message trend, health, and login endpoints are public.
 
 ## Run it
 
@@ -190,7 +190,7 @@ The gRPC API definition is [`proto/queue.proto`](proto/queue.proto). Generate a 
 Broker internals are on a separate HTTP port (`CL_BROKER_WEBPORT`, default `7501`):
 
 ```bash
-# dashboard (reads are public; use the administrator login for management)
+# dashboard (only the summary is public; log in for other UI pages)
 open 'http://127.0.0.1:7501/'
 
 curl -s http://127.0.0.1:7501/health
@@ -203,7 +203,7 @@ On first start the broker creates `admin`; its password is `CL_BROKER_ADMIN_PASS
 
 The **message trend** chart is part of the anonymous summary and plots received/distributed counts per minute for the latest 1, 3, 6, or 24 hours. `GET /message-trends?minutes=180` remains public; `minutes` is limited to 10–1440.
 
-The anonymous header exposes only the message summary. After administrator login it also exposes client/topic tabs and the **缓存**, **分布式锁**, and **关于** pages. Their browser-facing read APIs require the administrator session.
+The anonymous header exposes only the message summary. After administrator login it also exposes client/topic tabs and the **缓存**, **分布式锁**, and **关于** pages. Protected APIs accept either the administrator Cookie (used by the UI) or the service Bearer token (used by machines).
 
 Behind a reverse proxy at `/msg/`, open `/msg/`. The page calls `status` next to itself (`/msg/status`), not `/status` on the site root. If nginx strips the prefix (`proxy_pass http://broker:7501/;`), that is enough. If the proxy forwards `/msg/status` unchanged, set `CL_BROKER_WEB_BASE=/msg` so the broker also serves the dashboard and JSON under that prefix. Administrator login uses the same relative path and session Cookie, so no credential needs to appear in the URL.
 
@@ -293,7 +293,7 @@ without expiry, and the remaining seconds otherwise. Locks require an `owner` to
 `release` and `renew` only succeed for the owner that holds the lock, and a lease
 never outlives its `ttl_seconds` (so a crashed holder cannot deadlock others).
 
-HTTP reads are public. Mutating cache and lock requests require the service Bearer token when `CL_BROKER_AUTH_TOKEN` is configured:
+All cache and lock HTTP APIs are protected. Machines use the service Bearer token; the UI uses its administrator Cookie session:
 
 ```bash
 curl -s -H 'authorization: Bearer change-me' 'http://127.0.0.1:7501/cache?key=jobs:count'
@@ -531,7 +531,7 @@ write-limited container volumes can behave very differently from local NVMe.
 | `CL_BROKER_MQTT_ENABLED` | `true` | accept MQTT 3.1.1 clients; `false` disables both MQTT listeners |
 | `CL_BROKER_MQTT_PORT` | `7883` | MQTT TCP listener. `0` disables TCP. Unprivileged default; map `1883:7883` or set `1883` if you can bind it |
 | `CL_BROKER_MQTT_WSPORT` | `8083` | MQTT WebSocket listener (`/mqtt`). `0` attaches `GET /mqtt` to the status port |
-| `CL_BROKER_AUTH_TOKEN` | unset | service token for gRPC, MQTT, and HTTP cache/lock writes; it cannot perform Dashboard management actions |
+| `CL_BROKER_AUTH_TOKEN` | unset | machine service token for gRPC, MQTT, and every protected HTTP API; the Dashboard UI itself uses only administrator Cookie sessions |
 | `CL_BROKER_ADMIN_PASSWORD` | `-Cangling@zky` | initial Dashboard administrator password, used only when no administrator exists |
 | `CL_BROKER_SECURE_COOKIES` | `false` | add `Secure` to the administrator Cookie behind HTTPS |
 | `CL_BROKER_PASSWORD_REGEX` | default strong-password rule | administrator password validation regex |
