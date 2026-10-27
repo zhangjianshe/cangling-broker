@@ -34,6 +34,21 @@ pub struct Database(
 
 const MESSAGE_SHARDS: usize = 16;
 
+// Keep the ready-time predicate in a covering index ordered by creation time.
+// Putting next_attempt_at before created_at can force a backlog-wide sort on every claim.
+// INDEXED BY keeps planner statistics from selecting that older range-first index.
+const TOPIC_CLAIM_INDEX_SQL: &str = "CREATE INDEX IF NOT EXISTS idx_messages_pending_topic_created
+     ON messages(topic, created_at, next_attempt_at, id) WHERE status = 'pending'";
+
+const TOPIC_CLAIM_SQL: &str = "UPDATE messages
+     SET status = 'processing', attempts = attempts + 1, lease = ?, next_attempt_at = ?
+     WHERE id = (
+         SELECT id FROM messages INDEXED BY idx_messages_pending_topic_created
+         WHERE status = 'pending' AND next_attempt_at <= ? AND topic = ?
+         ORDER BY created_at LIMIT 1
+     ) AND status = 'pending'
+     RETURNING id, topic, payload, attributes, created_at";
+
 #[derive(Clone, Copy, Debug, Default)]
 struct TopicStatsDelta {
     accepted: i64,
@@ -1249,22 +1264,13 @@ impl Database {
         let visible_again = (now
             + chrono::Duration::from_std(visibility).unwrap_or(chrono::Duration::seconds(30)))
         .to_rfc3339();
-        let row = sqlx::query(
-            "UPDATE messages
-             SET status = 'processing', attempts = attempts + 1, lease = ?, next_attempt_at = ?
-             WHERE id = (
-                 SELECT id FROM messages
-                 WHERE status = 'pending' AND next_attempt_at <= ? AND topic = ?
-                 ORDER BY created_at LIMIT 1
-             ) AND status = 'pending'
-             RETURNING id, topic, payload, attributes, created_at",
-        )
-        .bind(&lease)
-        .bind(&visible_again)
-        .bind(&now_text)
-        .bind(topic)
-        .fetch_optional(&self.3[topic_shard(topic)])
-        .await?;
+        let row = sqlx::query(TOPIC_CLAIM_SQL)
+            .bind(&lease)
+            .bind(&visible_again)
+            .bind(&now_text)
+            .bind(topic)
+            .fetch_optional(&self.3[topic_shard(topic)])
+            .await?;
         let Some(row) = row else {
             return Ok(None);
         };
@@ -1720,6 +1726,8 @@ async fn open_message_shards(url: &str) -> anyhow::Result<Vec<SqlitePool>> {
         )
         .execute(&shard)
         .await?;
+        // Also upgrades existing shard files; the legacy control table is not used for claims.
+        sqlx::query(TOPIC_CLAIM_INDEX_SQL).execute(&shard).await?;
         sqlx::query(
             "UPDATE messages SET status = 'pending', lease = NULL WHERE status = 'processing'",
         )
@@ -1928,6 +1936,176 @@ mod tests {
                     .unwrap();
             assert_eq!(stored, 1);
         }
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn topic_claim_uses_covering_index_without_sorting() {
+        let (db, dir) = temp_db().await;
+        let rows = sqlx::query(&format!("EXPLAIN QUERY PLAN {TOPIC_CLAIM_SQL}"))
+            .bind("lease")
+            .bind("2999-01-01T00:00:00Z")
+            .bind(Utc::now().to_rfc3339())
+            .bind("jobs")
+            .fetch_all(&db.3[topic_shard("jobs")])
+            .await
+            .unwrap();
+        let plan = rows
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plan.contains("COVERING INDEX idx_messages_pending_topic_created"),
+            "topic claims must read candidates from the covering index: {plan}"
+        );
+        assert!(
+            !plan.contains("TEMP B-TREE"),
+            "unexpected claim sort: {plan}"
+        );
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn reopening_existing_shards_adds_topic_claim_index() {
+        let (db, dir) = temp_db().await;
+        let (id, _) = db
+            .enqueue(None, "jobs", b"kept", HashMap::new())
+            .await
+            .unwrap();
+        for shard in db.3.iter() {
+            sqlx::query("DROP INDEX idx_messages_pending_topic_created")
+                .execute(shard)
+                .await
+                .unwrap();
+        }
+        db.close().await;
+
+        let db = Database::connect(&format!("sqlite:{}/queue.db", dir.display()))
+            .await
+            .unwrap();
+        for shard in db.3.iter() {
+            let indexes: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_messages_pending_topic_created'",
+            )
+            .fetch_one(shard)
+            .await
+            .unwrap();
+            assert_eq!(indexes, 1);
+        }
+        let claimed = db
+            .claim_next_for_topic("jobs", Duration::from_secs(30))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.id, id);
+        assert_eq!(claimed.payload, b"kept");
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn topic_claim_keeps_creation_order_and_skips_unready_messages() {
+        let (db, dir) = temp_db().await;
+        let topic = "jobs";
+        let other_topic = (0..1000)
+            .map(|index| format!("other/{index}"))
+            .find(|candidate| topic_shard(candidate) == topic_shard(topic))
+            .unwrap();
+        let shard = &db.3[topic_shard(topic)];
+        for (id, topic, status, created_at, ready_at) in [
+            (
+                "delayed",
+                topic,
+                "pending",
+                "2000-01-01T00:00:00Z",
+                "2999-01-01T00:00:00Z",
+            ),
+            (
+                "completed",
+                topic,
+                "delivered",
+                "2000-01-01T00:00:01Z",
+                "2000-01-01T00:00:01Z",
+            ),
+            (
+                "claimed",
+                topic,
+                "processing",
+                "2000-01-01T00:00:02Z",
+                "2999-01-01T00:00:00Z",
+            ),
+            (
+                "other",
+                other_topic.as_str(),
+                "pending",
+                "2000-01-01T00:00:03Z",
+                "2000-01-01T00:00:03Z",
+            ),
+            (
+                "oldest",
+                topic,
+                "pending",
+                "2000-01-01T00:00:04Z",
+                "2000-01-01T00:00:09Z",
+            ),
+            (
+                "newest",
+                topic,
+                "pending",
+                "2000-01-01T00:00:05Z",
+                "2000-01-01T00:00:08Z",
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO messages (id, topic, payload, attributes, status, created_at, next_attempt_at)
+                 VALUES (?, ?, X'01', '{}', ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(topic)
+            .bind(status)
+            .bind(created_at)
+            .bind(ready_at)
+            .execute(shard)
+            .await
+            .unwrap();
+        }
+        db.refresh_queue_depths().await.unwrap();
+        for expected in ["oldest", "newest"] {
+            let claimed = db
+                .claim_next_for_topic(topic, Duration::from_secs(30))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(claimed.id, expected);
+            let row = sqlx::query("SELECT status, attempts, lease FROM messages WHERE id = ?")
+                .bind(&claimed.id)
+                .fetch_one(shard)
+                .await
+                .unwrap();
+            assert_eq!(row.get::<String, _>("status"), "processing");
+            assert_eq!(row.get::<i64, _>("attempts"), 1);
+            assert_eq!(row.get::<String, _>("lease"), claimed.lease);
+        }
+        assert!(db
+            .claim_next_for_topic(topic, Duration::from_secs(30))
+            .await
+            .unwrap()
+            .is_none());
+        sqlx::query("UPDATE messages SET next_attempt_at = ? WHERE id = 'delayed'")
+            .bind("2000-01-01T00:00:00Z")
+            .execute(shard)
+            .await
+            .unwrap();
+        let retry = db
+            .claim_next_for_topic(topic, Duration::from_secs(30))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.id, "delayed");
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }
