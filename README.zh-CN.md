@@ -367,6 +367,7 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
 | `CL_BROKER_WRITE_QUEUE_SIZE` | `8192` | 触发生产者背压前的内存写队列容量 |
 | `CL_BROKER_INGEST_INFLIGHT` | `128` | 每条 gRPC 生产流并发处理的发布上限；响应保持顺序 |
 | `CL_BROKER_CONSUMER_PREFETCH` | `32` | 每个订阅允许的未确认持久化消息数；严格串行投递可设为 `1` |
+| `CL_BROKER_CLAIM_BATCH_SIZE` | `16` | 每次 SQL 领取的消息数，限制为 1–128，且不超过订阅的剩余 prefetch 配额；设为 `1` 可对比逐条领取 |
 | `MAX_DELIVERY_ATTEMPTS` | `10` | 消息标记为失败前的尝试次数 |
 | `MESSAGE_RETENTION_DAYS` | `10` | 删除超过此天数的消息（任意状态，按 `created_at`）；`0` 永久保留 |
 | `CL_BROKER_DELIVERED_RETENTION_HOURS` | `24` | 删除 `delivered_at` 超过此时长的已投递消息；`0` 禁用。pending、failed、dropped 行仍按 `MESSAGE_RETENTION_DAYS` 保留 |

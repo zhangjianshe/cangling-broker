@@ -25,7 +25,6 @@ use crate::model::{
 pub struct Database(
     pub SqlitePool,
     Arc<RwLock<HashMap<String, TopicConfig>>>,
-    Arc<RwLock<HashMap<String, (i64, i64)>>>,
     Arc<Vec<SqlitePool>>,
     Arc<AtomicUsize>,
     Arc<Mutex<HashMap<String, TopicStatsDelta>>>,
@@ -40,14 +39,20 @@ const MESSAGE_SHARDS: usize = 16;
 const TOPIC_CLAIM_INDEX_SQL: &str = "CREATE INDEX IF NOT EXISTS idx_messages_pending_topic_created
      ON messages(topic, created_at, next_attempt_at, id) WHERE status = 'pending'";
 
-const TOPIC_CLAIM_SQL: &str = "UPDATE messages
+const TOPIC_CLAIM_BATCH_SQL: &str = "UPDATE messages
      SET status = 'processing', attempts = attempts + 1, lease = ?, next_attempt_at = ?
-     WHERE id = (
+     WHERE id IN (
          SELECT id FROM messages INDEXED BY idx_messages_pending_topic_created
          WHERE status = 'pending' AND next_attempt_at <= ? AND topic = ?
-         ORDER BY created_at LIMIT 1
+         ORDER BY created_at LIMIT ?
      ) AND status = 'pending'
      RETURNING id, topic, payload, attributes, created_at";
+
+const QUEUE_DEPTH_SQL: &str = "SELECT topic,
+    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+    SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) AS processing
+    FROM messages INDEXED BY idx_messages_active_depth
+    WHERE status IN ('pending', 'processing') GROUP BY topic";
 
 #[derive(Clone, Copy, Debug, Default)]
 struct TopicStatsDelta {
@@ -104,7 +109,7 @@ impl Database {
         limit_per_shard: usize,
     ) -> anyhow::Result<Vec<(usize, String, String)>> {
         let mut entries = Vec::new();
-        for (shard, pool) in self.3.iter().enumerate() {
+        for (shard, pool) in self.2.iter().enumerate() {
             let rows = sqlx::query(
                 "SELECT idempotency_key, id FROM (
                     SELECT idempotency_key, id, created_at
@@ -316,8 +321,8 @@ impl Database {
         )
         .execute(&pool)
         .await?;
-        // Queue depth is maintained incrementally during normal operation. Reconcile it once
-        // on startup so upgrades and crash recovery begin from authoritative message rows.
+        // Seed the topic catalog from authoritative rows after crash recovery. Status reads
+        // active rows directly; post-commit cache deltas can race and permanently drift.
         let queue_depths = load_queue_depths(&shards).await?;
         sqlx::query("UPDATE topic_stats SET pending = 0, processing = 0")
             .execute(&pool)
@@ -381,11 +386,9 @@ impl Database {
                 )
             })
             .collect();
-        let depths = queue_depths;
         Ok(Self(
             pool,
             Arc::new(RwLock::new(topics)),
-            Arc::new(RwLock::new(depths)),
             Arc::new(shards),
             Arc::new(AtomicUsize::new(0)),
             Arc::new(Mutex::new(HashMap::new())),
@@ -509,7 +512,7 @@ impl Database {
         {
             tracing::warn!(%error, "sqlite wal_checkpoint failed during shutdown");
         }
-        for shard in self.3.iter() {
+        for shard in self.2.iter() {
             let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
                 .execute(shard)
                 .await;
@@ -549,7 +552,7 @@ impl Database {
     }
 
     fn record_topic_stats(&self, topic: &str, delta: TopicStatsDelta) {
-        let mut pending = self.5.lock().expect("topic stats delta cache");
+        let mut pending = self.4.lock().expect("topic stats delta cache");
         let entry = pending.entry(topic.to_string()).or_default();
         entry.accepted += delta.accepted;
         entry.duplicates += delta.duplicates;
@@ -562,7 +565,7 @@ impl Database {
             return;
         }
         let minute = Utc::now().format("%Y-%m-%dT%H:%M:00Z").to_string();
-        let mut trends = self.6.lock().expect("message trend delta cache");
+        let mut trends = self.5.lock().expect("message trend delta cache");
         let trend = trends.entry(minute).or_default();
         trend.accepted += accepted;
         trend.delivered += delivered;
@@ -570,7 +573,7 @@ impl Database {
 
     pub(crate) async fn flush_message_trends(&self) -> anyhow::Result<usize> {
         let pending = {
-            let mut guard = self.6.lock().expect("message trend delta cache");
+            let mut guard = self.5.lock().expect("message trend delta cache");
             std::mem::take(&mut *guard)
         };
         if pending.is_empty() {
@@ -604,7 +607,7 @@ impl Database {
         }
         .await;
         if let Err(error) = result {
-            let mut guard = self.6.lock().expect("message trend delta cache");
+            let mut guard = self.5.lock().expect("message trend delta cache");
             for (minute, delta) in pending {
                 let entry = guard.entry(minute).or_default();
                 entry.accepted += delta.accepted;
@@ -641,7 +644,7 @@ impl Database {
                 )
             })
             .collect();
-        let pending = self.6.lock().expect("message trend delta cache").clone();
+        let pending = self.5.lock().expect("message trend delta cache").clone();
         for (minute, delta) in pending {
             if minute < cutoff {
                 continue;
@@ -661,7 +664,7 @@ impl Database {
 
     pub(crate) async fn flush_topic_stats(&self) -> anyhow::Result<usize> {
         let pending = {
-            let mut guard = self.5.lock().expect("topic stats delta cache");
+            let mut guard = self.4.lock().expect("topic stats delta cache");
             std::mem::take(&mut *guard)
         };
         if pending.is_empty() {
@@ -696,7 +699,7 @@ impl Database {
         .await;
 
         if let Err(error) = result {
-            let mut guard = self.5.lock().expect("topic stats delta cache");
+            let mut guard = self.4.lock().expect("topic stats delta cache");
             for (topic, delta) in pending {
                 let entry = guard.entry(topic).or_default();
                 entry.accepted += delta.accepted;
@@ -708,18 +711,11 @@ impl Database {
         Ok(pending.len())
     }
 
-    fn bump_queue_depth(&self, topic: &str, pending: i64, processing: i64) {
-        let mut depths = self.2.write().expect("queue depth cache");
-        let depth = depths.entry(topic.to_string()).or_default();
-        depth.0 = (depth.0 + pending).max(0);
-        depth.1 = (depth.1 + processing).max(0);
-    }
-
     async fn shard_index_for_id(&self, id: &str) -> anyhow::Result<Option<usize>> {
         if let Some(index) = message_id_shard(id) {
             return Ok(Some(index));
         }
-        for (index, shard) in self.3.iter().enumerate() {
+        for (index, shard) in self.2.iter().enumerate() {
             let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM messages WHERE id = ?")
                 .bind(id)
                 .fetch_optional(shard)
@@ -729,13 +725,6 @@ impl Database {
             }
         }
         Ok(None)
-    }
-
-    async fn refresh_queue_depths(&self) -> anyhow::Result<()> {
-        let fresh = load_queue_depths(&self.3).await?;
-        let mut depths = self.2.write().expect("queue depth cache");
-        *depths = fresh;
-        Ok(())
     }
 
     pub async fn status_snapshot(
@@ -762,8 +751,8 @@ impl Database {
             topic.delivered = row.get("delivered");
             topic.failed = row.get("failed");
             topic.dropped = row.get("dropped");
-            topic.pending = row.get("pending");
-            topic.processing = row.get("processing");
+            topic.pending = 0;
+            topic.processing = 0;
             let delivery: String = row.get("delivery");
             topic.delivery = DeliveryMode::from_stored(&delivery).as_str().to_string();
             let persistence: String = row.get("persistence");
@@ -771,13 +760,13 @@ impl Database {
                 .as_str()
                 .to_string();
         }
-        for (name, (pending, processing)) in self.2.read().expect("queue depth cache").iter() {
+        for (name, (pending, processing)) in load_queue_depths(&self.2).await? {
             let topic = topics.entry(name.clone()).or_insert_with(|| TopicSnapshot {
                 name: name.clone(),
                 ..TopicSnapshot::default()
             });
-            topic.pending = *pending;
-            topic.processing = *processing;
+            topic.pending = pending;
+            topic.processing = processing;
         }
 
         for row in sqlx::query(
@@ -947,7 +936,7 @@ impl Database {
             if group.is_empty() {
                 continue;
             }
-            let mut tx = self.3[shard_index].begin().await?;
+            let mut tx = self.2[shard_index].begin().await?;
             for (index, item) in group {
                 let id = item.id;
                 let now = Utc::now().to_rfc3339();
@@ -999,7 +988,6 @@ impl Database {
                     ..TopicStatsDelta::default()
                 },
             );
-            self.bump_queue_depth(&topic, accepted, 0);
         }
         Ok(results
             .into_iter()
@@ -1039,7 +1027,7 @@ impl Database {
              FROM messages WHERE id = ?",
         )
         .bind(&id)
-        .fetch_optional(&self.3[shard_index])
+        .fetch_optional(&self.2[shard_index])
         .await?
         else {
             return Ok(TopicMessagePage {
@@ -1076,7 +1064,7 @@ impl Database {
         if !crate::topic::is_wildcard_filter(filter) {
             let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE topic = ?")
                 .bind(filter)
-                .fetch_one(&self.3[topic_shard(filter)])
+                .fetch_one(&self.2[topic_shard(filter)])
                 .await?;
             if total == 0 || offset >= total {
                 return Ok((total, None));
@@ -1087,12 +1075,12 @@ impl Database {
             )
             .bind(filter)
             .bind(offset)
-            .fetch_optional(&self.3[topic_shard(filter)])
+            .fetch_optional(&self.2[topic_shard(filter)])
             .await?;
             return Ok((total, id));
         }
         let mut matched: Vec<(String, String)> = Vec::new();
-        for shard in self.3.iter() {
+        for shard in self.2.iter() {
             for row in sqlx::query("SELECT id, topic, created_at FROM messages")
                 .fetch_all(shard)
                 .await?
@@ -1115,11 +1103,11 @@ impl Database {
         if !crate::topic::is_wildcard_filter(filter) {
             deleted = sqlx::query("DELETE FROM messages WHERE topic = ?")
                 .bind(filter)
-                .execute(&self.3[topic_shard(filter)])
+                .execute(&self.2[topic_shard(filter)])
                 .await?
                 .rows_affected();
         } else {
-            for shard in self.3.iter() {
+            for shard in self.2.iter() {
                 let rows = sqlx::query("SELECT id, topic FROM messages")
                     .fetch_all(shard)
                     .await?;
@@ -1136,7 +1124,7 @@ impl Database {
             }
         }
         self.reset_topic_stats(filter).await?;
-        self.refresh_queue_depths().await?;
+
         Ok(deleted)
     }
 
@@ -1175,12 +1163,11 @@ impl Database {
              WHERE topic = ? AND status = 'pending'",
         )
         .bind(topic)
-        .execute(&self.3[topic_shard(topic)])
+        .execute(&self.2[topic_shard(topic)])
         .await?;
         let dropped = result.rows_affected();
         if dropped > 0 {
             self.bump_dropped(topic, dropped as i64).await?;
-            self.bump_queue_depth(topic, -(dropped as i64), 0);
         }
         Ok(dropped)
     }
@@ -1189,7 +1176,7 @@ impl Database {
         let Some(shard_index) = self.shard_index_for_id(id).await? else {
             return Ok(false);
         };
-        let shard = &self.3[shard_index];
+        let shard = &self.2[shard_index];
         let row = sqlx::query(
             "SELECT topic FROM messages WHERE id = ? AND lease = ? AND status = 'processing'",
         )
@@ -1214,7 +1201,7 @@ impl Database {
             return Ok(false);
         }
         self.bump_dropped(&topic, 1).await?;
-        self.bump_queue_depth(&topic, 0, -1);
+
         Ok(true)
     }
 
@@ -1237,7 +1224,7 @@ impl Database {
     pub async fn reclaim_stale(&self) -> anyhow::Result<u64> {
         let now = Utc::now().to_rfc3339();
         let mut affected = 0;
-        for shard in self.3.iter() {
+        for shard in self.2.iter() {
             affected += sqlx::query(
                 "UPDATE messages SET status = 'pending', lease = NULL
                  WHERE status = 'processing' AND next_attempt_at <= ?",
@@ -1247,64 +1234,113 @@ impl Database {
             .await?
             .rows_affected();
         }
-        if affected > 0 {
-            self.refresh_queue_depths().await?;
-        }
         Ok(affected)
     }
 
+    #[cfg(test)]
     pub async fn claim_next_for_topic(
         &self,
         topic: &str,
         visibility: Duration,
     ) -> anyhow::Result<Option<ClaimedMessage>> {
-        let now = Utc::now();
-        let now_text = now.to_rfc3339();
-        let lease = Uuid::new_v4().to_string();
-        let visible_again = (now
-            + chrono::Duration::from_std(visibility).unwrap_or(chrono::Duration::seconds(30)))
-        .to_rfc3339();
-        let row = sqlx::query(TOPIC_CLAIM_SQL)
-            .bind(&lease)
-            .bind(&visible_again)
-            .bind(&now_text)
-            .bind(topic)
-            .fetch_optional(&self.3[topic_shard(topic)])
-            .await?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let topic: String = row.get("topic");
-        self.bump_queue_depth(&topic, -1, 1);
-        Ok(Some(ClaimedMessage {
-            id: row.get("id"),
-            topic,
-            payload: row.get("payload"),
-            attributes: serde_json::from_str(&row.get::<String, _>("attributes"))?,
-            created_at: row.get("created_at"),
-            lease,
-        }))
+        Ok(self
+            .claim_batch_for_topic(topic, visibility, 1)
+            .await?
+            .pop())
     }
 
+    pub async fn claim_batch_for_topic(
+        &self,
+        topic: &str,
+        visibility: Duration,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ClaimedMessage>> {
+        let started = std::time::Instant::now();
+        let now = Utc::now();
+        let lease = Uuid::new_v4().to_string();
+        let visible_again = (now + chrono::Duration::from_std(visibility)?).to_rfc3339();
+        let rows = sqlx::query(TOPIC_CLAIM_BATCH_SQL)
+            .bind(&lease)
+            .bind(visible_again)
+            .bind(now.to_rfc3339())
+            .bind(topic)
+            .bind(limit.clamp(1, 128) as i64)
+            .fetch_all(&self.2[topic_shard(topic)])
+            .await?;
+        crate::metrics::CLAIM.record(started.elapsed());
+        let mut messages = Vec::with_capacity(rows.len());
+        for row in rows {
+            messages.push(ClaimedMessage {
+                id: row.get("id"),
+                topic: row.get("topic"),
+                payload: row.get("payload"),
+                attributes: serde_json::from_str(&row.get::<String, _>("attributes"))?,
+                created_at: row.get("created_at"),
+                lease: lease.clone(),
+            });
+        }
+        // SQLite RETURNING order is unspecified even when the candidate scan is ordered.
+        messages.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        tracing::debug!(
+            topic,
+            count = messages.len(),
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "queue claim batch"
+        );
+        Ok(messages)
+    }
+
+    #[cfg(test)]
     pub async fn claim_next_for_filter(
         &self,
         filter: &str,
         visibility: Duration,
     ) -> anyhow::Result<Option<ClaimedMessage>> {
+        Ok(self
+            .claim_batch_for_filter(filter, visibility, 1)
+            .await?
+            .pop())
+    }
+
+    pub async fn claim_batch_for_filter(
+        &self,
+        filter: &str,
+        visibility: Duration,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ClaimedMessage>> {
         if !crate::topic::is_wildcard_filter(filter) {
-            return self.claim_next_for_topic(filter, visibility).await;
+            return self.claim_batch_for_topic(filter, visibility, limit).await;
         }
-        let start = self.4.fetch_add(1, Ordering::Relaxed) % MESSAGE_SHARDS;
+        let start = self.3.fetch_add(1, Ordering::Relaxed);
+        // Match distinct ready topics, not an arbitrary prefix of message rows. A hot,
+        // unrelated topic must never hide a matching message behind the first 64 rows.
         for offset in 0..MESSAGE_SHARDS {
-            let shard_index = (start + offset) % MESSAGE_SHARDS;
-            if let Some(message) = self
-                .claim_next_matching_on_shard(shard_index, filter, visibility)
-                .await?
-            {
-                return Ok(Some(message));
+            let shard_index = start.wrapping_add(offset) % MESSAGE_SHARDS;
+            let topics: Vec<String> = sqlx::query_scalar(
+                "SELECT DISTINCT topic FROM messages INDEXED BY idx_messages_pending_topic_created
+                 WHERE status = 'pending' AND next_attempt_at <= ?",
+            )
+            .bind(Utc::now().to_rfc3339())
+            .fetch_all(&self.2[shard_index])
+            .await?;
+            if topics.is_empty() {
+                continue;
+            }
+            for offset in 0..topics.len() {
+                // Advance topic selection once per shard sweep. Using start directly
+                // couples topic and shard moduli and can starve topics when every
+                // shard is busy (e.g. 16 shards with two topics per shard).
+                let topic_start = start / MESSAGE_SHARDS;
+                let topic = &topics[topic_start.wrapping_add(offset) % topics.len()];
+                if crate::topic::filter_matches(filter, topic) {
+                    let messages = self.claim_batch_for_topic(topic, visibility, limit).await?;
+                    if !messages.is_empty() {
+                        return Ok(messages);
+                    }
+                }
             }
         }
-        Ok(None)
+        Ok(Vec::new())
     }
 
     pub async fn release(&self, id: &str, lease: &str) -> anyhow::Result<bool> {
@@ -1312,19 +1348,15 @@ impl Database {
             return Ok(false);
         };
         let topic: Option<String> = sqlx::query_scalar(
-            "UPDATE messages SET status = 'pending', lease = NULL
+            "UPDATE messages SET status = 'pending', lease = NULL, next_attempt_at = ?
              WHERE id = ? AND lease = ? AND status = 'processing' RETURNING topic",
         )
+        .bind(Utc::now().to_rfc3339())
         .bind(id)
         .bind(lease)
-        .fetch_optional(&self.3[shard_index])
+        .fetch_optional(&self.2[shard_index])
         .await?;
-        if let Some(topic) = topic {
-            self.bump_queue_depth(&topic, 1, -1);
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        Ok(topic.is_some())
     }
 
     pub async fn claim_next_excluding(
@@ -1332,7 +1364,7 @@ impl Database {
         visibility: Duration,
         skip_topics: &[String],
     ) -> anyhow::Result<Option<ClaimedMessage>> {
-        let start = self.4.fetch_add(1, Ordering::Relaxed) % MESSAGE_SHARDS;
+        let start = self.3.fetch_add(1, Ordering::Relaxed) % MESSAGE_SHARDS;
         for offset in 0..MESSAGE_SHARDS {
             let shard_index = (start + offset) % MESSAGE_SHARDS;
             let placeholders = std::iter::repeat_n("?", skip_topics.len())
@@ -1353,44 +1385,12 @@ impl Database {
             for topic in skip_topics {
                 query = query.bind(topic);
             }
-            let row = query.fetch_optional(&self.3[shard_index]).await?;
+            let row = query.fetch_optional(&self.2[shard_index]).await?;
             if let Some(message) = self.finish_claim(shard_index, now, visibility, row).await? {
                 return Ok(Some(message));
             }
         }
         Ok(None)
-    }
-
-    async fn claim_next_matching_on_shard(
-        &self,
-        shard_index: usize,
-        filter: &str,
-        visibility: Duration,
-    ) -> anyhow::Result<Option<ClaimedMessage>> {
-        let now_text = Utc::now().to_rfc3339();
-        let rows = sqlx::query(
-            "SELECT id, topic FROM messages
-             WHERE status = 'pending' AND next_attempt_at <= ?
-             ORDER BY created_at LIMIT 64",
-        )
-        .bind(&now_text)
-        .fetch_all(&self.3[shard_index])
-        .await?;
-        let Some(id) = rows.into_iter().find_map(|row| {
-            let topic: String = row.get("topic");
-            crate::topic::filter_matches(filter, &topic).then(|| row.get::<String, _>("id"))
-        }) else {
-            return Ok(None);
-        };
-        let now = Utc::now();
-        let row = sqlx::query(
-            "SELECT id, topic, payload, attributes, created_at FROM messages
-             WHERE id = ? AND status = 'pending'",
-        )
-        .bind(&id)
-        .fetch_optional(&self.3[shard_index])
-        .await?;
-        self.finish_claim(shard_index, now, visibility, row).await
     }
 
     async fn finish_claim(
@@ -1415,13 +1415,13 @@ impl Database {
             .bind(&lease)
             .bind(&visible_again)
             .bind(&id)
-            .execute(&self.3[shard_index])
+            .execute(&self.2[shard_index])
             .await?;
         if changed.rows_affected() == 0 {
             return Ok(None);
         }
         let topic: String = row.get("topic");
-        self.bump_queue_depth(&topic, -1, 1);
+
         Ok(Some(ClaimedMessage {
             id,
             topic,
@@ -1458,7 +1458,7 @@ impl Database {
             if group.is_empty() {
                 continue;
             }
-            let mut tx = self.3[shard_index].begin().await?;
+            let mut tx = self.2[shard_index].begin().await?;
             for (index, id, lease) in group {
                 let topic: Option<String> = sqlx::query_scalar(
                     "UPDATE messages
@@ -1486,7 +1486,6 @@ impl Database {
                     ..TopicStatsDelta::default()
                 },
             );
-            self.bump_queue_depth(&topic, 0, -delivered);
         }
         Ok(results)
     }
@@ -1501,7 +1500,7 @@ impl Database {
         let Some(shard_index) = self.shard_index_for_id(id).await? else {
             return Ok(false);
         };
-        let shard = &self.3[shard_index];
+        let shard = &self.2[shard_index];
         let row = sqlx::query(
             "SELECT topic, attempts FROM messages WHERE id = ? AND lease = ? AND status = 'processing'",
         )
@@ -1537,9 +1536,6 @@ impl Database {
         }
         if status == "failed" {
             self.bump_topic_stat(&topic, 0, 0, 0, 1).await?;
-            self.bump_queue_depth(&topic, 0, -1);
-        } else {
-            self.bump_queue_depth(&topic, 1, -1);
         }
         Ok(true)
     }
@@ -1561,7 +1557,7 @@ impl Database {
         }
         let mut total =
             file_len(&path) + file_len(&format!("{path}-wal")) + file_len(&format!("{path}-shm"));
-        for shard in self.3.iter() {
+        for shard in self.2.iter() {
             let shard_path: String =
                 sqlx::query_scalar("SELECT file FROM pragma_database_list WHERE name = 'main'")
                     .fetch_one(shard)
@@ -1575,15 +1571,12 @@ impl Database {
 
     pub async fn purge_older_than(&self, cutoff: &str) -> anyhow::Result<u64> {
         let mut affected = 0;
-        for shard in self.3.iter() {
+        for shard in self.2.iter() {
             affected += sqlx::query("DELETE FROM messages WHERE created_at < ?")
                 .bind(cutoff)
                 .execute(shard)
                 .await?
                 .rows_affected();
-        }
-        if affected > 0 {
-            self.refresh_queue_depths().await?;
         }
         Ok(affected)
     }
@@ -1592,7 +1585,7 @@ impl Database {
     /// Caller passes `now - delivered_retention_hours`. Other statuses stay.
     pub async fn purge_delivered_older_than(&self, cutoff: &str) -> anyhow::Result<u64> {
         let mut affected = 0;
-        for shard in self.3.iter() {
+        for shard in self.2.iter() {
             affected += sqlx::query(
                 "DELETE FROM messages
                  WHERE status = 'delivered' AND delivered_at IS NOT NULL AND delivered_at < ?",
@@ -1634,7 +1627,7 @@ impl Database {
         for topic in &stale {
             sqlx::query("DELETE FROM messages WHERE topic = ?")
                 .bind(topic)
-                .execute(&self.3[topic_shard(topic)])
+                .execute(&self.2[topic_shard(topic)])
                 .await?;
             let result = sqlx::query(
                 "DELETE FROM topic_stats
@@ -1647,10 +1640,8 @@ impl Database {
         }
         tx.commit().await?;
         {
-            let mut depths = self.2.write().expect("queue depth cache");
             let mut configs = self.1.write().expect("topic cache");
             for topic in &stale {
-                depths.remove(topic);
                 configs.remove(topic);
             }
         }
@@ -1728,6 +1719,13 @@ async fn open_message_shards(url: &str) -> anyhow::Result<Vec<SqlitePool>> {
         .await?;
         // Also upgrades existing shard files; the legacy control table is not used for claims.
         sqlx::query(TOPIC_CLAIM_INDEX_SQL).execute(&shard).await?;
+        // Dashboard counts touch only active index entries, never retained payload rows.
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_messages_active_depth
+            ON messages(topic, status) WHERE status IN ('pending', 'processing')",
+        )
+        .execute(&shard)
+        .await?;
         sqlx::query(
             "UPDATE messages SET status = 'pending', lease = NULL WHERE status = 'processing'",
         )
@@ -1817,15 +1815,7 @@ async fn migrate_legacy_messages(
 async fn load_queue_depths(shards: &[SqlitePool]) -> anyhow::Result<HashMap<String, (i64, i64)>> {
     let mut depths = HashMap::new();
     for shard in shards {
-        for row in sqlx::query(
-            "SELECT topic,
-                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
-                    SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) AS processing
-             FROM messages GROUP BY topic",
-        )
-        .fetch_all(shard)
-        .await?
-        {
+        for row in sqlx::query(QUEUE_DEPTH_SQL).fetch_all(shard).await? {
             let entry = depths
                 .entry(row.get::<String, _>("topic"))
                 .or_insert((0, 0));
@@ -1931,7 +1921,7 @@ mod tests {
                 sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE id = ? AND topic = ?")
                     .bind(&id)
                     .bind(topic)
-                    .fetch_one(&db.3[shard])
+                    .fetch_one(&db.2[shard])
                     .await
                     .unwrap();
             assert_eq!(stored, 1);
@@ -1941,14 +1931,285 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn batch_claim_is_bounded_atomic_and_preserves_leases() {
+        let (db, dir) = temp_db().await;
+        let inputs = (0..96)
+            .map(|_| EnqueueInput {
+                id: new_message_id("jobs"),
+                idempotency_key: None,
+                topic: "jobs".into(),
+                payload: vec![42],
+                attributes: HashMap::new(),
+            })
+            .collect();
+        db.enqueue_batch(inputs).await.unwrap();
+        let workers = (0..8)
+            .map(|_| {
+                let db = db.clone();
+                tokio::spawn(async move {
+                    db.claim_batch_for_topic("jobs", Duration::from_secs(30), 16)
+                        .await
+                        .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut ids = std::collections::HashSet::new();
+        let mut all = Vec::new();
+        for worker in workers {
+            let batch = worker.await.unwrap();
+            assert!(batch.len() <= 16);
+            assert!(batch.windows(2).all(|w| w[0].created_at <= w[1].created_at));
+            for message in batch {
+                assert!(ids.insert(message.id.clone()));
+                all.push(message);
+            }
+        }
+        assert_eq!(ids.len(), 96);
+        let snapshot = db.status_snapshot(None).await.unwrap();
+        let jobs = snapshot.iter().find(|t| t.name == "jobs").unwrap();
+        assert_eq!((jobs.pending, jobs.processing), (0, 96));
+        for message in &all {
+            assert!(!db.delivered(&message.id, "wrong-lease").await.unwrap());
+        }
+        db.delivered_batch(all.into_iter().map(|m| (m.id, m.lease)).collect())
+            .await
+            .unwrap();
+        let snapshot = db.status_snapshot(None).await.unwrap();
+        let jobs = snapshot.iter().find(|t| t.name == "jobs").unwrap();
+        assert_eq!((jobs.pending, jobs.processing, jobs.delivered), (0, 0, 96));
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn wildcard_claim_finds_messages_behind_unrelated_backlog() {
+        let (db, dir) = temp_db().await;
+        let wanted = "sensor/one/temp";
+        let unrelated = (0..1000)
+            .map(|n| format!("unrelated/{n}"))
+            .find(|t| topic_shard(t) == topic_shard(wanted))
+            .unwrap();
+        let inputs = (0..128)
+            .map(|_| EnqueueInput {
+                id: new_message_id(&unrelated),
+                idempotency_key: None,
+                topic: unrelated.clone(),
+                payload: vec![],
+                attributes: HashMap::new(),
+            })
+            .collect();
+        db.enqueue_batch(inputs).await.unwrap();
+        let (id, _) = db
+            .enqueue(None, wanted, b"target", HashMap::new())
+            .await
+            .unwrap();
+        for filter in ["sensor/#", "sensor/+/temp", "#"] {
+            // For root #, $SYS messages must remain excluded too.
+            let batch = db
+                .claim_batch_for_filter(filter, Duration::from_secs(30), 16)
+                .await
+                .unwrap();
+            if filter != "#" {
+                assert_eq!(batch.len(), 1);
+                assert_eq!(batch[0].id, id);
+            }
+            for message in batch {
+                db.release(&message.id, &message.lease).await.unwrap();
+            }
+        }
+        let (sys_id, _) = db
+            .enqueue(None, "$SYS/load", b"sys", HashMap::new())
+            .await
+            .unwrap();
+        let messages = db
+            .claim_batch_for_filter("$SYS/#", Duration::from_secs(30), 16)
+            .await
+            .unwrap();
+        assert_eq!(messages[0].id, sys_id);
+        db.delivered(&sys_id, &messages[0].lease).await.unwrap();
+        assert!(db
+            .claim_batch_for_filter("+/load", Duration::from_secs(30), 16)
+            .await
+            .unwrap()
+            .is_empty());
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn wildcard_rotation_visits_all_topics_when_every_shard_is_busy() {
+        let (db, dir) = temp_db().await;
+        let mut topics = vec![Vec::new(); MESSAGE_SHARDS];
+        for n in 0..10000 {
+            let topic = format!("fair/{n}");
+            let shard = topic_shard(&topic);
+            if topics[shard].len() < 2 {
+                topics[shard].push(topic);
+            }
+            if topics.iter().all(|t| t.len() == 2) {
+                break;
+            }
+        }
+        assert!(topics.iter().all(|t| t.len() == 2));
+        let inputs = topics
+            .into_iter()
+            .flatten()
+            .flat_map(|topic| {
+                (0..4).map(move |_| EnqueueInput {
+                    id: new_message_id(&topic),
+                    topic: topic.clone(),
+                    idempotency_key: None,
+                    payload: vec![42],
+                    attributes: HashMap::new(),
+                })
+            })
+            .collect();
+        db.enqueue_batch(inputs).await.unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..32 {
+            let batch = db
+                .claim_batch_for_filter("fair/#", Duration::from_secs(30), 1)
+                .await
+                .unwrap();
+            assert_eq!(batch.len(), 1);
+            seen.insert(batch[0].topic.clone());
+        }
+        assert_eq!(
+            seen.len(),
+            32,
+            "every topic must get a turn while all remain backlogged"
+        );
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn batch_claim_skips_future_retries_and_release_is_immediately_ready() {
+        let (db, dir) = temp_db().await;
+        let (delayed, _) = db
+            .enqueue(None, "jobs", b"delayed", HashMap::new())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE messages SET next_attempt_at = '2999-01-01T00:00:00Z' WHERE id = ?")
+            .bind(&delayed)
+            .execute(&db.2[topic_shard("jobs")])
+            .await
+            .unwrap();
+        let (ready, _) = db
+            .enqueue(None, "jobs", b"ready", HashMap::new())
+            .await
+            .unwrap();
+        let batch = db
+            .claim_batch_for_topic("jobs", Duration::from_secs(30), 16)
+            .await
+            .unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].id, ready);
+        assert!(!db.release(&ready, "wrong").await.unwrap());
+        assert!(db.release(&ready, &batch[0].lease).await.unwrap());
+        let reclaimed = db
+            .claim_batch_for_topic("jobs", Duration::from_secs(30), 16)
+            .await
+            .unwrap();
+        assert_eq!(reclaimed[0].id, ready);
+        assert!(!db.delivered(&ready, &batch[0].lease).await.unwrap());
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn batch_claim_handles_large_delayed_backlog_without_delivering_early() {
+        let (db, dir) = temp_db().await;
+        let inputs = (0..4096)
+            .map(|_| EnqueueInput {
+                id: new_message_id("jobs"),
+                idempotency_key: None,
+                topic: "jobs".into(),
+                payload: vec![42; 256],
+                attributes: HashMap::new(),
+            })
+            .collect();
+        db.enqueue_batch(inputs).await.unwrap();
+        sqlx::query(
+            "UPDATE messages SET next_attempt_at = '2999-01-01T00:00:00Z' WHERE topic = 'jobs'",
+        )
+        .execute(&db.2[topic_shard("jobs")])
+        .await
+        .unwrap();
+        let inputs = (0..256)
+            .map(|_| EnqueueInput {
+                id: new_message_id("jobs"),
+                idempotency_key: None,
+                topic: "jobs".into(),
+                payload: vec![7; 256],
+                attributes: HashMap::new(),
+            })
+            .collect();
+        db.enqueue_batch(inputs).await.unwrap();
+        for _ in 0..8 {
+            let batch = db
+                .claim_batch_for_topic("jobs", Duration::from_secs(30), 32)
+                .await
+                .unwrap();
+            assert_eq!(batch.len(), 32);
+            assert!(batch.iter().all(|m| m.payload == vec![7; 256]));
+            db.delivered_batch(batch.into_iter().map(|m| (m.id, m.lease)).collect())
+                .await
+                .unwrap();
+        }
+        assert!(db
+            .claim_batch_for_topic("jobs", Duration::from_secs(30), 32)
+            .await
+            .unwrap()
+            .is_empty());
+        let snapshot = db.status_snapshot(None).await.unwrap();
+        let jobs = snapshot.iter().find(|t| t.name == "jobs").unwrap();
+        assert_eq!(
+            (jobs.pending, jobs.processing, jobs.delivered),
+            (4096, 0, 256)
+        );
+        let plan = sqlx::query(&format!("EXPLAIN QUERY PLAN {QUEUE_DEPTH_SQL}"))
+            .fetch_all(&db.2[topic_shard("jobs")])
+            .await
+            .unwrap();
+        assert!(plan.iter().any(|r| r
+            .get::<String, _>("detail")
+            .contains("idx_messages_active_depth")));
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn status_uses_active_rows_even_when_legacy_counts_are_wrong() {
+        let (db, dir) = temp_db().await;
+        db.enqueue(None, "jobs", b"pending", HashMap::new())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE topic_stats SET pending = 999, processing = 999 WHERE topic = 'jobs'")
+            .execute(&db.0)
+            .await
+            .unwrap();
+        let snapshot = db.status_snapshot(None).await.unwrap();
+        let jobs = snapshot.iter().find(|t| t.name == "jobs").unwrap();
+        assert_eq!((jobs.pending, jobs.processing), (1, 0));
+        db.clear_topic_messages("jobs").await.unwrap();
+        let snapshot = db.status_snapshot(None).await.unwrap();
+        let jobs = snapshot.iter().find(|t| t.name == "jobs").unwrap();
+        assert_eq!((jobs.pending, jobs.processing), (0, 0));
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn topic_claim_uses_covering_index_without_sorting() {
         let (db, dir) = temp_db().await;
-        let rows = sqlx::query(&format!("EXPLAIN QUERY PLAN {TOPIC_CLAIM_SQL}"))
+        let rows = sqlx::query(&format!("EXPLAIN QUERY PLAN {TOPIC_CLAIM_BATCH_SQL}"))
             .bind("lease")
             .bind("2999-01-01T00:00:00Z")
             .bind(Utc::now().to_rfc3339())
             .bind("jobs")
-            .fetch_all(&db.3[topic_shard("jobs")])
+            .bind(16_i64)
+            .fetch_all(&db.2[topic_shard("jobs")])
             .await
             .unwrap();
         let plan = rows
@@ -1975,7 +2236,7 @@ mod tests {
             .enqueue(None, "jobs", b"kept", HashMap::new())
             .await
             .unwrap();
-        for shard in db.3.iter() {
+        for shard in db.2.iter() {
             sqlx::query("DROP INDEX idx_messages_pending_topic_created")
                 .execute(shard)
                 .await
@@ -1986,7 +2247,7 @@ mod tests {
         let db = Database::connect(&format!("sqlite:{}/queue.db", dir.display()))
             .await
             .unwrap();
-        for shard in db.3.iter() {
+        for shard in db.2.iter() {
             let indexes: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM sqlite_master
                  WHERE type = 'index' AND name = 'idx_messages_pending_topic_created'",
@@ -2015,7 +2276,7 @@ mod tests {
             .map(|index| format!("other/{index}"))
             .find(|candidate| topic_shard(candidate) == topic_shard(topic))
             .unwrap();
-        let shard = &db.3[topic_shard(topic)];
+        let shard = &db.2[topic_shard(topic)];
         for (id, topic, status, created_at, ready_at) in [
             (
                 "delayed",
@@ -2073,7 +2334,7 @@ mod tests {
             .await
             .unwrap();
         }
-        db.refresh_queue_depths().await.unwrap();
+
         for expected in ["oldest", "newest"] {
             let claimed = db
                 .claim_next_for_topic(topic, Duration::from_secs(30))
@@ -2149,7 +2410,7 @@ mod tests {
         let shard = topic_shard("legacy/jobs");
         let migrated: String =
             sqlx::query_scalar("SELECT id FROM messages WHERE idempotency_key = 'legacy-key'")
-                .fetch_one(&db.3[shard])
+                .fetch_one(&db.2[shard])
                 .await
                 .unwrap();
         assert_eq!(migrated, format!("s{shard:02}-legacy-id"));
@@ -2585,7 +2846,7 @@ mod tests {
         sqlx::query("UPDATE messages SET delivered_at = ? WHERE id = ?")
             .bind(&stale)
             .bind(&old_id)
-            .execute(&db.3[old_shard])
+            .execute(&db.2[old_shard])
             .await
             .unwrap();
 
@@ -2594,7 +2855,7 @@ mod tests {
         assert_eq!(deleted, 1);
 
         let remaining: Vec<String> = sqlx::query("SELECT id FROM messages ORDER BY created_at")
-            .fetch_all(&db.3[old_shard])
+            .fetch_all(&db.2[old_shard])
             .await
             .unwrap()
             .into_iter()

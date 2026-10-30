@@ -5,6 +5,7 @@ mod db;
 mod delivery;
 mod grpc_conn;
 mod logging;
+mod metrics;
 mod model;
 mod mqtt;
 mod password_policy;
@@ -384,6 +385,7 @@ async fn main() -> anyhow::Result<()> {
         write_queue_size = config.write_queue_size,
         ingest_inflight = config.ingest_inflight,
         consumer_prefetch = config.consumer_prefetch,
+        claim_batch_size = config.claim_batch_size,
         "queue performance settings"
     );
     if let Some(dir) = config.log_dir() {
@@ -750,3 +752,6 @@ async fn retention_loop(
         }
     }
 }
+
+#[cfg(test)]
+mod benchmark;

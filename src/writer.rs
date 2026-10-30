@@ -11,6 +11,7 @@ use crate::db::{message_id_shard, new_message_id, topic_shard, Database, Enqueue
 type DeliveredResult = Result<bool, String>;
 
 struct EnqueueCommand {
+    queued_at: std::time::Instant,
     input: EnqueueInput,
 }
 
@@ -207,6 +208,7 @@ impl QueueWriter {
         payload: &[u8],
         attributes: HashMap<String, String>,
     ) -> anyhow::Result<(String, bool)> {
+        let admission_started = std::time::Instant::now();
         let shard = topic_shard(topic);
         let key = idempotency_key.filter(|value| !value.is_empty());
         let id = new_message_id(topic);
@@ -218,6 +220,7 @@ impl QueueWriter {
             recent.insert(key.to_string(), id.clone());
         }
         let command = WriteCommand::Enqueue(EnqueueCommand {
+            queued_at: std::time::Instant::now(),
             input: EnqueueInput {
                 id: id.clone(),
                 idempotency_key: key.map(ToOwned::to_owned),
@@ -235,7 +238,12 @@ impl QueueWriter {
             }
             anyhow::bail!("queue writer stopped");
         }
+        crate::metrics::ADMISSION.record(admission_started.elapsed());
         Ok((id, false))
+    }
+
+    pub fn notify_ready(&self, topic: &str) {
+        self.notifications.notify(topic);
     }
 
     pub fn subscribe(&self, topic: &str) -> watch::Receiver<u64> {
@@ -313,6 +321,9 @@ async fn run_writer(
             }
         }
         if !enqueues.is_empty() {
+            for command in &enqueues {
+                crate::metrics::WRITE_QUEUE.record(command.queued_at.elapsed());
+            }
             let topics: Vec<String> = enqueues
                 .iter()
                 .map(|command| command.input.topic.clone())
@@ -332,10 +343,12 @@ async fn run_writer(
                     )
                 })
                 .collect();
+            let persist_started = std::time::Instant::now();
             let mut retry_wait = Duration::from_millis(10);
             loop {
                 match db.enqueue_batch(inputs.clone()).await {
                     Ok(results) => {
+                        crate::metrics::PERSIST.record(persist_started.elapsed());
                         for (topic, result) in topics.iter().zip(results) {
                             if !result.1 {
                                 notifications.notify(topic);
@@ -361,7 +374,10 @@ async fn run_writer(
                 .iter()
                 .map(|command| (command.id.clone(), command.lease.clone()))
                 .collect();
-            match db.delivered_batch(updates).await {
+            let ack_commit_started = std::time::Instant::now();
+            let committed = db.delivered_batch(updates).await;
+            crate::metrics::ACK_COMMIT.record(ack_commit_started.elapsed());
+            match committed {
                 Ok(results) => {
                     for (command, result) in delivered.into_iter().zip(results) {
                         let _ = command.response.send(Ok(result));

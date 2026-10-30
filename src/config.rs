@@ -98,6 +98,10 @@ pub struct Config {
     #[arg(long, env = "CL_BROKER_CONSUMER_PREFETCH", default_value_t = 32)]
     pub consumer_prefetch: usize,
 
+    /// Maximum messages claimed per statement, bounded by available consumer prefetch (1..128).
+    #[arg(long, env = "CL_BROKER_CLAIM_BATCH_SIZE", default_value_t = 16)]
+    pub claim_batch_size: usize,
+
     #[arg(long, env = "MAX_DELIVERY_ATTEMPTS", default_value_t = 10)]
     pub max_delivery_attempts: i64,
 
@@ -227,6 +231,7 @@ impl Config {
             write_queue_size: 256,
             ingest_inflight: 32,
             consumer_prefetch: 8,
+            claim_batch_size: 16,
             max_delivery_attempts: 10,
             message_retention_days: 0,
             delivered_retention_hours: 0,

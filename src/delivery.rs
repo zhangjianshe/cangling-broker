@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 
 use chrono::Utc;
 use tokio::sync::{mpsc, Semaphore};
@@ -186,45 +190,83 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
     let mut notification = writer.subscribe(&topic);
     let permits = Arc::new(Semaphore::new(config.consumer_prefetch.max(1)));
     let mut deliveries = tokio::task::JoinSet::new();
+    let mut ready = VecDeque::new();
     loop {
         while deliveries.try_join_next().is_some() {}
         if shutdown.is_cancelled() || tx.is_closed() {
             break;
         }
-        let permit = tokio::select! {
-            _ = shutdown.cancelled() => break,
-            permit = permits.clone().acquire_owned() => match permit {
-                Ok(permit) => permit,
-                Err(_) => break,
-            }
-        };
-        let claimed = match db.claim_next_for_filter(&topic, visibility).await {
-            Ok(claimed) => claimed,
-            Err(error) => {
-                error!(%error, topic = %topic, "unable to claim queue message for subscriber");
-                if !sleep_or_shutdown(&shutdown, config.worker_poll_ms).await {
-                    break;
+        if ready.is_empty() {
+            let permit = tokio::select! {
+                _ = shutdown.cancelled() => break,
+                permit = permits.clone().acquire_owned() => match permit {
+                    Ok(permit) => permit,
+                    Err(_) => break,
                 }
-                drop(permit);
+            };
+            let mut reserved = vec![permit];
+            while reserved.len() < config.claim_batch_size.clamp(1, 128) {
+                match permits.clone().try_acquire_owned() {
+                    Ok(permit) => reserved.push(permit),
+                    Err(_) => break,
+                }
+            }
+            let claimed_at = tokio::time::Instant::now();
+            let claimed = match db
+                .claim_batch_for_filter(&topic, visibility, reserved.len())
+                .await
+            {
+                Ok(messages) => messages,
+                Err(error) => {
+                    error!(%error, topic = %topic, "unable to claim queue batch for subscriber");
+                    if !sleep_or_shutdown(&shutdown, config.worker_poll_ms).await {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            for (message, permit) in claimed.into_iter().zip(reserved) {
+                ready.push_back((message, permit, claimed_at));
+            }
+            if ready.is_empty() {
+                if !consumer_id.is_empty() && last_heartbeat.elapsed() >= heartbeat_every {
+                    let _ = db.touch_consumer(&consumer_id).await;
+                    last_heartbeat = tokio::time::Instant::now();
+                }
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    changed = notification.changed() => {
+                        if changed.is_err() { break; }
+                    }
+                    _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+                }
                 continue;
             }
-        };
-        let Some(message) = claimed else {
-            drop(permit);
-            if !consumer_id.is_empty() && last_heartbeat.elapsed() >= heartbeat_every {
-                let _ = db.touch_consumer(&consumer_id).await;
-                last_heartbeat = tokio::time::Instant::now();
-            }
-            tokio::select! {
-                _ = shutdown.cancelled() => break,
-                changed = notification.changed() => {
-                    if changed.is_err() { break; }
-                }
-                // Safety net for messages inserted by an older broker or direct DB tooling.
-                _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+        }
+        let (message, permit, claimed_at) = ready.pop_front().expect("nonempty claim batch");
+        // A blocked stream can outlive the remaining batch's leases. Return buffered
+        // messages before sending rather than dispatching an already expired lease.
+        if claimed_at.elapsed() >= visibility / 2 {
+            if db
+                .release(&message.id, &message.lease)
+                .await
+                .unwrap_or(false)
+            {
+                writer.notify_ready(&message.topic);
             }
             continue;
-        };
+        }
+        let send_started = std::time::Instant::now();
+        if let Ok(created) = chrono::DateTime::parse_from_rfc3339(&message.created_at) {
+            crate::metrics::QUEUE_WAIT.record(
+                (Utc::now() - created.with_timezone(&Utc))
+                    .to_std()
+                    .unwrap_or_default(),
+            );
+            tracing::debug!(topic = %message.topic,
+                queue_wait_ms = (Utc::now() - created.with_timezone(&Utc)).num_milliseconds().max(0),
+                "queue message dispatch");
+        }
         let settings = db.topic_config(&message.topic).await.ok();
         let broadcast = settings
             .as_ref()
@@ -254,7 +296,12 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
                 created_at: message.created_at.clone(),
                 lease: lease.clone(),
             };
-            match tokio::time::timeout(Duration::from_secs(2), sender.send(Ok(outgoing))).await {
+            match tokio::time::timeout_at(
+                (tokio::time::Instant::now() + Duration::from_secs(2)).min(claimed_at + visibility),
+                sender.send(Ok(outgoing)),
+            )
+            .await
+            {
                 Ok(Ok(())) => {
                     leases.push(lease);
                     waits.push(ack);
@@ -264,6 +311,9 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
                 }
             }
         }
+        crate::metrics::SEND.record(send_started.elapsed());
+        tracing::debug!(topic = %message.topic, elapsed_us = send_started.elapsed().as_micros() as u64,
+            targets = waits.len(), "queue message send");
         if ephemeral && !waits.is_empty() {
             for lease in &leases {
                 inflight.cancel(lease);
@@ -304,6 +354,7 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
         let delivery_inflight = inflight.clone();
         let delivery_shutdown = shutdown.clone();
         let max_attempts = config.max_delivery_attempts;
+        let ack_started = std::time::Instant::now();
         deliveries.spawn(async move {
             let _permit = permit;
             let mut all_ok = true;
@@ -314,7 +365,7 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
                         all_ok = false;
                         last_error = "broker shutting down".into();
                     }
-                    timed = tokio::time::timeout(visibility, ack) => {
+                    timed = tokio::time::timeout_at(claimed_at + visibility, ack) => {
                         match timed {
                             Ok(Ok(decision)) if decision.success => {}
                             Ok(Ok(decision)) => {
@@ -333,6 +384,7 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
                     break;
                 }
             }
+            crate::metrics::ACK_WAIT.record(ack_started.elapsed());
             for lease in &leases {
                 delivery_inflight.cancel(lease);
             }
@@ -349,6 +401,15 @@ pub async fn run_subscribe_loop(args: SubscribeLoop) {
                     .await;
             }
         });
+    }
+    for (message, _permit, _) in ready {
+        if db
+            .release(&message.id, &message.lease)
+            .await
+            .unwrap_or(false)
+        {
+            writer.notify_ready(&message.topic);
+        }
     }
     while deliveries.join_next().await.is_some() {}
     drop(guard);
@@ -418,6 +479,73 @@ mod tests {
         assert!(preview.ends_with("… (5000 bytes)"));
         assert!(preview.starts_with("xxxx"));
         assert!(preview.len() < body.len());
+    }
+
+    #[tokio::test]
+    async fn closed_stream_returns_unsent_batch_to_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::connect(&format!("sqlite:{}/queue.db", dir.path().display()))
+            .await
+            .unwrap();
+        db.configure_topics(&[crate::model::TopicConfig {
+            topic: "jobs".into(),
+            delivery: DeliveryMode::Single,
+            persistence: PersistenceMode::Persistent,
+        }])
+        .await
+        .unwrap();
+        for _ in 0..4 {
+            db.enqueue(None, "jobs", b"payload", HashMap::new())
+                .await
+                .unwrap();
+        }
+        let (writer, writer_task) =
+            QueueWriter::start(db.clone(), 64, 32, Duration::from_millis(1))
+                .await
+                .unwrap();
+        let mut config = Config::test_default();
+        config.consumer_prefetch = 4;
+        config.claim_batch_size = 4;
+        config.ack_timeout_secs = 30;
+        let shutdown = CancellationToken::new();
+        let (tx, mut rx) = mpsc::channel(1);
+        let task = tokio::spawn(run_subscribe_loop(SubscribeLoop {
+            db: db.clone(),
+            writer: writer.clone(),
+            config: Arc::new(config),
+            subscribers: TopicSubscribers::default(),
+            inflight: InflightAcks::default(),
+            shutdown: shutdown.clone(),
+            topic: "jobs".into(),
+            session: "test".into(),
+            consumer_id: String::new(),
+            tx,
+            peer: String::new(),
+            protocol: PROTOCOL_GRPC,
+            version: String::new(),
+            host: String::new(),
+        }));
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        rx.close();
+        shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        let snapshot = db.status_snapshot(None).await.unwrap();
+        let jobs = snapshot.iter().find(|t| t.name == "jobs").unwrap();
+        assert!(
+            jobs.pending >= 1,
+            "unsent buffered leases must be returned on disconnect"
+        );
+        assert_eq!(jobs.pending + jobs.processing, 4);
+        writer.shutdown().await;
+        writer_task.await.unwrap();
+        db.close().await;
     }
 
     #[tokio::test]

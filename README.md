@@ -547,6 +547,7 @@ write-limited container volumes can behave very differently from local NVMe.
 | `CL_BROKER_WRITE_QUEUE_SIZE` | `8192` | bounded in-memory queue capacity before producer backpressure |
 | `CL_BROKER_INGEST_INFLIGHT` | `128` | maximum concurrently processed publishes per gRPC producer stream; responses remain ordered |
 | `CL_BROKER_CONSUMER_PREFETCH` | `32` | maximum unacknowledged persistent messages per subscription; set `1` for strict serial delivery |
+| `CL_BROKER_CLAIM_BATCH_SIZE` | `16` | messages claimed per SQL statement (1–128), bounded by available subscription prefetch; use `1` for a single-claim baseline |
 | `MAX_DELIVERY_ATTEMPTS` | `10` | attempts before a message is marked failed |
 | `MESSAGE_RETENTION_DAYS` | `10` | delete messages older than this (any status, by `created_at`); `0` keeps them forever |
 | `CL_BROKER_DELIVERED_RETENTION_HOURS` | `24` | delete delivered messages whose `delivered_at` is older than this; `0` disables. Pending, failed, and dropped rows stay until `MESSAGE_RETENTION_DAYS` |

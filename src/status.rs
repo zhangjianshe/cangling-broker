@@ -62,6 +62,7 @@ struct BrokerStatus {
     client_count: usize,
     clients: Vec<ClientInfo>,
     topics_detail: Vec<TopicSnapshot>,
+    performance: crate::metrics::Performance,
 }
 
 #[derive(Debug, Serialize)]
@@ -957,6 +958,7 @@ async fn build_status(state: &StatusState) -> Result<BrokerStatus, StatusCode> {
         client_count,
         clients,
         topics_detail,
+        performance: crate::metrics::snapshot(),
     })
 }
 
