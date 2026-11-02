@@ -275,6 +275,50 @@ The consumer receives one `SatwayMessage` on the `Subscribe` stream:
 
 Call `AckMessage` with that `message_id` and `lease`. `success = true` marks the message delivered; `success = false` or a timeout requeues it. This is **at-least-once delivery**: receivers should use `message_id` to make handling idempotent. Pass an `idempotency_key` on `AcceptMessages` to make producer retries safe.
 
+Small control-plane producers that do not use gRPC may publish JSON through the
+authenticated status port. The topic must first be configured when persistence
+is required; otherwise the broker's normal implicit ephemeral-topic policy
+applies. `idempotency_key` has the same retry semantics as gRPC. For a
+`persistent` topic this HTTP endpoint acknowledges only after the message is
+committed to SQLite, making it suitable for transactional-outbox publishers.
+
+```bash
+curl -s -X POST -H 'authorization: Bearer change-me' -H 'content-type: application/json' \
+  -d '{"topic":"imagery.repository.changed","payload":{"event_id":"event-1"},"attributes":{"source":"map-0"},"idempotency_key":"event-1"}' \
+  http://127.0.0.1:7501/publish
+```
+
+Services that cannot embed the gRPC SDK can also use explicit HTTP long polling.
+This is only available for `persistent` + `single` topics. `poll` atomically claims one
+message and returns a lease; the consumer must call `ack` before
+`ACK_TIMEOUT_SECS`. A stale or already completed lease returns HTTP `409`.
+Persist the message in an idempotent Inbox before ACKing it.
+
+```bash
+curl -s -H 'authorization: Bearer change-me' -H 'content-type: application/json' \
+  -d '{"topic":"imagery.tile.stored","consumer_id":"map-0:tile-results","consumer_name":"map-0","wait_ms":20000,"attributes":{"component":"cangling-map"}}' \
+  http://127.0.0.1:7501/consume/poll
+
+curl -s -H 'authorization: Bearer change-me' -H 'content-type: application/json' \
+  -d '{"message_id":"<message-id>","lease":"<lease>","success":true}' \
+  http://127.0.0.1:7501/consume/ack
+```
+
+Long-running workers renew the same lease before its visibility timeout:
+
+```bash
+curl -s -H 'authorization: Bearer change-me' -H 'content-type: application/json' \
+  -d '{"message_id":"<message-id>","lease":"<lease>"}' \
+  http://127.0.0.1:7501/consume/renew
+```
+
+`success:false` performs a NACK and records the optional `error`; the normal
+exponential retry and `MAX_DELIVERY_ATTEMPTS` rules then apply. HTTP consumers
+share the same SQLite claim/lease state and at-least-once contract as gRPC
+consumers, so two callers cannot successfully claim the same queued message.
+The poll response includes `delivery_attempt` and `max_delivery_attempts`, so a
+worker can persist a terminal business result before NACKing the last attempt.
+
 ## Cache & lock (Redis replacement)
 
 The broker also serves a small Redis replacement: an **in-memory** string KV cache
@@ -334,6 +378,76 @@ with SatwayClient.connect("127.0.0.1:7500", "change-me") as client:
         with lock:
             lock.renew(30)
 ```
+
+## Generic leader election and fencing terms
+
+The singleton broker provides an application-neutral lease election service,
+so `cangling-map`, `cangling-update`, CIS schedulers, and other services can use
+one contract instead of implementing their own election loops. The broker does
+not attach meaning to an election name. Use a stable hierarchical name such as
+`cangling-map/imagery-repository`, `cangling-update/reconciler`, or
+`cis/algorithm-dispatcher`.
+
+`ElectionService` stores each named leader lease in the broker SQLite database
+and assigns a monotonically increasing `term` whenever an expired or resigned
+election is acquired. The `term` is a fencing token: an elected service must
+attach it to every exclusive job, command, or state mutation, and the receiver
+must reject older terms. An expired lease cannot be renewed.
+
+The same low-level operations are available through authenticated gRPC and
+HTTP: campaign, renew, resign, and get leader. The HTTP paths are `/election`,
+`/election/campaign`, `/election/renew`, and `/election/resign`; when
+`CL_BROKER_WEB_BASE` is configured, they are also available below that prefix.
+The Java and Python SDKs additionally expose an auto-renewing handle. It uses
+the broker-provided remaining TTL with a local monotonic clock and fails closed
+if the broker or network becomes unavailable.
+
+```bash
+# Campaign. Save leader.term and leader.lease_id from the response.
+curl -s -H 'authorization: Bearer change-me' -H 'content-type: application/json' \
+  -d '{"election":"cis/algorithm-dispatcher","candidate_id":"cis-server-0","ttl_seconds":15}' \
+  http://127.0.0.1:7501/election/campaign
+
+# Renew only the exact active leader/term/lease tuple.
+curl -s -H 'authorization: Bearer change-me' -H 'content-type: application/json' \
+  -d '{"election":"cis/algorithm-dispatcher","leader_id":"cis-server-0","term":1,"lease_id":"<lease-id>","ttl_seconds":15}' \
+  http://127.0.0.1:7501/election/renew
+
+# Read the observed leader (active=false means the lease has expired).
+curl -s -H 'authorization: Bearer change-me' \
+  'http://127.0.0.1:7501/election?election=cis%2Falgorithm-dispatcher'
+```
+
+Java auto-renewing handle:
+
+```java
+try (SatwayClient client = SatwayClient.connect("cangling-broker:7500");
+     ElectionHandle election = client.startElection(
+             "cis/algorithm-dispatcher", System.getenv("HOSTNAME"), 15)) {
+    if (election.isLeader()) {
+        dispatchOneJob(election.term()); // persist/pass the fencing term
+    }
+}
+```
+
+Python auto-renewing handle:
+
+```python
+import os
+from cangling_broker import SatwayClient
+
+with SatwayClient.connect("cangling-broker:7500") as client:
+    with client.start_election("cis/algorithm-dispatcher", os.environ["HOSTNAME"], 15) as election:
+        if election.is_leader:
+            dispatch_one_job(fencing_term=election.term)
+```
+
+Use a stable but concurrently unique candidate ID, normally the StatefulSet
+Pod name. Never run two candidates with the same ID. The transition callbacks
+are notifications only; check `isLeader()` / `is_leader` immediately before an
+exclusive operation. The broker is the election authority and must remain a
+single durable instance; this API is not a replacement for a replicated
+consensus system when the broker itself must be highly available.
 
 ## Performance benchmark
 
@@ -526,7 +640,7 @@ write-limited container volumes can behave very differently from local NVMe.
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
 | `CL_BROKER_PORT` | `7500` | gRPC listener `0.0.0.0:<port>` |
-| `CL_BROKER_WEBPORT` | `7501` | HTTP status/dashboard (`GET /`, `GET /status`, `GET /health`, `GET /messages`, `/cache*`, `/lock*`) |
+| `CL_BROKER_WEBPORT` | `7501` | HTTP status/dashboard and machine APIs (`GET /`, `/status`, `/health`, `/messages`; `POST /publish`, `/consume/*`; `/cache*`, `/lock*`, `/election*`) |
 | `CL_BROKER_WEB_BASE` | unset | optional path prefix (`/msg`) when a proxy forwards `/msg/...` without stripping it. `/` and `/health` stay at the root |
 | `CL_BROKER_MQTT_ENABLED` | `true` | accept MQTT 3.1.1 clients; `false` disables both MQTT listeners |
 | `CL_BROKER_MQTT_PORT` | `7883` | MQTT TCP listener. `0` disables TCP. Unprivileged default; map `1883:7883` or set `1883` if you can bind it |

@@ -10,6 +10,7 @@ pub struct ClaimedMessage {
     pub attributes: serde_json::Value,
     pub created_at: String,
     pub lease: String,
+    pub attempts: i64,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -22,9 +23,10 @@ pub struct ConsumerSnapshot {
     pub attributes: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DeliveryMode {
     Single,
+    #[default]
     Broadcast,
 }
 
@@ -49,15 +51,10 @@ impl DeliveryMode {
     }
 }
 
-impl Default for DeliveryMode {
-    fn default() -> Self {
-        Self::Broadcast
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PersistenceMode {
     Persistent,
+    #[default]
     Ephemeral,
 }
 
@@ -83,12 +80,6 @@ impl PersistenceMode {
             return Self::Ephemeral;
         }
         Self::parse(trimmed).unwrap_or(Self::Ephemeral)
-    }
-}
-
-impl Default for PersistenceMode {
-    fn default() -> Self {
-        Self::Ephemeral
     }
 }
 

@@ -46,7 +46,7 @@ const TOPIC_CLAIM_BATCH_SQL: &str = "UPDATE messages
          WHERE status = 'pending' AND next_attempt_at <= ? AND topic = ?
          ORDER BY created_at LIMIT ?
      ) AND status = 'pending'
-     RETURNING id, topic, payload, attributes, created_at";
+     RETURNING id, topic, payload, attributes, created_at, attempts";
 
 const QUEUE_DEPTH_SQL: &str = "SELECT topic,
     SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
@@ -367,6 +367,20 @@ impl Database {
         .execute(&pool)
         .await
         .context("creating SQLite lock schema")?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS sys_election (
+                election_key TEXT PRIMARY KEY NOT NULL,
+                leader_id TEXT NOT NULL,
+                term INTEGER NOT NULL,
+                lease_id TEXT NOT NULL,
+                expire_at_ms INTEGER NOT NULL,
+                update_time TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sys_election_expire ON sys_election(expire_at_ms);",
+        )
+        .execute(&pool)
+        .await
+        .context("creating SQLite election schema")?;
         let rows = sqlx::query("SELECT topic, delivery, persistence FROM topic_stats")
             .fetch_all(&pool)
             .await?;
@@ -1277,6 +1291,7 @@ impl Database {
                 attributes: serde_json::from_str(&row.get::<String, _>("attributes"))?,
                 created_at: row.get("created_at"),
                 lease: lease.clone(),
+                attempts: row.get("attempts"),
             });
         }
         // SQLite RETURNING order is unspecified even when the candidate scan is ordered.
@@ -1359,6 +1374,30 @@ impl Database {
         Ok(topic.is_some())
     }
 
+    pub async fn renew_claim(
+        &self,
+        id: &str,
+        lease: &str,
+        visibility: Duration,
+    ) -> anyhow::Result<bool> {
+        let Some(shard_index) = self.shard_index_for_id(id).await? else {
+            return Ok(false);
+        };
+        let now = Utc::now();
+        let visible_again = (now + chrono::Duration::from_std(visibility)?).to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE messages SET next_attempt_at=?
+             WHERE id=? AND lease=? AND status='processing' AND next_attempt_at>?",
+        )
+        .bind(visible_again)
+        .bind(id)
+        .bind(lease)
+        .bind(now.to_rfc3339())
+        .execute(&self.2[shard_index])
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     pub async fn claim_next_excluding(
         &self,
         visibility: Duration,
@@ -1376,7 +1415,7 @@ impl Database {
                 format!(" AND topic NOT IN ({placeholders})")
             };
             let sql = format!(
-                "SELECT id, topic, payload, attributes, created_at FROM messages
+                "SELECT id, topic, payload, attributes, created_at, attempts FROM messages
                  WHERE status = 'pending' AND next_attempt_at <= ?{exclusion}
                  ORDER BY created_at LIMIT 1"
             );
@@ -1429,6 +1468,7 @@ impl Database {
             attributes: serde_json::from_str(&row.get::<String, _>("attributes"))?,
             created_at: row.get("created_at"),
             lease,
+            attempts: row.get::<i64, _>("attempts") + 1,
         }))
     }
 
@@ -2113,6 +2153,73 @@ mod tests {
             .unwrap();
         assert_eq!(reclaimed[0].id, ready);
         assert!(!db.delivered(&ready, &batch[0].lease).await.unwrap());
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn claimed_message_lease_can_only_be_renewed_by_its_owner() {
+        let (db, dir) = temp_db().await;
+        let (id, _) = db
+            .enqueue(None, "jobs", b"slow", HashMap::new())
+            .await
+            .unwrap();
+        let message = db
+            .claim_next_for_topic("jobs", Duration::from_secs(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.attempts, 1);
+        assert!(!db
+            .renew_claim(&id, "wrong-lease", Duration::from_secs(30))
+            .await
+            .unwrap());
+        assert!(db
+            .renew_claim(&id, &message.lease, Duration::from_secs(30))
+            .await
+            .unwrap());
+        assert!(db.delivered(&id, &message.lease).await.unwrap());
+        assert!(!db
+            .renew_claim(&id, &message.lease, Duration::from_secs(30))
+            .await
+            .unwrap());
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn expired_message_lease_cannot_be_resurrected() {
+        let (db, dir) = temp_db().await;
+        let (id, _) = db
+            .enqueue(None, "jobs", b"slow", HashMap::new())
+            .await
+            .unwrap();
+        let message = db
+            .claim_next_for_topic("jobs", Duration::ZERO)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!db
+            .renew_claim(&id, &message.lease, Duration::from_secs(30))
+            .await
+            .unwrap());
+        db.close().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn exclusion_claim_reports_incremented_delivery_attempt() {
+        let (db, dir) = temp_db().await;
+        db.enqueue(None, "jobs", b"work", HashMap::new())
+            .await
+            .unwrap();
+        let message = db
+            .claim_next_excluding(Duration::from_secs(30), &["other".into()])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.topic, "jobs");
+        assert_eq!(message.attempts, 1);
         db.close().await;
         let _ = std::fs::remove_dir_all(dir);
     }

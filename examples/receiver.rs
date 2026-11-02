@@ -5,6 +5,7 @@ use tonic::service::Interceptor;
 use tonic::transport::Channel;
 use tonic::{Request, Status};
 
+#[allow(clippy::result_large_err)]
 pub mod proto {
     tonic::include_proto!("dispatcher.v1");
 }

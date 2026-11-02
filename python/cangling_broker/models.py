@@ -63,6 +63,35 @@ class TopicConfig:
 
 
 @dataclass(frozen=True)
+class ElectionLeader:
+    election: str
+    leader_id: str
+    term: int
+    lease_id: str
+    expire_at: str
+    remaining_ttl_ms: int
+
+
+@dataclass(frozen=True)
+class ElectionCampaignResult:
+    won: bool
+    leader: ElectionLeader
+
+
+@dataclass(frozen=True)
+class ElectionRenewResult:
+    renewed: bool
+    leader: ElectionLeader | None = None
+
+
+@dataclass(frozen=True)
+class ElectionState:
+    found: bool
+    active: bool
+    leader: ElectionLeader | None = None
+
+
+@dataclass(frozen=True)
 class SubscribeOptions:
     topic: str
     consumer_id: str = ""

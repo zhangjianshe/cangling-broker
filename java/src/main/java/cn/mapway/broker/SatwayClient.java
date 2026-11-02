@@ -13,6 +13,11 @@ import cn.mapway.broker.proto.CacheServiceGrpc;
 import cn.mapway.broker.proto.CacheSetRequest;
 import cn.mapway.broker.proto.CacheTtlRequest;
 import cn.mapway.broker.proto.ConfigureTopicsRequest;
+import cn.mapway.broker.proto.ElectionCampaignRequest;
+import cn.mapway.broker.proto.ElectionGetLeaderRequest;
+import cn.mapway.broker.proto.ElectionRenewRequest;
+import cn.mapway.broker.proto.ElectionResignRequest;
+import cn.mapway.broker.proto.ElectionServiceGrpc;
 import cn.mapway.broker.proto.ListTopicsRequest;
 import cn.mapway.broker.proto.LockAcquireRequest;
 import cn.mapway.broker.proto.LockIsLockedRequest;
@@ -71,9 +76,11 @@ public final class SatwayClient implements AutoCloseable {
     private final MessageQueueGrpc.MessageQueueBlockingStub stub;
     private final MessageQueueGrpc.MessageQueueStub async;
     private final CacheServiceGrpc.CacheServiceBlockingStub cacheStub;
+    private final ElectionServiceGrpc.ElectionServiceBlockingStub electionStub;
     private final AtomicBoolean open = new AtomicBoolean(true);
     private final Thread reconnect;
     private final List<Consumer> consumers = new CopyOnWriteArrayList<>();
+    private final List<ElectionHandle> elections = new CopyOnWriteArrayList<>();
     private final List<ConnectionListener> connectionListeners = new CopyOnWriteArrayList<>();
     private final LinkedBlockingQueue<AckMessageRequest> ackQueue = new LinkedBlockingQueue<>(8192);
     private final Thread ackWorker;
@@ -83,6 +90,7 @@ public final class SatwayClient implements AutoCloseable {
         this.stub = MessageQueueGrpc.newBlockingStub(channel);
         this.async = MessageQueueGrpc.newStub(channel);
         this.cacheStub = CacheServiceGrpc.newBlockingStub(channel);
+        this.electionStub = ElectionServiceGrpc.newBlockingStub(channel);
         if (onConnected != null) {
             connectionListeners.add(onConnected);
         }
@@ -253,6 +261,9 @@ public final class SatwayClient implements AutoCloseable {
         for (Consumer consumer : consumers) {
             consumer.close();
         }
+        for (ElectionHandle election : elections) {
+            election.close();
+        }
         ackWorker.interrupt();
         try {
             ackWorker.join(1_000);
@@ -344,6 +355,164 @@ public final class SatwayClient implements AutoCloseable {
     }
 
     // ========= cache (in-memory) & lock (SQLite-backed) Redis replacement ==========
+
+    // ========= generic lease election ==========
+
+    /** Perform one campaign attempt for any application-defined election name. */
+    public ElectionCampaignResult campaignElection(String election, String candidateId, long ttlSeconds) {
+        validateElection(election, candidateId, ttlSeconds);
+        return callWithReconnect("campaignElection",
+                () -> campaignElectionOnce(election, candidateId, ttlSeconds));
+    }
+
+    /** Renew one exact leader/term/lease tuple. Expired leases cannot be revived. */
+    public ElectionRenewResult renewElection(String election, String leaderId, long term,
+                                               String leaseId, long ttlSeconds) {
+        validateLease(election, leaderId, term, leaseId);
+        validateTtl(ttlSeconds);
+        return callWithReconnect("renewElection",
+                () -> renewElectionOnce(election, leaderId, term, leaseId, ttlSeconds));
+    }
+
+    /** Relinquish leadership immediately when this tuple still owns it. */
+    public boolean resignElection(String election, String leaderId, long term, String leaseId) {
+        validateLease(election, leaderId, term, leaseId);
+        return callWithReconnect("resignElection",
+                () -> resignElectionOnce(election, leaderId, term, leaseId));
+    }
+
+    /** Read the currently observed lease, including inactive/expired state. */
+    public ElectionState getElection(String election) {
+        requireElectionName(election);
+        return callWithReconnect("getElection", () -> {
+            cn.mapway.broker.proto.ElectionGetLeaderResponse response = electionStub
+                    .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                    .getLeader(ElectionGetLeaderRequest.newBuilder().setElection(election.trim()).build());
+            return new ElectionState(
+                    response.getFound(),
+                    response.getActive(),
+                    response.hasLeader() ? toElectionLeader(response.getLeader()) : null);
+        });
+    }
+
+    /**
+     * Continuously campaigns and renews. The returned handle fails closed at
+     * its local lease deadline and invokes callbacks only on role transitions.
+     */
+    public ElectionHandle startElection(String election, String candidateId) {
+        return startElection(election, candidateId, 15, null);
+    }
+
+    public ElectionHandle startElection(String election, String candidateId, long ttlSeconds) {
+        return startElection(election, candidateId, ttlSeconds, null);
+    }
+
+    public ElectionHandle startElection(String election, String candidateId, long ttlSeconds,
+                                         ElectionListener listener) {
+        validateElection(election, candidateId, ttlSeconds);
+        if (ttlSeconds < 3) {
+            throw new IllegalArgumentException("automatic election ttlSeconds must be >= 3");
+        }
+        ElectionHandle handle = new ElectionHandle(
+                this, election.trim(), candidateId.trim(), ttlSeconds, listener);
+        elections.add(handle);
+        handle.start();
+        return handle;
+    }
+
+    ElectionCampaignResult campaignElectionOnce(String election, String candidateId, long ttlSeconds) {
+        try {
+            cn.mapway.broker.proto.ElectionCampaignResponse response = electionStub
+                    .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                    .campaign(ElectionCampaignRequest.newBuilder()
+                            .setElection(election)
+                            .setCandidateId(candidateId)
+                            .setTtlSeconds(ttlSeconds)
+                            .build());
+            return new ElectionCampaignResult(response.getWon(), toElectionLeader(response.getLeader()));
+        } catch (StatusRuntimeException error) {
+            throw new IllegalStateException("campaign election failed", error);
+        }
+    }
+
+    ElectionRenewResult renewElectionOnce(String election, String leaderId, long term,
+                                             String leaseId, long ttlSeconds) {
+        try {
+            cn.mapway.broker.proto.ElectionRenewResponse response = electionStub
+                    .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                    .renew(ElectionRenewRequest.newBuilder()
+                            .setElection(election)
+                            .setLeaderId(leaderId)
+                            .setTerm(term)
+                            .setLeaseId(leaseId)
+                            .setTtlSeconds(ttlSeconds)
+                            .build());
+            return new ElectionRenewResult(
+                    response.getRenewed(),
+                    response.hasLeader() ? toElectionLeader(response.getLeader()) : null);
+        } catch (StatusRuntimeException error) {
+            throw new IllegalStateException("renew election failed", error);
+        }
+    }
+
+    boolean resignElectionOnce(String election, String leaderId, long term, String leaseId) {
+        try {
+            return electionStub
+                    .withDeadlineAfter(RPC_DEADLINE_SECS, TimeUnit.SECONDS)
+                    .resign(ElectionResignRequest.newBuilder()
+                            .setElection(election)
+                            .setLeaderId(leaderId)
+                            .setTerm(term)
+                            .setLeaseId(leaseId)
+                            .build())
+                    .getResigned();
+        } catch (StatusRuntimeException error) {
+            throw new IllegalStateException("resign election failed", error);
+        }
+    }
+
+    void removeElection(ElectionHandle handle) {
+        elections.remove(handle);
+    }
+
+    private static ElectionLeader toElectionLeader(cn.mapway.broker.proto.ElectionLeader leader) {
+        return new ElectionLeader(
+                leader.getElection(), leader.getLeaderId(), leader.getTerm(),
+                leader.getLeaseId(), leader.getExpireAt(), leader.getRemainingTtlMs());
+    }
+
+    private static void validateElection(String election, String candidateId, long ttlSeconds) {
+        requireElectionName(election);
+        if (candidateId == null || candidateId.isBlank()) {
+            throw new IllegalArgumentException("candidateId is required");
+        }
+        validateTtl(ttlSeconds);
+    }
+
+    private static void validateLease(String election, String leaderId, long term, String leaseId) {
+        requireElectionName(election);
+        if (leaderId == null || leaderId.isBlank()) {
+            throw new IllegalArgumentException("leaderId is required");
+        }
+        if (term <= 0) {
+            throw new IllegalArgumentException("term must be > 0");
+        }
+        if (leaseId == null || leaseId.isBlank()) {
+            throw new IllegalArgumentException("leaseId is required");
+        }
+    }
+
+    private static void requireElectionName(String election) {
+        if (election == null || election.isBlank()) {
+            throw new IllegalArgumentException("election is required");
+        }
+    }
+
+    private static void validateTtl(long ttlSeconds) {
+        if (ttlSeconds < 1 || ttlSeconds > 3600) {
+            throw new IllegalArgumentException("ttlSeconds must be between 1 and 3600");
+        }
+    }
 
     /** Store a value. {@code ttlSeconds <= 0} means no expiry. */
     public void cacheSet(String key, byte[] value, long ttlSeconds) {

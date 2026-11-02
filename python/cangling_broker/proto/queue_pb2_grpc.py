@@ -80,7 +80,8 @@ class MessageQueueServicer:
     """Missing associated documentation comment in .proto file."""
 
     def AcceptMessages(self, request_iterator, context):
-        """Client streams publishes; server streams one response per request after SQLite commit.
+        """Client streams publishes; server responds after bounded in-memory queue admission.
+        Persistent topics are committed to SQLite asynchronously.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -872,6 +873,216 @@ class CacheService:
             '/dispatcher.v1.CacheService/IsLocked',
             queue__pb2.LockIsLockedRequest.SerializeToString,
             queue__pb2.LockIsLockedResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+
+class ElectionServiceStub:
+    """ElectionService provides lease-based leader election with monotonically
+    increasing terms. The term is a fencing token: downstream services must
+    reject writes from an older term even if a stopped leader resumes later.
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.Campaign = channel.unary_unary(
+                '/dispatcher.v1.ElectionService/Campaign',
+                request_serializer=queue__pb2.ElectionCampaignRequest.SerializeToString,
+                response_deserializer=queue__pb2.ElectionCampaignResponse.FromString,
+                _registered_method=True)
+        self.Renew = channel.unary_unary(
+                '/dispatcher.v1.ElectionService/Renew',
+                request_serializer=queue__pb2.ElectionRenewRequest.SerializeToString,
+                response_deserializer=queue__pb2.ElectionRenewResponse.FromString,
+                _registered_method=True)
+        self.Resign = channel.unary_unary(
+                '/dispatcher.v1.ElectionService/Resign',
+                request_serializer=queue__pb2.ElectionResignRequest.SerializeToString,
+                response_deserializer=queue__pb2.ElectionResignResponse.FromString,
+                _registered_method=True)
+        self.GetLeader = channel.unary_unary(
+                '/dispatcher.v1.ElectionService/GetLeader',
+                request_serializer=queue__pb2.ElectionGetLeaderRequest.SerializeToString,
+                response_deserializer=queue__pb2.ElectionGetLeaderResponse.FromString,
+                _registered_method=True)
+
+
+class ElectionServiceServicer:
+    """ElectionService provides lease-based leader election with monotonically
+    increasing terms. The term is a fencing token: downstream services must
+    reject writes from an older term even if a stopped leader resumes later.
+    """
+
+    def Campaign(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Renew(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Resign(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetLeader(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_ElectionServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'Campaign': grpc.unary_unary_rpc_method_handler(
+                    servicer.Campaign,
+                    request_deserializer=queue__pb2.ElectionCampaignRequest.FromString,
+                    response_serializer=queue__pb2.ElectionCampaignResponse.SerializeToString,
+            ),
+            'Renew': grpc.unary_unary_rpc_method_handler(
+                    servicer.Renew,
+                    request_deserializer=queue__pb2.ElectionRenewRequest.FromString,
+                    response_serializer=queue__pb2.ElectionRenewResponse.SerializeToString,
+            ),
+            'Resign': grpc.unary_unary_rpc_method_handler(
+                    servicer.Resign,
+                    request_deserializer=queue__pb2.ElectionResignRequest.FromString,
+                    response_serializer=queue__pb2.ElectionResignResponse.SerializeToString,
+            ),
+            'GetLeader': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetLeader,
+                    request_deserializer=queue__pb2.ElectionGetLeaderRequest.FromString,
+                    response_serializer=queue__pb2.ElectionGetLeaderResponse.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'dispatcher.v1.ElectionService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('dispatcher.v1.ElectionService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class ElectionService:
+    """ElectionService provides lease-based leader election with monotonically
+    increasing terms. The term is a fencing token: downstream services must
+    reject writes from an older term even if a stopped leader resumes later.
+    """
+
+    @staticmethod
+    def Campaign(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.ElectionService/Campaign',
+            queue__pb2.ElectionCampaignRequest.SerializeToString,
+            queue__pb2.ElectionCampaignResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Renew(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.ElectionService/Renew',
+            queue__pb2.ElectionRenewRequest.SerializeToString,
+            queue__pb2.ElectionRenewResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Resign(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.ElectionService/Resign',
+            queue__pb2.ElectionResignRequest.SerializeToString,
+            queue__pb2.ElectionResignResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetLeader(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/dispatcher.v1.ElectionService/GetLeader',
+            queue__pb2.ElectionGetLeaderRequest.SerializeToString,
+            queue__pb2.ElectionGetLeaderResponse.FromString,
             options,
             channel_credentials,
             insecure,

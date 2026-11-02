@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use axum::{
     extract::{Query, State},
@@ -17,9 +21,12 @@ use crate::{
     cache::{CacheStore, LockStore},
     config::Config,
     db::Database,
+    delivery::Ingested,
+    election::{ElectionStore, LeaderLease},
     grpc_conn::{GrpcClientInfo, GrpcClientRegistry},
     model::{ConsumerSnapshot, DeliveryMode, PersistenceMode, TopicConfig, TopicSnapshot},
     subscribers::{SessionInfo, TopicSubscribers},
+    writer::QueueWriter,
 };
 
 #[derive(Clone)]
@@ -27,15 +34,21 @@ struct StatusState {
     db: Database,
     cache: CacheStore,
     lock: LockStore,
+    election: ElectionStore,
+    writer: QueueWriter,
     subscribers: TopicSubscribers,
     mqtt_clients: crate::mqtt::ClientRegistry,
     grpc_clients: GrpcClientRegistry,
     consumer_ttl_secs: u64,
+    ack_timeout_secs: u64,
+    max_delivery_attempts: i64,
+    worker_poll_ms: u64,
     started: Instant,
     auth_token: Option<String>,
     web_base: Option<String>,
     web_auth: Arc<crate::web_auth::WebAuth>,
     secure_cookies: bool,
+    log_messages: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -111,6 +124,8 @@ pub async fn serve(
     config: std::sync::Arc<Config>,
     cache: CacheStore,
     lock: LockStore,
+    election: ElectionStore,
+    writer: QueueWriter,
     subscribers: TopicSubscribers,
     shutdown: CancellationToken,
     mqtt: Option<crate::mqtt::MqttCtx>,
@@ -122,15 +137,21 @@ pub async fn serve(
         db: db.clone(),
         cache,
         lock,
+        election,
+        writer,
         subscribers,
         mqtt_clients,
         grpc_clients,
         consumer_ttl_secs: config.consumer_ttl_secs,
+        ack_timeout_secs: config.ack_timeout_secs.max(1),
+        max_delivery_attempts: config.max_delivery_attempts.max(1),
+        worker_poll_ms: config.worker_poll_ms.max(10),
         started: Instant::now(),
         auth_token: auth::normalize(config.auth_token.as_deref()),
         web_base: config.status_web_base(),
         web_auth,
         secure_cookies: config.secure_cookies,
+        log_messages: config.log_messages,
     };
     let app = status_app(state, mqtt);
     axum::serve(
@@ -184,6 +205,10 @@ fn management_routes() -> Router<StatusState> {
         .route("/topics", get(list_topics))
         .route("/topics", post(configure_topics))
         .route("/messages", get(topic_message))
+        .route("/publish", post(publish_message))
+        .route("/consume/poll", post(consume_poll))
+        .route("/consume/ack", post(consume_ack))
+        .route("/consume/renew", post(consume_renew))
         .route("/messages", axum::routing::delete(clear_topic_messages))
         .route("/cache", get(cache_get))
         .route(
@@ -199,6 +224,10 @@ fn management_routes() -> Router<StatusState> {
         .route("/lock/list", get(lock_list))
         .route("/lock/acquire", post(lock_acquire))
         .route("/lock/renew", post(lock_renew))
+        .route("/election", get(election_get))
+        .route("/election/campaign", post(election_campaign))
+        .route("/election/renew", post(election_renew))
+        .route("/election/resign", post(election_resign))
 }
 
 #[cfg(test)]
@@ -456,7 +485,336 @@ struct MessageBody {
     last_error: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct PublishMessageBody {
+    topic: String,
+    payload: serde_json::Value,
+    #[serde(default)]
+    attributes: HashMap<String, String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublishMessageResultBody {
+    message_id: String,
+    duplicate: bool,
+    dropped: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConsumePollBody {
+    topic: String,
+    consumer_id: String,
+    #[serde(default)]
+    consumer_name: String,
+    #[serde(default = "default_consume_wait_ms")]
+    wait_ms: u64,
+    #[serde(default)]
+    attributes: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConsumeMessageBody {
+    id: String,
+    topic: String,
+    payload: String,
+    payload_encoding: &'static str,
+    attributes: serde_json::Value,
+    created_at: String,
+    lease: String,
+    visibility_timeout_ms: u64,
+    delivery_attempt: i64,
+    max_delivery_attempts: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConsumeAckBody {
+    message_id: String,
+    lease: String,
+    #[serde(default = "default_true")]
+    success: bool,
+    #[serde(default)]
+    error: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ConsumeAckResultBody {
+    accepted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConsumeRenewBody {
+    message_id: String,
+    lease: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ConsumeRenewResultBody {
+    renewed: bool,
+    visibility_timeout_ms: u64,
+}
+
+fn default_consume_wait_ms() -> u64 {
+    20_000
+}
+
+fn default_true() -> bool {
+    true
+}
+
 const MESSAGE_PREVIEW_BYTES: usize = 64 * 1024;
+
+async fn publish_message(
+    State(state): State<StatusState>,
+    Json(body): Json<PublishMessageBody>,
+) -> Result<(StatusCode, Json<PublishMessageResultBody>), StatusCode> {
+    let topic = body.topic.trim();
+    if topic.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let payload = match body.payload {
+        serde_json::Value::String(value) => value.into_bytes(),
+        value => serde_json::to_vec(&value).map_err(|_| StatusCode::BAD_REQUEST)?,
+    };
+    if payload.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let idempotency_key = body
+        .idempotency_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let settings = state
+        .db
+        .topic_config(topic)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let ingested = if settings.persistence == PersistenceMode::Persistent {
+        // Control-plane HTTP publishers need a commit acknowledgement before
+        // completing their local transactional outbox row. Unlike the regular
+        // high-throughput gRPC path, this call waits for SQLite commit.
+        let (message_id, duplicate) = state
+            .db
+            .enqueue(idempotency_key, topic, &payload, body.attributes)
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, topic, "durable HTTP publish failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        if !duplicate {
+            state.writer.notify_ready(topic);
+        }
+        Ingested::Queued {
+            message_id,
+            duplicate,
+        }
+    } else {
+        crate::delivery::ingest(
+            &state.db,
+            &state.writer,
+            &state.subscribers,
+            topic,
+            &payload,
+            body.attributes,
+            idempotency_key,
+            state.log_messages,
+        )
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, topic, "HTTP publish failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    };
+    let result = match ingested {
+        Ingested::Queued {
+            message_id,
+            duplicate,
+        } => PublishMessageResultBody {
+            message_id,
+            duplicate,
+            dropped: false,
+        },
+        Ingested::Dropped { message_id } => PublishMessageResultBody {
+            message_id,
+            duplicate: false,
+            dropped: true,
+        },
+    };
+    Ok((StatusCode::ACCEPTED, Json(result)))
+}
+
+async fn consume_poll(
+    State(state): State<StatusState>,
+    Json(mut body): Json<ConsumePollBody>,
+) -> Result<Response, StatusCode> {
+    let topic = body.topic.trim();
+    let consumer_id = body.consumer_id.trim();
+    if topic.is_empty() || consumer_id.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let settings = state
+        .db
+        .topic_config(topic)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if settings.persistence != PersistenceMode::Persistent
+        || settings.delivery != DeliveryMode::Single
+    {
+        // A leased HTTP consumer requires durable queue semantics. Returning a
+        // clear conflict avoids silently degrading broadcast into competing
+        // consumption or pretending an ephemeral publish can be ACKed.
+        return Err(StatusCode::CONFLICT);
+    }
+
+    body.attributes
+        .entry("protocol".to_string())
+        .or_insert_with(|| "http-poll".to_string());
+    let consumer_name = if body.consumer_name.trim().is_empty() {
+        consumer_id
+    } else {
+        body.consumer_name.trim()
+    };
+    state
+        .db
+        .register_consumer(Some(consumer_id), topic, consumer_name, &body.attributes)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, topic, consumer_id, "HTTP consumer registration failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let wait = Duration::from_millis(body.wait_ms.min(30_000));
+    let visibility = Duration::from_secs(state.ack_timeout_secs);
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut notification = state.writer.subscribe(topic);
+    loop {
+        let mut messages = state
+            .db
+            .claim_batch_for_filter(topic, visibility, 1)
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, topic, consumer_id, "HTTP queue claim failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        if let Some(message) = messages.pop() {
+            return Ok(Json(to_consume_message(
+                message,
+                state.ack_timeout_secs,
+                state.max_delivery_attempts,
+            ))
+            .into_response());
+        }
+        if wait.is_zero() || tokio::time::Instant::now() >= deadline {
+            return Ok(StatusCode::NO_CONTENT.into_response());
+        }
+
+        // Notifications make fresh publishes immediate. The bounded poll also
+        // notices messages whose retry delay expires without a new publish.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let pause = remaining.min(Duration::from_millis(state.worker_poll_ms));
+        tokio::select! {
+            _ = tokio::time::sleep(pause) => {}
+            changed = notification.changed() => {
+                if changed.is_err() {
+                    tokio::time::sleep(pause).await;
+                }
+            }
+        }
+    }
+}
+
+async fn consume_ack(
+    State(state): State<StatusState>,
+    Json(body): Json<ConsumeAckBody>,
+) -> Result<Json<ConsumeAckResultBody>, StatusCode> {
+    let message_id = body.message_id.trim();
+    let lease = body.lease.trim();
+    if message_id.is_empty() || lease.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let accepted = if body.success {
+        state
+            .writer
+            .delivered(message_id, lease)
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, message_id, "HTTP queue ACK failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    } else {
+        let error = if body.error.trim().is_empty() {
+            "consumer rejected message"
+        } else {
+            body.error.trim()
+        };
+        state
+            .db
+            .failed(message_id, lease, error, state.max_delivery_attempts)
+            .await
+            .map_err(|failure| {
+                tracing::error!(error = %failure, message_id, "HTTP queue NACK failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    };
+    if !accepted {
+        return Err(StatusCode::CONFLICT);
+    }
+    Ok(Json(ConsumeAckResultBody { accepted }))
+}
+
+async fn consume_renew(
+    State(state): State<StatusState>,
+    Json(body): Json<ConsumeRenewBody>,
+) -> Result<Json<ConsumeRenewResultBody>, StatusCode> {
+    let message_id = body.message_id.trim();
+    let lease = body.lease.trim();
+    if message_id.is_empty() || lease.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let renewed = state
+        .db
+        .renew_claim(
+            message_id,
+            lease,
+            Duration::from_secs(state.ack_timeout_secs),
+        )
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, message_id, "HTTP queue lease renewal failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !renewed {
+        return Err(StatusCode::CONFLICT);
+    }
+    Ok(Json(ConsumeRenewResultBody {
+        renewed,
+        visibility_timeout_ms: state.ack_timeout_secs.saturating_mul(1_000),
+    }))
+}
+
+fn to_consume_message(
+    message: crate::model::ClaimedMessage,
+    ack_timeout_secs: u64,
+    max_delivery_attempts: i64,
+) -> ConsumeMessageBody {
+    let (payload, payload_encoding) = match String::from_utf8(message.payload) {
+        Ok(text) => (text, "utf-8"),
+        Err(error) => (encode_base64(&error.into_bytes()), "base64"),
+    };
+    ConsumeMessageBody {
+        id: message.id,
+        topic: message.topic,
+        payload,
+        payload_encoding,
+        attributes: message.attributes,
+        created_at: message.created_at,
+        lease: message.lease,
+        visibility_timeout_ms: ack_timeout_secs.saturating_mul(1_000),
+        delivery_attempt: message.attempts,
+        max_delivery_attempts,
+    }
+}
 
 async fn topic_message(
     State(state): State<StatusState>,
@@ -823,6 +1181,173 @@ async fn lock_list(State(state): State<StatusState>) -> Result<Json<LockListBody
             })
             .collect(),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct ElectionQuery {
+    election: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ElectionCampaignBody {
+    election: String,
+    candidate_id: String,
+    ttl_seconds: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ElectionLeaseBody {
+    election: String,
+    leader_id: String,
+    term: u64,
+    lease_id: String,
+    #[serde(default)]
+    ttl_seconds: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct ElectionLeaderBody {
+    election: String,
+    leader_id: String,
+    term: u64,
+    lease_id: String,
+    expire_at: String,
+    remaining_ttl_ms: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct ElectionStateBody {
+    found: bool,
+    active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    leader: Option<ElectionLeaderBody>,
+}
+
+#[derive(Debug, Serialize)]
+struct ElectionCampaignResultBody {
+    won: bool,
+    leader: ElectionLeaderBody,
+}
+
+#[derive(Debug, Serialize)]
+struct ElectionRenewResultBody {
+    renewed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    leader: Option<ElectionLeaderBody>,
+}
+
+#[derive(Debug, Serialize)]
+struct ElectionResignResultBody {
+    resigned: bool,
+}
+
+async fn election_get(
+    State(state): State<StatusState>,
+    Query(query): Query<ElectionQuery>,
+) -> Result<Json<ElectionStateBody>, StatusCode> {
+    let election = required_election_value(&query.election)?;
+    let leader = state
+        .election
+        .get(election)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(ElectionStateBody {
+        found: leader.is_some(),
+        active: leader.as_ref().is_some_and(LeaderLease::active),
+        leader: leader.map(election_leader_body),
+    }))
+}
+
+async fn election_campaign(
+    State(state): State<StatusState>,
+    Json(body): Json<ElectionCampaignBody>,
+) -> Result<Json<ElectionCampaignResultBody>, StatusCode> {
+    let election = required_election_value(&body.election)?;
+    let candidate = required_election_value(&body.candidate_id)?;
+    validate_election_ttl(body.ttl_seconds)?;
+    let (won, leader) = state
+        .election
+        .campaign(election, candidate, body.ttl_seconds)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(ElectionCampaignResultBody {
+        won,
+        leader: election_leader_body(leader),
+    }))
+}
+
+async fn election_renew(
+    State(state): State<StatusState>,
+    Json(body): Json<ElectionLeaseBody>,
+) -> Result<Json<ElectionRenewResultBody>, StatusCode> {
+    let election = required_election_value(&body.election)?;
+    let leader_id = required_election_value(&body.leader_id)?;
+    let lease_id = required_election_value(&body.lease_id)?;
+    if body.term == 0 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    validate_election_ttl(body.ttl_seconds)?;
+    let leader = state
+        .election
+        .renew(election, leader_id, body.term, lease_id, body.ttl_seconds)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(ElectionRenewResultBody {
+        renewed: leader.is_some(),
+        leader: leader.map(election_leader_body),
+    }))
+}
+
+async fn election_resign(
+    State(state): State<StatusState>,
+    Json(body): Json<ElectionLeaseBody>,
+) -> Result<Json<ElectionResignResultBody>, StatusCode> {
+    let election = required_election_value(&body.election)?;
+    let leader_id = required_election_value(&body.leader_id)?;
+    let lease_id = required_election_value(&body.lease_id)?;
+    if body.term == 0 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let resigned = state
+        .election
+        .resign(election, leader_id, body.term, lease_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(ElectionResignResultBody { resigned }))
+}
+
+fn required_election_value(value: &str) -> Result<&str, StatusCode> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(StatusCode::BAD_REQUEST)
+    } else {
+        Ok(value)
+    }
+}
+
+fn validate_election_ttl(ttl: i64) -> Result<(), StatusCode> {
+    if (1..=3600).contains(&ttl) {
+        Ok(())
+    } else {
+        Err(StatusCode::BAD_REQUEST)
+    }
+}
+
+fn election_leader_body(leader: LeaderLease) -> ElectionLeaderBody {
+    let remaining_ttl_ms = leader
+        .expire_at_ms
+        .saturating_sub(chrono::Utc::now().timestamp_millis())
+        .max(0);
+    ElectionLeaderBody {
+        election: leader.election,
+        leader_id: leader.leader_id,
+        term: leader.term,
+        lease_id: leader.lease_id,
+        expire_at: chrono::DateTime::from_timestamp_millis(leader.expire_at_ms)
+            .unwrap_or(chrono::DateTime::UNIX_EPOCH)
+            .to_rfc3339(),
+        remaining_ttl_ms,
+    }
 }
 
 fn to_message_body(message: crate::db::StoredMessage) -> MessageBody {

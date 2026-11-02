@@ -1,6 +1,15 @@
-from .client import SatwayClient
+from .client import Election, SatwayClient
 from .compat import KafkaProducer
-from .models import SatwayMessage, SendResult, SubscribeOptions, TopicConfig
+from .models import (
+    ElectionCampaignResult,
+    ElectionLeader,
+    ElectionRenewResult,
+    ElectionState,
+    SatwayMessage,
+    SendResult,
+    SubscribeOptions,
+    TopicConfig,
+)
 
 try:
     from importlib.metadata import version as _pkg_version
@@ -11,6 +20,11 @@ except Exception:
 
 __all__ = [
     "KafkaProducer",
+    "Election",
+    "ElectionCampaignResult",
+    "ElectionLeader",
+    "ElectionRenewResult",
+    "ElectionState",
     "SatwayClient",
     "SatwayMessage",
     "SendResult",

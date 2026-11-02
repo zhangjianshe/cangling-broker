@@ -54,6 +54,31 @@ producer.send(topic, msg)
 producer.flush()
 ```
 
+## Generic leader election
+
+Every service can use the same application-defined election name. The
+auto-renewing handle fails closed when it cannot renew and exposes the
+monotonically increasing fencing term:
+
+```python
+import os
+from cangling_broker import SatwayClient
+
+with SatwayClient.connect("cangling-broker:7500") as client:
+    with client.start_election(
+        "cis/algorithm-dispatcher",
+        os.environ["HOSTNAME"],
+        ttl_seconds=15,
+    ) as election:
+        if election.is_leader:
+            dispatch_one_job(fencing_term=election.term)
+```
+
+Callbacks can be supplied with `on_leader=` and `on_follower=`, but they are
+notifications only. Check `election.is_leader` immediately before exclusive
+work and persist/pass `election.term` so downstream writers can reject a stale
+leader.
+
 ```bash
 # consume
 python python/examples/consumer.py --broker 127.0.0.1:7500 --topic cangling-test --name py-s0 --token change-me

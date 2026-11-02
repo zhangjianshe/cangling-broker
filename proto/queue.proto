@@ -147,6 +147,73 @@ service CacheService {
   rpc IsLocked(LockIsLockedRequest) returns (LockIsLockedResponse);
 }
 
+// ElectionService provides lease-based leader election with monotonically
+// increasing terms. The term is a fencing token: downstream services must
+// reject writes from an older term even if a stopped leader resumes later.
+service ElectionService {
+  rpc Campaign(ElectionCampaignRequest) returns (ElectionCampaignResponse);
+  rpc Renew(ElectionRenewRequest) returns (ElectionRenewResponse);
+  rpc Resign(ElectionResignRequest) returns (ElectionResignResponse);
+  rpc GetLeader(ElectionGetLeaderRequest) returns (ElectionGetLeaderResponse);
+}
+
+message ElectionLeader {
+  string election = 1;
+  string leader_id = 2;
+  uint64 term = 3;
+  string lease_id = 4;
+  string expire_at = 5;
+  // Remaining lease duration measured by the broker when it builds the
+  // response. Clients must use this value with a monotonic clock instead of
+  // deriving a deadline from wall-clock timestamps.
+  int64 remaining_ttl_ms = 6;
+}
+
+message ElectionCampaignRequest {
+  string election = 1;
+  string candidate_id = 2;
+  int64 ttl_seconds = 3;
+}
+
+message ElectionCampaignResponse {
+  bool won = 1;
+  ElectionLeader leader = 2;
+}
+
+message ElectionRenewRequest {
+  string election = 1;
+  string leader_id = 2;
+  uint64 term = 3;
+  string lease_id = 4;
+  int64 ttl_seconds = 5;
+}
+
+message ElectionRenewResponse {
+  bool renewed = 1;
+  ElectionLeader leader = 2;
+}
+
+message ElectionResignRequest {
+  string election = 1;
+  string leader_id = 2;
+  uint64 term = 3;
+  string lease_id = 4;
+}
+
+message ElectionResignResponse {
+  bool resigned = 1;
+}
+
+message ElectionGetLeaderRequest {
+  string election = 1;
+}
+
+message ElectionGetLeaderResponse {
+  bool found = 1;
+  bool active = 2;
+  ElectionLeader leader = 3;
+}
+
 message CacheSetRequest {
   string key = 1;
   bytes value = 2;

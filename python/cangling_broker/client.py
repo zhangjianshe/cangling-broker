@@ -11,7 +11,17 @@ import uuid
 
 import grpc
 
-from .models import SatwayMessage, SendResult, SubscribeOptions, TopicConfig, auth_token_from_env
+from .models import (
+    ElectionCampaignResult,
+    ElectionLeader,
+    ElectionRenewResult,
+    ElectionState,
+    SatwayMessage,
+    SendResult,
+    SubscribeOptions,
+    TopicConfig,
+    auth_token_from_env,
+)
 from .proto import queue_pb2, queue_pb2_grpc
 
 
@@ -106,9 +116,11 @@ class SatwayClient:
         self._channel = channel
         self._stub = queue_pb2_grpc.MessageQueueStub(channel)
         self._cache_stub = queue_pb2_grpc.CacheServiceStub(channel)
+        self._election_stub = queue_pb2_grpc.ElectionServiceStub(channel)
         self._metadata = metadata
         self._open = True
         self._consumers: list[Consumer] = []
+        self._elections: list[Election] = []
         self._lock = threading.Lock()
         self._acks = _AckBatcher(self)
 
@@ -278,6 +290,10 @@ class SatwayClient:
         return consumer
 
     def close(self) -> None:
+        with self._lock:
+            elections = list(self._elections)
+        for election in elections:
+            election.close()
         self._acks.close()
         with self._lock:
             if not self._open:
@@ -293,6 +309,151 @@ class SatwayClient:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
+
+    # ========= generic lease election ==========
+
+    def campaign_election(
+        self, election: str, candidate_id: str, ttl_seconds: int
+    ) -> ElectionCampaignResult:
+        """Perform one campaign attempt for an application-defined election."""
+        _validate_election(election, candidate_id, ttl_seconds)
+        return self._call_with_reconnect(
+            "campaign_election",
+            lambda: self._campaign_election_once(election, candidate_id, ttl_seconds),
+        )
+
+    def renew_election(
+        self,
+        election: str,
+        leader_id: str,
+        term: int,
+        lease_id: str,
+        ttl_seconds: int,
+    ) -> ElectionRenewResult:
+        """Renew an exact active leader/term/lease tuple."""
+        _validate_lease(election, leader_id, term, lease_id)
+        _validate_ttl(ttl_seconds)
+        return self._call_with_reconnect(
+            "renew_election",
+            lambda: self._renew_election_once(
+                election, leader_id, term, lease_id, ttl_seconds
+            ),
+        )
+
+    def resign_election(
+        self, election: str, leader_id: str, term: int, lease_id: str
+    ) -> bool:
+        """Relinquish leadership when the exact tuple still owns it."""
+        _validate_lease(election, leader_id, term, lease_id)
+        return self._call_with_reconnect(
+            "resign_election",
+            lambda: self._resign_election_once(election, leader_id, term, lease_id),
+        )
+
+    def get_election(self, election: str) -> ElectionState:
+        """Read the observed leader, including inactive/expired state."""
+        _require_election(election)
+
+        def once() -> ElectionState:
+            response = self._election_stub.GetLeader(
+                queue_pb2.ElectionGetLeaderRequest(election=election.strip()),
+                timeout=RPC_DEADLINE_SECS,
+                metadata=self._metadata,
+            )
+            return ElectionState(
+                found=response.found,
+                active=response.active,
+                leader=_to_election_leader(response.leader)
+                if response.HasField("leader")
+                else None,
+            )
+
+        return self._call_with_reconnect("get_election", once)
+
+    def start_election(
+        self,
+        election: str,
+        candidate_id: str,
+        ttl_seconds: int = 15,
+        *,
+        on_leader: Callable[[Election, ElectionLeader], None] | None = None,
+        on_follower: Callable[[Election, ElectionLeader | None], None] | None = None,
+    ) -> Election:
+        """Continuously campaign and renew, returning a fail-closed handle."""
+        _validate_election(election, candidate_id, ttl_seconds)
+        if ttl_seconds < 3:
+            raise ValueError("automatic election ttl_seconds must be >= 3")
+        handle = Election(
+            self,
+            election.strip(),
+            candidate_id.strip(),
+            ttl_seconds,
+            on_leader,
+            on_follower,
+        )
+        with self._lock:
+            self._elections.append(handle)
+        handle._start()
+        return handle
+
+    def _campaign_election_once(
+        self, election: str, candidate_id: str, ttl_seconds: int
+    ) -> ElectionCampaignResult:
+        response = self._election_stub.Campaign(
+            queue_pb2.ElectionCampaignRequest(
+                election=election,
+                candidate_id=candidate_id,
+                ttl_seconds=ttl_seconds,
+            ),
+            timeout=RPC_DEADLINE_SECS,
+            metadata=self._metadata,
+        )
+        return ElectionCampaignResult(response.won, _to_election_leader(response.leader))
+
+    def _renew_election_once(
+        self,
+        election: str,
+        leader_id: str,
+        term: int,
+        lease_id: str,
+        ttl_seconds: int,
+    ) -> ElectionRenewResult:
+        response = self._election_stub.Renew(
+            queue_pb2.ElectionRenewRequest(
+                election=election,
+                leader_id=leader_id,
+                term=term,
+                lease_id=lease_id,
+                ttl_seconds=ttl_seconds,
+            ),
+            timeout=RPC_DEADLINE_SECS,
+            metadata=self._metadata,
+        )
+        return ElectionRenewResult(
+            response.renewed,
+            _to_election_leader(response.leader)
+            if response.HasField("leader")
+            else None,
+        )
+
+    def _resign_election_once(
+        self, election: str, leader_id: str, term: int, lease_id: str
+    ) -> bool:
+        return self._election_stub.Resign(
+            queue_pb2.ElectionResignRequest(
+                election=election,
+                leader_id=leader_id,
+                term=term,
+                lease_id=lease_id,
+            ),
+            timeout=RPC_DEADLINE_SECS,
+            metadata=self._metadata,
+        ).resigned
+
+    def _remove_election(self, election: Election) -> None:
+        with self._lock:
+            if election in self._elections:
+                self._elections.remove(election)
 
     # ========= cache (in-memory) & lock (SQLite-backed) Redis replacement ==========
 
@@ -523,6 +684,237 @@ class SatwayClient:
                 LOG.warning("%s failed, reconnecting: %s", op, error.details() or error.code())
                 time.sleep(backoff)
                 backoff = min(backoff * 2, MAX_BACKOFF_SECS)
+
+
+def _to_election_leader(value) -> ElectionLeader:
+    return ElectionLeader(
+        election=value.election,
+        leader_id=value.leader_id,
+        term=value.term,
+        lease_id=value.lease_id,
+        expire_at=value.expire_at,
+        remaining_ttl_ms=value.remaining_ttl_ms,
+    )
+
+
+def _require_election(election: str) -> None:
+    if not election or not election.strip():
+        raise ValueError("election is required")
+
+
+def _validate_ttl(ttl_seconds: int) -> None:
+    if ttl_seconds < 1 or ttl_seconds > 3600:
+        raise ValueError("ttl_seconds must be between 1 and 3600")
+
+
+def _validate_election(election: str, candidate_id: str, ttl_seconds: int) -> None:
+    _require_election(election)
+    if not candidate_id or not candidate_id.strip():
+        raise ValueError("candidate_id is required")
+    _validate_ttl(ttl_seconds)
+
+
+def _validate_lease(election: str, leader_id: str, term: int, lease_id: str) -> None:
+    _require_election(election)
+    if not leader_id or not leader_id.strip():
+        raise ValueError("leader_id is required")
+    if term <= 0:
+        raise ValueError("term must be > 0")
+    if not lease_id or not lease_id.strip():
+        raise ValueError("lease_id is required")
+
+
+class Election:
+    """Auto-renewing, fail-closed handle for one named election."""
+
+    def __init__(
+        self,
+        client: SatwayClient,
+        election: str,
+        candidate_id: str,
+        ttl_seconds: int,
+        on_leader: Callable[[Election, ElectionLeader], None] | None,
+        on_follower: Callable[[Election, ElectionLeader | None], None] | None,
+    ):
+        self._client = client
+        self.election = election
+        self.candidate_id = candidate_id
+        self.ttl_seconds = ttl_seconds
+        self._on_leader = on_leader
+        self._on_follower = on_follower
+        self._state_lock = threading.Lock()
+        self._rpc_lock = threading.Lock()
+        self._active_rpc = None
+        self._leader: ElectionLeader | None = None
+        self._leading = False
+        self._valid_until = 0.0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="cangling-election-" + election.replace("/", "-"),
+            daemon=True,
+        )
+
+    def _start(self) -> None:
+        self._thread.start()
+
+    @property
+    def leader(self) -> ElectionLeader | None:
+        with self._state_lock:
+            return self._leader
+
+    @property
+    def is_leader(self) -> bool:
+        with self._state_lock:
+            return self._leading and time.monotonic() < self._valid_until
+
+    @property
+    def term(self) -> int:
+        leader = self.leader
+        return leader.term if self.is_leader and leader is not None else 0
+
+    def _run(self) -> None:
+        refresh = max(1.0, self.ttl_seconds / 3.0)
+        while not self._stop.is_set() and self._client._is_open():
+            try:
+                leader = self.leader
+                if self.is_leader and leader is not None:
+                    response = self._rpc(
+                        self._client._election_stub.Renew,
+                        queue_pb2.ElectionRenewRequest(
+                            election=self.election,
+                            leader_id=self.candidate_id,
+                            term=leader.term,
+                            lease_id=leader.lease_id,
+                            ttl_seconds=self.ttl_seconds,
+                        ),
+                    )
+                    result = ElectionRenewResult(
+                        response.renewed,
+                        _to_election_leader(response.leader)
+                        if response.HasField("leader")
+                        else None,
+                    )
+                    if self._stop.is_set():
+                        break
+                    if result.renewed and result.leader is not None:
+                        self._become_leader(result.leader)
+                    else:
+                        self._become_follower(result.leader)
+                else:
+                    response = self._rpc(
+                        self._client._election_stub.Campaign,
+                        queue_pb2.ElectionCampaignRequest(
+                            election=self.election,
+                            candidate_id=self.candidate_id,
+                            ttl_seconds=self.ttl_seconds,
+                        ),
+                    )
+                    result = ElectionCampaignResult(
+                        response.won, _to_election_leader(response.leader)
+                    )
+                    if self._stop.is_set():
+                        if result.won:
+                            self._resign_quietly(result.leader)
+                        break
+                    if result.won:
+                        self._become_leader(result.leader)
+                    else:
+                        self._become_follower(result.leader)
+                self._stop.wait(refresh)
+            except Exception as error:
+                if self._stop.is_set():
+                    break
+                if not self.is_leader:
+                    self._become_follower(self.leader)
+                LOG.warning("election request failed for %s: %s", self.election, error)
+                self._stop.wait(min(1.0, refresh))
+        self._become_follower(self.leader)
+
+    def _rpc(self, method, request):
+        future = method.future(
+            request,
+            timeout=RPC_DEADLINE_SECS,
+            metadata=self._client._metadata,
+        )
+        with self._rpc_lock:
+            self._active_rpc = future
+            stopped = self._stop.is_set()
+        if stopped:
+            future.cancel()
+        try:
+            return future.result()
+        finally:
+            with self._rpc_lock:
+                if self._active_rpc is future:
+                    self._active_rpc = None
+
+    def _become_leader(self, leader: ElectionLeader) -> None:
+        safety = min(1.0, self.ttl_seconds / 3.0)
+        valid_for = leader.remaining_ttl_ms / 1000.0 - safety
+        if valid_for <= 0:
+            self._become_follower(leader)
+            return
+        with self._state_lock:
+            transition = not (
+                self._leading and time.monotonic() < self._valid_until
+            )
+            self._leader = leader
+            self._valid_until = time.monotonic() + valid_for
+            self._leading = True
+        if transition and self._on_leader is not None:
+            try:
+                self._on_leader(self, leader)
+            except Exception:
+                LOG.exception("on_leader callback failed")
+
+    def _become_follower(self, leader: ElectionLeader | None) -> None:
+        with self._state_lock:
+            transition = self._leading
+            self._leader = leader
+            self._leading = False
+            self._valid_until = 0.0
+        if transition and self._on_follower is not None:
+            try:
+                self._on_follower(self, leader)
+            except Exception:
+                LOG.exception("on_follower callback failed")
+
+    def _resign_quietly(self, leader: ElectionLeader | None) -> None:
+        if leader is None:
+            return
+        try:
+            self._client._resign_election_once(
+                self.election,
+                self.candidate_id,
+                leader.term,
+                leader.lease_id,
+            )
+        except Exception:
+            LOG.debug("could not resign election %s", self.election, exc_info=True)
+
+    def close(self) -> None:
+        if self._stop.is_set():
+            return
+        was_leader = self.is_leader
+        leader = self.leader
+        self._stop.set()
+        with self._rpc_lock:
+            active_rpc = self._active_rpc
+        if active_rpc is not None:
+            active_rpc.cancel()
+        if was_leader and leader is not None:
+            self._resign_quietly(leader)
+        self._become_follower(leader)
+        self._client._remove_election(self)
+        if threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
+
+    def __enter__(self) -> Election:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
 
 
 class _AckBatcher:

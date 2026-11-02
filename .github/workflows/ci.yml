@@ -41,7 +41,7 @@ jobs:
         run: |
           python -m pip install -q -e "python[dev]"
           python python/generate_proto.py
-          python -c "from cangling_broker import SatwayClient, SubscribeOptions"
+          python -c "from cangling_broker import Election, ElectionLeader, SatwayClient, SubscribeOptions"
 
   pypi:
     name: publish python to pypi

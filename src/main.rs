@@ -3,6 +3,7 @@ mod cache;
 mod config;
 mod db;
 mod delivery;
+mod election;
 mod grpc_conn;
 mod logging;
 mod metrics;
@@ -23,6 +24,7 @@ use clap::Parser;
 use config::{Command, Config};
 use db::Database;
 use delivery::{Ingested, PROTOCOL_GRPC};
+use election::{ElectionService, ElectionStore};
 use futures_util::StreamExt;
 use grpc_conn::{GrpcClientRegistry, TrackingIncoming};
 use subscribers::{InflightAcks, TopicSubscribers};
@@ -34,12 +36,14 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 use writer::QueueWriter;
 
+#[allow(clippy::result_large_err)]
 pub mod proto {
     tonic::include_proto!("dispatcher.v1");
 }
 use crate::model::{DeliveryMode, PersistenceMode, TopicConfig};
 use proto::{
     cache_service_server::CacheServiceServer,
+    election_service_server::ElectionServiceServer,
     message_queue_server::{MessageQueue, MessageQueueServer},
     AcceptMessageRequest, AcceptMessageResponse, AckMessageRequest, AckMessageResponse,
     AckMessagesRequest, AckMessagesResponse, ConfigureTopicsRequest, ConfigureTopicsResponse,
@@ -461,12 +465,15 @@ async fn main() -> anyhow::Result<()> {
     };
     let cache_store = cache::CacheStore::new(config.cache_max_entries);
     let lock_store = cache::LockStore::new(db.clone());
+    let election_store = ElectionStore::new(db.clone());
     let status = tokio::spawn(status::serve(
         status_listener,
         db.clone(),
         config.clone(),
         cache_store.clone(),
         lock_store.clone(),
+        election_store.clone(),
+        queue_writer.clone(),
         subscribers.clone(),
         shutdown.clone(),
         mqtt_on_status.then(|| mqtt_ctx.clone()),
@@ -512,6 +519,10 @@ async fn main() -> anyhow::Result<()> {
             ))
             .add_service(CacheServiceServer::with_interceptor(
                 CacheService::new(cache_store, lock_store),
+                interceptor.clone(),
+            ))
+            .add_service(ElectionServiceServer::with_interceptor(
+                ElectionService::new(election_store),
                 interceptor,
             ))
             .serve_with_incoming_shutdown(
