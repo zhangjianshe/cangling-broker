@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bump the patch version, commit, tag, and push. GitHub Actions deploys Docker, Maven Central, and PyPI.
+# Bump the patch version, commit, tag, and push. GitHub Actions deploys Harbor, Maven Central, and PyPI.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")" && pwd)"
@@ -84,7 +84,6 @@ git push "$remote" "v${new}"
 
 echo "released v${current} -> v${new} and pushed ${branch} to ${remote}"
 echo "CI will build and push:"
-echo "  docker.io/mapway/cangling-broker:${new}"
 echo "  harbor.cangling.cn:22002/cangling/cangling-broker:${new}"
 echo "  Maven Central cn.mapway:cangling-broker:${new}"
 echo "  PyPI cangling-broker==${new}"

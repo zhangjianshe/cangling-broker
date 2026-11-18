@@ -1,0 +1,59 @@
+name: Publish existing Harbor images
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing Harbor image version, without v
+        required: true
+        default: '0.1.75'
+      arch:
+        description: Platforms to publish
+        type: choice
+        default: both
+        options: [both, amd64, arm64]
+      allow_downgrade:
+        description: Explicitly restore an older release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: drive-base-images-cangling-broker
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: harbor.cangling.cn:22002
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+      - name: Test webhook client
+        run: python scripts/test-release-via-webhook.py
+      - name: Publish through internal webhook
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_ARCH: ${{ inputs.arch }}
+          ALLOW_DOWNGRADE: ${{ inputs.allow_downgrade }}
+          RELEASE_WEBHOOK_URL: ${{ vars.RELEASE_WEBHOOK_URL }}
+          RELEASE_WEBHOOK_SECRET: ${{ secrets.RELEASE_WEBHOOK_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          image="harbor.cangling.cn:22002/cangling/cangling-broker:${RELEASE_VERSION}"
+          digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
+          options=()
+          if [[ "$RELEASE_ARCH" != both ]]; then options+=(--arch "$RELEASE_ARCH"); fi
+          if [[ "$ALLOW_DOWNGRADE" == true ]]; then options+=(--allow-downgrade); fi
+          python scripts/release-via-webhook.py --project cangling-broker --version "$RELEASE_VERSION" --digest "$digest" "${options[@]}"

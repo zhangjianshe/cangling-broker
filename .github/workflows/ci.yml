@@ -6,7 +6,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  IMAGE: docker.io/mapway/cangling-broker
   HARBOR_IMAGE: harbor.cangling.cn:22002/cangling/cangling-broker
 
 permissions:
@@ -154,50 +153,32 @@ jobs:
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/login-action@v4
-        with:
           registry: harbor.cangling.cn:22002
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
       - uses: docker/build-push-action@v7
+        id: publish_image
         with:
           context: .
           file: Dockerfile.ci
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
-            ${{ env.IMAGE }}:${{ github.sha }}
             ${{ env.HARBOR_IMAGE }}:latest
             ${{ env.HARBOR_IMAGE }}:${{ steps.meta.outputs.version }}
             ${{ env.HARBOR_IMAGE }}:${{ github.sha }}
           cache-from: type=gha,scope=cangling-broker-image
           cache-to: type=gha,mode=max,scope=cangling-broker-image
-      - name: Export architecture-specific image archives
-        env:
-          RELEASE_IMAGE: ${{ env.HARBOR_IMAGE }}:${{ steps.meta.outputs.version }}
-        run: |
-          mkdir -p dist
-          set -euo pipefail
-          for arch in amd64 arm64; do
-            docker pull --platform "linux/$arch" "$RELEASE_IMAGE"
-            docker image save --platform "linux/$arch" "$RELEASE_IMAGE" | gzip -1 > "dist/cangling-broker-${arch}.tar.gz"
-          done
-      - name: Set up Python for drive upload
+      - name: Set up Python for release webhook
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Test drive image uploader
-        run: python scripts/test-upload-drive-image.py
-      - name: Upload offline images to cangling-repo drive
+      - name: Test webhook client
+        run: python scripts/test-release-via-webhook.py
+      - name: Publish images through the internal webhook
         env:
-          WRITE_TOKEN: ${{ secrets.WRITE_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for arch in amd64 arm64; do
-            python scripts/upload-drive-image.py --project cangling-broker --arch "$arch" --file "dist/cangling-broker-${arch}.tar.gz"
-          done
+          RELEASE_WEBHOOK_URL: ${{ vars.RELEASE_WEBHOOK_URL }}
+          RELEASE_WEBHOOK_SECRET: ${{ secrets.RELEASE_WEBHOOK_SECRET }}
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.publish_image.outputs.digest }}
+        run: python scripts/release-via-webhook.py --project cangling-broker --version "$RELEASE_VERSION" --digest "$IMAGE_DIGEST"
