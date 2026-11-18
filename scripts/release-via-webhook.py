@@ -80,7 +80,7 @@ def main():
     base = os.environ.get('RELEASE_WEBHOOK_URL', 'https://webhook.cangling.cn:22002')
     if not (base.startswith('https://') or base.startswith('http://127.0.0.1:')):
         raise ValueError('Webhook requires HTTPS')
-    secret = os.environ.get('RELEASE_WEBHOOK_SECRET', '')
+    secret = os.environ.get('RELEASE_WEBHOOK_SECRET', '').strip()
     if not secret:
         raise ValueError('RELEASE_WEBHOOK_SECRET is required')
     payload = {'project': args.project, 'version': args.version,

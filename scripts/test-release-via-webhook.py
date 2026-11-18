@@ -3,6 +3,8 @@ import hmac
 import importlib.util
 import io
 import json
+import os
+import sys
 from pathlib import Path
 import time
 import unittest
@@ -46,6 +48,12 @@ class ClientTests(unittest.TestCase):
         with patch.object(client,'request',return_value=job) as request:
             self.assertEqual(client.submit_and_wait('https://example.com','key',{},submit_only=True),job)
             request.assert_called_once()
+
+    def test_environment_secret_tolerates_file_newline(self):
+        argv=['release-via-webhook.py','--project','cangling-map','--version','0.1.27','--digest','sha256:'+'a'*64]
+        with patch.object(sys,'argv',argv),patch.dict(os.environ,{'RELEASE_WEBHOOK_SECRET':'k'*64+'\n','RELEASE_WEBHOOK_URL':'https://example.com'},clear=True),patch.object(client,'submit_and_wait') as submit:
+            client.main()
+        self.assertEqual(submit.call_args.args[1],'k'*64)
 
     def test_redirects_are_not_followed(self):
         self.assertIsNone(client.NoRedirect().redirect_request(None,None,302,'',{},'https://other.example'))
