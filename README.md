@@ -845,3 +845,14 @@ erDiagram
 | `messages.idempotency_key` | `UNIQUE` |
 
 `consumers` 只存 gRPC `Register` 元数据。投递走内存里的 `Subscribe` / MQTT 会话；MQTT 订约本身写入 `topic_stats`，不写 `consumers`。`messages.idempotency_key` 在 topic 所在分片内唯一，用于 `AcceptMessages` 去重；生产者重试时必须保持同一个 topic。隐式 ephemeral 且空闲超过 `CL_BROKER_EPHEMERAL_IDLE_HOURS` 的行会被 purge 删掉；`configured=1` 和 MQTT 订约的 persistent filter 会留下。已投递且 `delivered_at` 超过 `CL_BROKER_DELIVERED_RETENTION_HOURS` 的消息行会被删掉；未投递的行仍按 `MESSAGE_RETENTION_DAYS` 清理。
+
+### 离线镜像网盘发布
+
+发布工作流将离线镜像上传到 `cangling-repo/apps/base-images/linux/{amd64,arm64}`，
+使用固定名称 `cangling-broker-linux-{arch}.tar.gz` 和对应的 `.sha256` 文件，
+替换原有的软件仓库上传步骤。GitHub 仓库需配置 Actions Secret `WRITE_TOKEN`，
+权限包含目标目录的读、写、删除；凭证不写入代码。
+
+上传采用分块续传和 SHA-256 校验，相同内容跳过。现有网盘 API 需要先删除同名旧文件再上传，
+上传期间该文件暂时不可用，失败后可重跑任务续传。校验文件在镜像上传成功后发布；
+共享 `SHA256SUMS` 及历史带版本名文件保留，不覆盖其他项目的数据。

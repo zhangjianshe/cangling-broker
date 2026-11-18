@@ -129,6 +129,9 @@ jobs:
           retention-days: 3
 
   docker:
+    concurrency:
+      group: drive-base-images-cangling-broker
+      cancel-in-progress: false
     name: docker image
     runs-on: ubuntu-latest
     needs: build
@@ -183,31 +186,18 @@ jobs:
           docker pull --platform linux/arm64 "$RELEASE_IMAGE"
           docker image save "$RELEASE_IMAGE" | gzip -1 > dist/cangling-broker-arm64.tar.gz
           ls -lh dist/cangling-broker-*.tar.gz
-      - name: Upload amd64 image archive to software site
+      - name: Set up Python for drive upload
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test drive image uploader
+        run: python scripts/test-upload-drive-image.py
+      - name: Upload offline images to cangling-repo drive
         env:
-          CANGLING_TOKEN: ${{ secrets.CANGLING_TOKEN }}
+          WRITE_TOKEN: ${{ secrets.WRITE_TOKEN }}
+        shell: bash
         run: |
-          curl --fail-with-body --show-error --progress-bar -k -X POST \
-            "https://soft.cangling.cn:22002/api/v1/software/upload" \
-            -H "API-TOKEN: $CANGLING_TOKEN" \
-            -F "token=a272db551a0842769fe14b01d8f13175" \
-            -F "version=latest" \
-            -F "name=cangling-broker-amd64.tar.gz" \
-            -F "summary=Automatic release for version ${{ github.ref_name }}" \
-            -F "os=linux" \
-            -F "arch=amd64" \
-            -F "file=@dist/cangling-broker-amd64.tar.gz"
-      - name: Upload arm64 image archive to software site
-        env:
-          CANGLING_TOKEN: ${{ secrets.CANGLING_TOKEN }}
-        run: |
-          curl --fail-with-body --show-error --progress-bar -k -X POST \
-            "https://soft.cangling.cn:22002/api/v1/software/upload" \
-            -H "API-TOKEN: $CANGLING_TOKEN" \
-            -F "token=a272db551a0842769fe14b01d8f13175" \
-            -F "version=latest" \
-            -F "name=cangling-broker-arm64.tar.gz" \
-            -F "summary=Automatic release for version ${{ github.ref_name }}" \
-            -F "os=linux" \
-            -F "arch=arm64" \
-            -F "file=@dist/cangling-broker-arm64.tar.gz"
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            python scripts/upload-drive-image.py --project cangling-broker --arch "$arch" --file "dist/cangling-broker-${arch}.tar.gz"
+          done
