@@ -1,4 +1,7 @@
 import hashlib
+import io
+import json
+import tarfile
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -10,6 +13,15 @@ import urllib.parse
 spec = importlib.util.spec_from_file_location('upload', Path(__file__).with_name('upload-drive-image.py'))
 upload = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(upload)
+
+
+def write_image(path, arch):
+    with tarfile.open(path, 'w:gz') as archive:
+        for name, data in [('manifest.json', [{'Config': 'config.json', 'RepoTags': ['test:1.2.3'], 'Layers': []}]), ('config.json', {'architecture': arch, 'os': 'linux'})]:
+            body = json.dumps(data).encode()
+            entry = tarfile.TarInfo(name); entry.size = len(body)
+            archive.addfile(entry, io.BytesIO(body))
+
 
 
 class MemoryDrive(upload.Drive):
@@ -79,7 +91,7 @@ class UploadTests(unittest.TestCase):
             for arch in ['amd64', 'arm64']:
                 with tempfile.TemporaryDirectory() as tmp:
                     source = Path(tmp) / (project + '-v1.2.3.tar.gz')
-                    source.write_bytes(b'archive data')
+                    write_image(source, arch)
                     drive = MemoryDrive()
                     upload.publish(drive, project, arch, source)
                     parent = drive.root
@@ -88,7 +100,7 @@ class UploadTests(unittest.TestCase):
                     expected = project + '-linux-' + arch + '.tar.gz'
                     self.assertEqual({e['name'] for e in drive.children[parent]}, {expected, expected + '.sha256'})
                     checksum_session = next((s, body) for s, body in drive.sessions.values() if s['name'].endswith('.sha256'))
-                    self.assertEqual(checksum_session[1].decode(), hashlib.sha256(b'archive data').hexdigest() + '  ' + expected + '\n')
+                    self.assertEqual(checksum_session[1].decode(), hashlib.sha256(source.read_bytes()).hexdigest() + '  ' + expected + '\n')
 
     def test_resume_after_lost_response_and_skip_duplicate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -106,7 +118,7 @@ class UploadTests(unittest.TestCase):
 
     def test_failed_binary_does_not_publish_checksum(self):
         with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / 'archive'; source.write_bytes(b'data')
+            source = Path(tmp) / 'archive'; write_image(source, 'amd64')
             drive = MemoryDrive(); drive.fail_complete = True
             with self.assertRaises(RuntimeError):
                 upload.publish(drive, 'cangling-map', 'amd64', source)
@@ -118,6 +130,16 @@ class UploadTests(unittest.TestCase):
             drive = MemoryDrive(); drive.directory(drive.root, 'archive')
             with self.assertRaises(ValueError):
                 drive.upload_file(drive.root, 'archive', source)
+            self.assertEqual(drive.deletions, [])
+
+    def test_wrong_architecture_is_rejected_before_any_remote_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'archive'; write_image(source, 'amd64')
+            drive = MemoryDrive()
+            with self.assertRaises(ValueError):
+                upload.publish(drive, 'cangling-tile', 'arm64', source)
+            self.assertEqual(len(drive.children), 1)
+            self.assertEqual(drive.sessions, {})
             self.assertEqual(drive.deletions, [])
 
     def test_https_and_redirect_safety(self):

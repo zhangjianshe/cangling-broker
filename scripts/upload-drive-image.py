@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import time
+import tarfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -139,12 +140,24 @@ class Drive:
 
 
 
+def validate_archive(source, arch):
+    # Validate actual saved image contents before touching the published file.
+    with tarfile.open(source, 'r:gz') as archive:
+        manifest = json.load(archive.extractfile('manifest.json'))
+        if len(manifest) != 1:
+            raise ValueError('Expected a single image in the archive')
+        config = json.load(archive.extractfile(manifest[0]['Config']))
+        if config.get('os') != 'linux' or config.get('architecture') != arch:
+            raise ValueError('Archive image architecture does not match ' + arch)
+
+
 def publish(drive, project, arch, source):
     if project not in ('cangling-broker', 'cangling-map', 'cangling-tile') or arch not in ('amd64', 'arm64'):
         raise ValueError('Unsupported project or architecture')
     source = Path(source)
     if not source.is_file() or source.stat().st_size == 0:
         raise ValueError('Missing or empty image archive')
+    validate_archive(source, arch)
     parent = drive.root
     for part in ('apps', 'base-images', 'linux', arch):
         parent = drive.directory(parent, part)

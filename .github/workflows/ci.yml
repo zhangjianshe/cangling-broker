@@ -181,11 +181,11 @@ jobs:
           RELEASE_IMAGE: ${{ env.HARBOR_IMAGE }}:${{ steps.meta.outputs.version }}
         run: |
           mkdir -p dist
-          docker pull --platform linux/amd64 "$RELEASE_IMAGE"
-          docker image save "$RELEASE_IMAGE" | gzip -1 > dist/cangling-broker-amd64.tar.gz
-          docker pull --platform linux/arm64 "$RELEASE_IMAGE"
-          docker image save "$RELEASE_IMAGE" | gzip -1 > dist/cangling-broker-arm64.tar.gz
-          ls -lh dist/cangling-broker-*.tar.gz
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            docker pull --platform "linux/$arch" "$RELEASE_IMAGE"
+            docker image save --platform "linux/$arch" "$RELEASE_IMAGE" | gzip -1 > "dist/cangling-broker-${arch}.tar.gz"
+          done
       - name: Set up Python for drive upload
         uses: actions/setup-python@v5
         with:
